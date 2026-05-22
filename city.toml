@@ -12,6 +12,12 @@ effort = "xhigh"
 base = "builtin:codex"
 ready_delay_ms = 0
 
+[[named_session]]
+template = "anatoly"
+scope = "rig"
+dir = "phd-thesis"
+mode = "always"
+
 [[rigs]]
 name = "math-experiments"
 prefix = "mx"
@@ -33,6 +39,23 @@ source = "packs/gasvillage"
 
 [[rigs]]
 name = "DeRham.jl"
+default_branch = "main"
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "packs/gasvillage"
+
+[[rigs]]
+name = "phd-thesis"
+default_branch = "main"
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "packs/gasvillage"
+[rigs.imports.latex-utils]
+source = "packs/latex-utils"
+
+[[rigs]]
+name = "beads"
+prefix = "beads"
 default_branch = "main"
 [rigs.imports]
 [rigs.imports.gasvillage]

@@ -1,3 +1,6 @@
 [submodule "packs/gasvillage"]
 	path = packs/gasvillage
 	url = https://github.com/jjgarzella/gasvillage-pack.git
+[submodule "packs/latex-utils"]
+	path = packs/latex-utils
+	url = https://github.com/jjgarzella/latex-utils-pack.git

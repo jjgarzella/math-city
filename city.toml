@@ -1,0 +1,39 @@
+[workspace]
+name = "math-city"
+provider = "claude"
+
+[providers]
+[providers.claude]
+base = "builtin:claude"
+ready_delay_ms = 0
+[providers.claude.option_defaults]
+effort = "xhigh"
+[providers.codex]
+base = "builtin:codex"
+ready_delay_ms = 0
+
+[[rigs]]
+name = "math-experiments"
+prefix = "mx"
+default_branch = "main"
+includes = ["packs/gasvillage"]
+
+[[rigs]]
+name = "gascity"
+prefix = "gcs"
+default_branch = "main"
+includes = ["packs/gasvillage"]
+
+[[rigs]]
+name = "GPUFiniteFieldMatrices.jl"
+default_branch = "main"
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "packs/gasvillage"
+
+[[rigs]]
+name = "DeRham.jl"
+default_branch = "main"
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "packs/gasvillage"

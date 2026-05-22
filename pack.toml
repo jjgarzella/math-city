@@ -1,0 +1,15 @@
+# Math City — pack composition.
+#
+# Math City uses the Gas Village pack, which ships the mayor, polecat,
+# and crew templates. Math City supplies its own `personality` template
+# fragment to inject "Mayor Leonhard" identity into the mayor.
+
+[pack]
+name = "math-city"
+schema = 2
+
+[imports.gasvillage]
+source = "packs/gasvillage"
+
+[defaults.rig.imports.gasvillage]
+source = "packs/gasvillage"

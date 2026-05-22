@@ -1,0 +1,3 @@
+[submodule "packs/gasvillage"]
+	path = packs/gasvillage
+	url = https://github.com/jjgarzella/gasvillage-pack.git

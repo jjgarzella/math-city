@@ -10,6 +10,3 @@ schema = 2
 
 [imports.gasvillage]
 source = "packs/gasvillage"
-
-[defaults.rig.imports.gasvillage]
-source = "packs/gasvillage"

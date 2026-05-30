@@ -1,5 +1,4 @@
 [workspace]
-name = "math-city"
 provider = "claude"
 
 [providers]
@@ -22,13 +21,17 @@ mode = "always"
 name = "math-experiments"
 prefix = "mx"
 default_branch = "main"
-includes = ["packs/gasvillage"]
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "packs/gasvillage"
 
 [[rigs]]
 name = "gascity"
 prefix = "gcs"
 default_branch = "main"
-includes = ["packs/gasvillage"]
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "packs/gasvillage"
 
 [[rigs]]
 name = "GPUFiniteFieldMatrices.jl"
@@ -60,3 +63,7 @@ default_branch = "main"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"
+
+[[rigs]]
+name = "gascity-packs"
+default_branch = "main"

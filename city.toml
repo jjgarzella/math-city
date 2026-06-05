@@ -30,6 +30,8 @@ default_branch = "main"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"
+[rigs.imports.labtech]
+source = "packs/labtech"
 
 [[rigs]]
 name = "gascity"

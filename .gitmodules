@@ -4,3 +4,6 @@
 [submodule "packs/latex-utils"]
 	path = packs/latex-utils
 	url = https://github.com/jjgarzella/latex-utils-pack.git
+[submodule "packs/labtech"]
+	path = packs/labtech
+	url = https://github.com/jjgarzella/labtech-pack.git

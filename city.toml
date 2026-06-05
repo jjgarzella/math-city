@@ -17,6 +17,12 @@ scope = "rig"
 dir = "phd-thesis"
 mode = "always"
 
+[[named_session]]
+template = "dustin"
+scope = "rig"
+dir = "NewtonExperiments"
+mode = "always"
+
 [[rigs]]
 name = "math-experiments"
 prefix = "mx"
@@ -67,3 +73,11 @@ source = "packs/gasvillage"
 [[rigs]]
 name = "gascity-packs"
 default_branch = "main"
+
+[[rigs]]
+name = "NewtonExperiments"
+prefix = "ne"
+default_branch = "main"
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "./packs/gasvillage"

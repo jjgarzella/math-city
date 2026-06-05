@@ -81,3 +81,6 @@ default_branch = "main"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "./packs/gasvillage"
+
+[daemon]
+formula_v2 = true

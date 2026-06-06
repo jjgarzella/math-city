@@ -12,7 +12,7 @@ base = "builtin:codex"
 ready_delay_ms = 0
 
 [[named_session]]
-template = "anatoly"
+template = "jacob"
 scope = "rig"
 dir = "phd-thesis"
 mode = "on_demand"
@@ -20,13 +20,19 @@ mode = "on_demand"
 [[named_session]]
 template = "dustin"
 scope = "rig"
-dir = "NewtonExperiments"
+dir = "gascity"
 mode = "on_demand"
 
 [[named_session]]
 template = "peter"
 scope = "rig"
 dir = "gascity"
+mode = "on_demand"
+
+[[named_session]]
+template = "bhargav"
+scope = "rig"
+dir = "math-experiments"
 mode = "on_demand"
 
 [[rigs]]

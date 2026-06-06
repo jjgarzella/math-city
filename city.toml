@@ -23,6 +23,12 @@ scope = "rig"
 dir = "NewtonExperiments"
 mode = "always"
 
+[[named_session]]
+template = "peter"
+scope = "rig"
+dir = "gascity"
+mode = "always"
+
 [[rigs]]
 name = "math-experiments"
 prefix = "mx"

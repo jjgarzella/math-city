@@ -15,19 +15,19 @@ ready_delay_ms = 0
 template = "anatoly"
 scope = "rig"
 dir = "phd-thesis"
-mode = "always"
+mode = "on_demand"
 
 [[named_session]]
 template = "dustin"
 scope = "rig"
 dir = "NewtonExperiments"
-mode = "always"
+mode = "on_demand"
 
 [[named_session]]
 template = "peter"
 scope = "rig"
 dir = "gascity"
-mode = "always"
+mode = "on_demand"
 
 [[rigs]]
 name = "math-experiments"

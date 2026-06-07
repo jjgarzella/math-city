@@ -7,3 +7,6 @@
 [submodule "packs/labtech"]
 	path = packs/labtech
 	url = https://github.com/jjgarzella/labtech-pack.git
+[submodule "packs/argos"]
+	path = packs/argos
+	url = https://github.com/jjgarzella/argos-pack.git

@@ -10,3 +10,6 @@
 [submodule "packs/argos"]
 	path = packs/argos
 	url = https://github.com/jjgarzella/argos-pack.git
+[submodule "packs/julia-tools"]
+	path = packs/julia-tools
+	url = https://github.com/jjgarzella/julia-tools-pack.git

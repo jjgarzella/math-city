@@ -98,3 +98,13 @@ source = "./packs/gasvillage"
 
 [daemon]
 formula_v2 = true
+
+# TEMPORARY (mx-4kt): suspend the labtech autonomous tick to stop the over-firing
+# cron from tearing down detached runs (3 consecutive losses 02:08-03:08 UTC
+# 2026-06-07: mx-p03.7/.8/.9). The pack-defined agent can only be suspended via a
+# patch. REMOVE this block (and `gc reload`) once the run-durability fix lands so
+# detached runs survive the next tick's process-tree teardown. — bhargav 2026-06-07
+[[patches.agent]]
+dir = "math-experiments"
+name = "labtech.tick"
+suspended = true

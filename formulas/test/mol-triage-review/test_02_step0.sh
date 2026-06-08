@@ -1,12 +1,15 @@
-# Step 0 — target -> diff resolution. This block is pure transport ("no
-# judgment; run it verbatim"), so it is fully deterministic and tested by
-# running the extracted block against throwaway git repos.
+# Step 0 — target -> diff resolution. Step 0 calls the SHARED vendor-neutral
+# resolver (../../lib/resolve-diff.sh — the single source of truth the quorum
+# reviewer lanes call too), so this suite tests THAT SCRIPT directly (run_step0)
+# against throwaway git repos. It is pure transport ("no judgment; run it
+# verbatim"), so it is fully deterministic.
 #
 # Covers acceptance [2] (empty diff -> clean stop) deterministically, and the
 # deterministic precondition behind acceptance [3] (a local/no-PR target
 # resolves to kind=branch|range, never pr — which is what makes angle (d)
 # self-skip downstream). Also pins the path-rejection and PR/range/branch
-# classification the formula promises.
+# classification the resolver promises, its two-channel output contract, and
+# the formula's wiring to it (so the two never drift).
 
 section "02 step-0 diff resolution"
 
@@ -66,3 +69,43 @@ for t in "42" "#42" "https://github.com/o/r/pull/7"; do
   assert_contains "$out" "widget.go" "PR target '$t' carries the gh diff"
 done
 rm -rf "$repo"
+
+# --- the shared resolver exists, is executable, and is valid bash ------------
+section "02b shared resolver — component"
+[ -f "$RESOLVER" ] && ok "resolve-diff.sh present at $RESOLVER" \
+  || fail "resolve-diff.sh present" "missing at $RESOLVER"
+[ -x "$RESOLVER" ] && ok "resolve-diff.sh is executable" \
+  || fail "resolve-diff.sh is executable"
+bash -n "$RESOLVER" 2>/dev/null && ok "resolve-diff.sh parses (bash -n)" \
+  || fail "resolve-diff.sh parses (bash -n)"
+
+# --- two-channel output contract: machine result on stdout, narration on stderr
+# A real diff: stdout carries the eval-able TARGET_KIND/DIFF_FILE/FILES_FILE and
+# the named files actually exist; the diff is non-empty. An empty diff: stdout
+# is empty (that emptiness is the clean-stop signal a script caller branches on).
+repo="$(new_git_repo)"
+commit "$repo" app.go "package app // v2" "change app"
+run_step0 "$repo" "HEAD~1..HEAD"
+assert_contains "$STEP0_STDOUT" "TARGET_KIND=range" "stdout carries machine TARGET_KIND"
+assert_contains "$STEP0_STDOUT" "DIFF_FILE=" "stdout carries machine DIFF_FILE"
+assert_contains "$STEP0_STDOUT" "FILES_FILE=" "stdout carries machine FILES_FILE"
+# the assignments are eval-able and point at real, non-empty artifacts
+( eval "$STEP0_STDOUT"
+  [ -s "$DIFF_FILE" ] && [ -f "$FILES_FILE" ] ) \
+  && ok "stdout evals to real DIFF_FILE (non-empty) + FILES_FILE" \
+  || fail "stdout evals to real DIFF_FILE (non-empty) + FILES_FILE"
+rm -rf "$repo"
+
+repo="$(new_git_repo)"
+run_step0 "$repo" ""                              # main..HEAD, HEAD==main -> empty
+assert_eq "" "$STEP0_STDOUT" "empty diff emits NO machine result on stdout (clean-stop signal)"
+rm -rf "$repo"
+
+# --- the formula wires step 0 to the shared resolver (no drift) --------------
+# The behavioral tests above exercise the script directly; this pins that the
+# formula actually delegates to it and passes both vars, so the two cannot drift.
+DESC0="$(formula_py step-desc)"
+assert_contains "$DESC0" "formulas/lib/resolve-diff.sh" "step 0 calls the shared resolver path"
+assert_contains "$DESC0" "GC_CITY" "step 0 locates the resolver via \$GC_CITY (branch-independent)"
+assert_contains "$DESC0" '"{{target}}" "{{base_branch}}"' "step 0 passes target + base_branch to the resolver"
+assert_not_contains "$DESC0" 'git diff "${BASE}...${TARGET}"' "step 0 no longer inlines the resolver (extracted, DRY)"

@@ -108,17 +108,32 @@ new_git_repo() {
   printf '%s' "$dir"
 }
 
-# run_step0 <repo> <target> — run the rendered step-0 block inside <repo> with
-# RENDER_TARGET=<target>. Sets two globals (NOT echoed — a command-substitution
-# subshell would lose the exit code): STEP0_OUT (combined stdout+stderr) and
-# STEP0_RC (exit code). A bin/ shim dir (gh stub) is prepended to PATH so the PR
-# branch is testable without network.
+# --- the shared diff resolver (the single source of truth step 0 calls) ------
+# Step 0 no longer inlines the resolver — it calls this vendor-neutral script,
+# which the quorum reviewer lanes call too. The suite therefore tests the script
+# directly (one source of truth); the formula-wiring is pinned separately in
+# test_02 (it must reference this resolver and pass both vars).
+: "${RESOLVER:=$SUITE_DIR/../../lib/resolve-diff.sh}"
+
+# run_step0 <repo> <target> — run the shared resolver inside <repo> with <target>
+# and the formula's base_branch default (RENDER_BASE_BRANCH, default main). Sets
+# globals (NOT echoed — a command-substitution subshell would lose the exit
+# code):
+#   STEP0_OUT    combined narration (stderr) + machine result (stdout)
+#   STEP0_STDOUT the machine result ONLY — the eval-able TARGET_KIND/DIFF_FILE/
+#                FILES_FILE assignments, empty on an empty diff
+#   STEP0_RC     exit code
+# A bin/ shim dir (gh stub) is prepended to PATH so the PR branch is testable
+# without network.
 STEP0_OUT=""
+STEP0_STDOUT=""
 STEP0_RC=0
 run_step0() {
-  local repo="$1" target="$2" block rendered
-  block="$(formula_block 'TARGET="{{target}}"')"
-  rendered="$(RENDER_TARGET="$target" render "$block")"
-  STEP0_OUT="$(cd "$repo" && PATH="$SUITE_DIR/bin:$PATH" bash -c "$rendered" 2>&1)"
+  local repo="$1" target="$2" base="${RENDER_BASE_BRANCH:-main}" err
+  err="$(mktemp)"
+  STEP0_STDOUT="$(cd "$repo" && PATH="$SUITE_DIR/bin:$PATH" bash "$RESOLVER" "$target" "$base" 2>"$err")"
   STEP0_RC=$?
+  STEP0_OUT="$(cat "$err")
+$STEP0_STDOUT"
+  rm -f "$err"
 }

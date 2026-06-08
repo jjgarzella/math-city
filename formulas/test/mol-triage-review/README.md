@@ -20,9 +20,10 @@ that is removed on exit.
 
 `mol-triage-review` is ONE claude session whose review intelligence (the five
 angles, the per-issue scoring) is **model judgment**, wrapped in a shell of
-**deterministic transport**: target→diff resolution (step 0), findings-container
-+ wisp persistence (step 4b), the ≥threshold filter (step 6), the dedup-merge
-commands (step 7), and promote/burn + audit (step 9).
+**deterministic transport**: target→diff resolution (step 0, delegated to the
+shared `../../lib/resolve-diff.sh`), findings-container + wisp persistence
+(step 4b), the ≥threshold filter (step 6), the dedup-merge commands (step 7),
+and promote/burn + audit (step 9).
 
 This suite locks down the transport and the fixture corpus around the model. It
 does **not** — and cannot — assert what the model decides; that is the job of
@@ -33,7 +34,7 @@ against a real diff" and the dedup coverage to `.5`, and semantic tuning to `.6`
 | Test file | Covers (deterministic) |
 | --- | --- |
 | `test_01_integrity.sh` | parses; 6 vars resolve 1:1; model-tier + threshold defaults; the Anthropic 0–100 **rubric** and **false-positive list** reproduced **verbatim** (checked against the upstream command, so paraphrase fails the build); 5 angles + category labels; vendor-neutral rule files; scope discipline. |
-| `test_02_step0.sh` | step-0 target→diff over real throwaway git repos: empty→clean exit 0 (**acceptance [2]**); path/whole-tree rejection; `kind=pr\|branch\|range` classification; local targets resolve `kind=branch\|range`, never `pr`, and never call `gh` — the precondition behind **acceptance [3]** (angle d self-skips). |
+| `test_02_step0.sh` | the **shared resolver** (`../../lib/resolve-diff.sh`, which step 0 now calls) over real throwaway git repos: empty→clean exit 0 (**acceptance [2]**); path/whole-tree rejection; `kind=pr\|branch\|range` classification; local targets resolve `kind=branch\|range`, never `pr`, and never call `gh` — the precondition behind **acceptance [3]** (angle d self-skips). Also pins the resolver's two-channel output contract (machine result on stdout, narration on stderr) and the formula's wiring to it (so script and formula never drift). |
 | `test_03_lifecycle.sh` | every embedded bash block is valid bash (this caught a broken step-7 here-doc); container create-once + root resolution; step-7 merge labels/notes; step-9 promote/burn flags; audit + container close; and the **[1]/[4]/[5]** outcomes given fixed decisions, incl. the dedup→one-bead path and the `promoted+merged+burned = considered` audit invariant. |
 | `test_04_fixtures.sh` | each fixture builds a real repo, step 0 routes it as its `expected.env` says, and the corpus is internally consistent (planted rule+bug present; dedup findings genuinely collide on file+line+root-cause; nitpick drop-reasons map to the verbatim FP list). |
 
@@ -69,9 +70,21 @@ cd "$REPO" && gc sling <addr> mol-triage-review --formula --var target="$TARGET"
 dedented to column 0 (matching every other bash block in the formula) so the
 here-doc closes. No behavior change beyond making the verbatim block runnable.
 
+## Shared diff resolver (`../../lib/resolve-diff.sh`)
+
+Step 0's target→diff resolution was extracted (gascity `gcs-f4j.2`) into the
+vendor-neutral `../../lib/resolve-diff.sh` so the Tier-2 quorum reviewer lanes
+can call the **same** resolver in their own checked-out worktree (DRY; robust
+cross-session). The formula's step 0 now locates it via `$GC_CITY` (set by the
+runtime), so it resolves regardless of which branch is checked out. The script
+is the single source of truth this suite tests directly (`run_step0`); `test_02`
+additionally pins that the formula still delegates to it. `.sh` files and the
+`lib/` subdir are ignored by formula discovery, so the resolver is not loaded as
+a formula.
+
 ## Version control
 
-The formula and this suite are intentionally untracked in `math-city/formulas/`
-(VC deferred per the `gcs-t0a.1` overseer decision; carried through `.2`–`.4`).
-When VC happens, formula + tests + fixtures land together. Nothing here belongs
-in the gascity worktree — the formula is a city config, not SDK code.
+The formula, this suite, and `../../lib/resolve-diff.sh` are tracked in
+`math-city/formulas/` (the earlier `gcs-t0a.1` VC-deferral no longer applies —
+the smoke and triage artifacts landed on `main`). Nothing here belongs in the
+gascity worktree — these are city config, not SDK code.

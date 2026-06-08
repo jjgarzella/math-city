@@ -14,6 +14,9 @@
 #   gcs-t0a.4  dedup-merge of survivors
 #   gcs-t0a.5  tests + fixtures
 #   gcs-t0a.6  dogfood on a real diff + tune
+# Later: gcs-f4j.2 extracted step 0's target->diff resolver into the shared,
+# vendor-neutral `lib/resolve-diff.sh` (the Tier-2 quorum reviewer lanes call
+# the same script); step 0 now delegates to it via $GC_CITY.
 #
 # Ported from the Anthropic `code-review:code-review` plugin
 # (claude-plugins-official). The Anthropic CORE is kept VERBATIM in gcs-t0a.2
@@ -80,70 +83,36 @@ Confidence threshold to promote a finding: `{{threshold}}`/100.
 
 ## Step 0 — Resolve the target to a diff (do this first)
 
-Run exactly this block. It turns `{{target}}` into a unified diff and a list of
-touched files, rejecting path / whole-tree targets. This is pure transport —
-no judgment; run it verbatim and read the result.
+Run exactly this block. It calls the SHARED, vendor-neutral diff resolver —
+`resolve-diff.sh`, the single source of truth the Tier-2 quorum reviewer lanes
+call too — to turn `{{target}}` (default `{{base_branch}}..HEAD`) into a unified
+diff and a list of touched files, rejecting path / whole-tree targets. The
+resolver lives in the city's formulas dir, so every reviewer session resolves
+the diff identically no matter which branch is checked out here. This is pure
+transport — no judgment; run it verbatim and read the result.
 
 ```bash
 set -uo pipefail
-TARGET="{{target}}"
-BASE="{{base_branch}}"
+# The shared resolver is referenced through $GC_CITY (set by the runtime) rather
+# than a repo-relative path, so it resolves even when the branch under review
+# does not itself carry the script.
+RESOLVER="${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-diff.sh"
+[ -x "$RESOLVER" ] || { echo "ERROR: shared resolver missing or not executable at $RESOLVER" >&2; exit 2; }
 
-# Default: the changes on the current branch vs the base branch.
-if [ -z "$TARGET" ]; then
-  TARGET="${BASE}..HEAD"
-fi
+# The resolver runs against THIS worktree (the checked-out change). It writes the
+# machine result to stdout (TARGET_KIND/DIFF_FILE/FILES_FILE, empty on an empty
+# diff) and the human narration to stderr.
+RESOLVED="$("$RESOLVER" "{{target}}" "{{base_branch}}")"; RC=$?
 
-# Reject path / whole-tree targets. Tier-1 reviews CHANGES, not a tree;
-# whole-workspace review is standard-code-review's job.
-case "$TARGET" in
-  "." | ".." | "./"* | "../"* | "/"*)
-    echo "ERROR: '$TARGET' looks like a path. mol-triage-review reviews a DIFF" >&2
-    echo "       (PR | branch | commit-range | base_ref..HEAD), not a path or" >&2
-    echo "       the whole workspace. Aborting." >&2
-    exit 2 ;;
-esac
+# A path / whole-tree target (exit 2) or a failed PR fetch (exit 3) is a hard
+# stop — the resolver already explained why on stderr.
+[ "$RC" -eq 0 ] || exit "$RC"
+# Empty stdout on exit 0 means the diff was empty: nothing to review, stop clean.
+[ -n "$RESOLVED" ] || { echo "Empty diff — nothing to review; stopping."; exit 0; }
 
-DIFF_FILE="$(mktemp)"
-FILES_FILE="$(mktemp)"
-
-if printf '%s' "$TARGET" | grep -Eq '^#?[0-9]+$' \
-   || printf '%s' "$TARGET" | grep -Eq '^https?://.*/pull/[0-9]+/?$'; then
-  # --- PR: a number, #number, or a PR URL -> gh pr diff ---
-  PR="${TARGET#\#}"
-  TARGET_KIND="pr"
-  if ! gh pr diff "$PR" > "$DIFF_FILE" 2> /tmp/triage-gh-err; then
-    echo "ERROR: 'gh pr diff $PR' failed:" >&2; cat /tmp/triage-gh-err >&2
-    exit 3
-  fi
-  gh pr diff "$PR" --name-only > "$FILES_FILE"
-elif printf '%s' "$TARGET" | grep -q '\.\.'; then
-  # --- commit-range or base_ref..HEAD -> git diff <range> (verbatim) ---
-  TARGET_KIND="range"
-  git diff "$TARGET" > "$DIFF_FILE"
-  git diff --name-only "$TARGET" > "$FILES_FILE"
-else
-  # --- bare branch / ref name -> diff from the merge-base with BASE ---
-  # Three-dot mirrors `gh pr diff`: only the changes the branch introduced,
-  # ignoring changes that landed on BASE after the branch diverged.
-  if [ -e "$TARGET" ]; then
-    echo "ERROR: '$TARGET' is a filesystem path, not a PR/branch/range. Aborting." >&2
-    exit 2
-  fi
-  TARGET_KIND="branch"
-  git diff "${BASE}...${TARGET}" > "$DIFF_FILE"
-  git diff --name-only "${BASE}...${TARGET}" > "$FILES_FILE"
-fi
-
-# Empty diff is a hard stop — there is nothing to review.
-if [ ! -s "$DIFF_FILE" ]; then
-  echo "Resolved target ($TARGET_KIND) '$TARGET' produced an EMPTY diff; nothing to review." >&2
-  exit 0
-fi
-
-echo "Resolved target kind=$TARGET_KIND target='$TARGET'"
-echo "Touched files:"; cat "$FILES_FILE"
-echo "Unified diff is in: $DIFF_FILE  (touched files: $FILES_FILE)"
+# Load $TARGET_KIND, $DIFF_FILE, $FILES_FILE (the resolver's own assignments).
+eval "$RESOLVED"
+echo "Holding: TARGET_KIND=$TARGET_KIND  DIFF_FILE=$DIFF_FILE  FILES_FILE=$FILES_FILE"
 ```
 
 After this step you hold:

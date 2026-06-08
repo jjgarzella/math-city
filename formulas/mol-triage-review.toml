@@ -1,0 +1,493 @@
+# Tier-1 triage code review — ONE claude session that fans out internally via
+# the Task/sub-agent tool to run Anthropic's /code-review pipeline over a DIFF.
+#
+# Single-session by design (one bead, one session): the orchestration
+# intelligence lives in the prompt + model, not in graph.v2 control beads.
+# Reserved for the cheap, always-on routine tier; the deep/quorum tier uses
+# mol-review-quorum (graph.v2) instead.
+#
+# Design: gcs-o84 (FINALIZED DESIGN note, grill w/ overseer 2026-06-07).
+# Build epic: gcs-t0a. This file is built incrementally:
+#   gcs-t0a.1  skeleton + vars + diff resolution   <- THIS FILE so far
+#   gcs-t0a.2  review-session prompt (the 8-step pipeline)
+#   gcs-t0a.3  output wiring — promote/burn beads
+#   gcs-t0a.4  dedup-merge of survivors
+#   gcs-t0a.5  tests + fixtures
+#   gcs-t0a.6  dogfood on a real diff + tune
+#
+# Ported from the Anthropic `code-review:code-review` plugin
+# (claude-plugins-official). The Anthropic CORE is kept VERBATIM in gcs-t0a.2
+# (5 angles, 0-100 rubric, >=80 threshold, false-positive list, scope
+# discipline). Deltas: input is a DIFF (not a PR), output is promote/burn beads
+# (not a PR comment), plus dedup-merge, best-effort prior-PR angle, vendor-
+# neutral rule files, and model-tier vars.
+formula = "mol-triage-review"
+version = 1
+
+description = """Tier-1 triage code review of {{target}} (default {{base_branch}}..HEAD). ONE claude review session that fans out internally via the Task/sub-agent tool: it resolves the target to a unified diff, runs five independent review angles (project-rule adherence, shallow bug scan, git history, prior PRs, in-code invariants) scoped to the diff + touched files, scores each candidate finding 0-100 against Anthropic's rubric, keeps only survivors at or above the confidence threshold, dedup-merges them, and files each as a permanent finding bead.
+
+High-precision and cheap enough to run on (nearly) every non-trivial change: it flags only (a) violations of WRITTEN project rules and (b) real bugs — not textbook quality opinions, nitpicks, or anything a linter/typechecker/CI catches.
+
+Model tiers are vars so the city can tune them: review_model for the five angles, score_model for the confidence gate, aux_model for the cheap eligibility/summary/recheck steps."""
+
+# --------------------------------------------------------------------------
+# Variables
+# --------------------------------------------------------------------------
+
+[vars]
+
+[vars.target]
+description = "What to review — a PR (number, #number, or PR URL), a branch name, a commit range, or base_ref..HEAD. NOT a path or the whole workspace (that is standard-code-review's job; Tier-1 reviews CHANGES). Empty (the default) resolves to {{base_branch}}..HEAD — the changes on the current branch."
+default = ""
+
+[vars.base_branch]
+description = "Base branch the change is measured against. Used for the default target ({{base_branch}}..HEAD) and as the merge-base when the target is a bare branch name."
+default = "main"
+
+[vars.review_model]
+description = "Model size for the five independent review angles (step 4). Anthropic uses Sonnet."
+default = "sonnet"
+
+[vars.score_model]
+description = "Model size for the per-issue confidence scorer (step 5). A separate knob from review_model because it gates promote/burn. Anthropic uses Haiku."
+default = "haiku"
+
+[vars.aux_model]
+description = "Model size for the cheap auxiliary steps — eligibility gate, rule-file listing, change summary, and final eligibility re-check. Anthropic uses Haiku."
+default = "haiku"
+
+[vars.threshold]
+description = "Minimum confidence score (0-100) a finding must reach to be promoted to a permanent bead. Findings below are burned. Anthropic's threshold is 80."
+default = "80"
+
+# --------------------------------------------------------------------------
+# Single review session
+# --------------------------------------------------------------------------
+
+[[steps]]
+id = "review"
+title = "Triage code review of {{target}}"
+description = '''
+You are the orchestrator for a Tier-1 triage code review. You run as ONE
+session and fan out internally via the Task/sub-agent tool — you do NOT spawn
+other Gas City agents or create control beads.
+
+Model tiers (passed to the sub-agents you launch later in the pipeline):
+- review_model = `{{review_model}}` — the five independent review angles
+- score_model  = `{{score_model}}`  — the per-issue confidence scorer
+- aux_model    = `{{aux_model}}`     — eligibility / rule-listing / summary / recheck
+Confidence threshold to promote a finding: `{{threshold}}`/100.
+
+## Step 0 — Resolve the target to a diff (do this first)
+
+Run exactly this block. It turns `{{target}}` into a unified diff and a list of
+touched files, rejecting path / whole-tree targets. This is pure transport —
+no judgment; run it verbatim and read the result.
+
+```bash
+set -uo pipefail
+TARGET="{{target}}"
+BASE="{{base_branch}}"
+
+# Default: the changes on the current branch vs the base branch.
+if [ -z "$TARGET" ]; then
+  TARGET="${BASE}..HEAD"
+fi
+
+# Reject path / whole-tree targets. Tier-1 reviews CHANGES, not a tree;
+# whole-workspace review is standard-code-review's job.
+case "$TARGET" in
+  "." | ".." | "./"* | "../"* | "/"*)
+    echo "ERROR: '$TARGET' looks like a path. mol-triage-review reviews a DIFF" >&2
+    echo "       (PR | branch | commit-range | base_ref..HEAD), not a path or" >&2
+    echo "       the whole workspace. Aborting." >&2
+    exit 2 ;;
+esac
+
+DIFF_FILE="$(mktemp)"
+FILES_FILE="$(mktemp)"
+
+if printf '%s' "$TARGET" | grep -Eq '^#?[0-9]+$' \
+   || printf '%s' "$TARGET" | grep -Eq '^https?://.*/pull/[0-9]+/?$'; then
+  # --- PR: a number, #number, or a PR URL -> gh pr diff ---
+  PR="${TARGET#\#}"
+  TARGET_KIND="pr"
+  if ! gh pr diff "$PR" > "$DIFF_FILE" 2> /tmp/triage-gh-err; then
+    echo "ERROR: 'gh pr diff $PR' failed:" >&2; cat /tmp/triage-gh-err >&2
+    exit 3
+  fi
+  gh pr diff "$PR" --name-only > "$FILES_FILE"
+elif printf '%s' "$TARGET" | grep -q '\.\.'; then
+  # --- commit-range or base_ref..HEAD -> git diff <range> (verbatim) ---
+  TARGET_KIND="range"
+  git diff "$TARGET" > "$DIFF_FILE"
+  git diff --name-only "$TARGET" > "$FILES_FILE"
+else
+  # --- bare branch / ref name -> diff from the merge-base with BASE ---
+  # Three-dot mirrors `gh pr diff`: only the changes the branch introduced,
+  # ignoring changes that landed on BASE after the branch diverged.
+  if [ -e "$TARGET" ]; then
+    echo "ERROR: '$TARGET' is a filesystem path, not a PR/branch/range. Aborting." >&2
+    exit 2
+  fi
+  TARGET_KIND="branch"
+  git diff "${BASE}...${TARGET}" > "$DIFF_FILE"
+  git diff --name-only "${BASE}...${TARGET}" > "$FILES_FILE"
+fi
+
+# Empty diff is a hard stop — there is nothing to review.
+if [ ! -s "$DIFF_FILE" ]; then
+  echo "Resolved target ($TARGET_KIND) '$TARGET' produced an EMPTY diff; nothing to review." >&2
+  exit 0
+fi
+
+echo "Resolved target kind=$TARGET_KIND target='$TARGET'"
+echo "Touched files:"; cat "$FILES_FILE"
+echo "Unified diff is in: $DIFF_FILE  (touched files: $FILES_FILE)"
+```
+
+After this step you hold:
+- `$DIFF_FILE`  — the unified diff to review.
+- `$FILES_FILE` — newline-separated list of touched file paths.
+- `$TARGET_KIND` — one of `pr`, `range`, `branch`.
+
+Every downstream review angle is scoped to this diff and these touched files
+only — no whole-repo reads.
+
+## The review pipeline (steps 1-9)
+
+You drive the pipeline below by FANNING OUT to sub-agents with the **Task tool**.
+Every unit of review work is a Task sub-agent: you launch it, read the result it
+returns, hold the candidate findings in your own context, and feed them to the
+next step. You do NOT spawn Gas City agents, create control beads, or do the
+review work yourself — the orchestration intelligence is this prompt; the review
+intelligence lives in the sub-agents you launch.
+
+The concrete temp-file paths printed by Step 0 (`$DIFF_FILE`, `$FILES_FILE`) and
+the resolved `$TARGET_KIND` are the values you pass into the sub-agents below.
+
+Launch each sub-agent with the model named for its step:
+- aux steps (1, 2, 3, 8) → `{{aux_model}}`
+- the five review angles (4) → `{{review_model}}`
+- the per-finding scorers (5) → `{{score_model}}`
+
+Make a todo list first, then work the steps in order. A step that says "stop"
+means: do no further review work and report why.
+
+### Scope discipline (governs steps 4 and 5 — read before you flag anything)
+
+Flag ONLY:
+(a) violations of a WRITTEN project rule — quote the rule verbatim and cite its
+    file path and line; and
+(b) real bugs in the changed lines.
+
+Everything else is out of scope. Hand each review and scorer sub-agent the
+false-positive list below **verbatim** — it is the Anthropic code-review
+command's list and must not be paraphrased:
+
+> Examples of false positives, for steps 4 and 5:
+>
+> - Pre-existing issues
+> - Something that looks like a bug but is not actually a bug
+> - Pedantic nitpicks that a senior engineer wouldn't call out
+> - Issues that a linter, typechecker, or compiler would catch (eg. missing or incorrect imports, type errors, broken tests, formatting issues, pedantic style issues like newlines). No need to run these build steps yourself -- it is safe to assume that they will be run separately as part of CI.
+> - General code quality issues (eg. lack of test coverage, general security issues, poor documentation), unless explicitly required in CLAUDE.md
+> - Issues that are called out in CLAUDE.md, but explicitly silenced in the code (eg. due to a lint ignore comment)
+> - Changes in functionality that are likely intentional or are directly related to the broader change
+> - Real issues, but on lines that the user did not modify in their pull request
+
+Two glosses on that verbatim list, because this formula reviews a DIFF and is
+vendor-neutral: read "CLAUDE.md" as "any of the project rule files from step 2
+(AGENTS.md, CLAUDE.md, .cursorrules, .github/copilot-instructions.md, …)", and
+read "pull request" / "the user did not modify" as "the diff under review".
+
+### Step 1 — Eligibility gate (aux_model)
+
+Launch one `{{aux_model}}` Task sub-agent. Give it `$DIFF_FILE`, `$FILES_FILE`,
+and `$TARGET_KIND`, and ask it to decide whether this change needs a review at
+all. It should skip if ANY of these hold:
+- the diff is empty or trivial (whitespace/formatting/comment-only, a version
+  bump, a generated-file-only change);
+- the change is clearly automated (e.g. a dependency-bump or codegen commit)
+  and obviously fine;
+- this diff has already been reviewed by this formula (a findings container for
+  it already exists — see step 9).
+
+(Anthropic's "PR closed/draft" clauses are intentionally dropped: a resolved
+diff has no open/closed state.)
+
+If the sub-agent says skip, STOP — report "skipped: <reason>" and do nothing
+further.
+
+### Step 2 — List project rule-file paths (aux_model)
+
+Launch one `{{aux_model}}` Task sub-agent. Ask it to return the PATHS (not the
+contents) of the project rule files relevant to this change — vendor-neutral:
+- the root-level rule files, if present: AGENTS.md, CLAUDE.md, .cursorrules,
+  .cursor/rules/, .github/copilot-instructions.md;
+- the same files inside any directory whose files appear in `$FILES_FILE`.
+
+It returns a list of paths. You hand this list to the angle-a and scorer
+sub-agents so they can quote rules precisely.
+
+### Step 3 — Change summary (aux_model)
+
+Launch one `{{aux_model}}` Task sub-agent. Give it `$DIFF_FILE`. Ask for a short
+summary (2-5 sentences) of what the change does and the parts most worth
+reviewing — the intent of the change, the touched files, the base / target kind.
+You pass this summary to every angle in step 4 so each starts with shared
+context instead of re-deriving it.
+
+### Step 4 — Five independent review angles (review_model, in parallel)
+
+Launch FIVE `{{review_model}}` Task sub-agents IN PARALLEL — one per angle below.
+Give each: the step-3 summary, `$DIFF_FILE`, `$FILES_FILE`, the step-2 rule-file
+paths, and the verbatim false-positive list above. Each angle is scoped to the
+diff and the touched files ONLY — no whole-repo reads.
+
+Each angle returns a list of candidate findings; for each finding it returns:
+file:line range, what is wrong, the reason it was flagged (which angle / which
+rule), and a self-assessed confidence 0-100. You collect every candidate into
+your context, then persist each as a findings wisp (step 4b below) before
+scoring. (Duplicate survivors are merged in step 7.)
+
+a. **Rule adherence.** Check the changed lines against the written rules in the
+   step-2 rule files. Flag only changes that directly violate a rule; quote the
+   rule verbatim with its path and line. Remember these files are guidance for
+   an agent WRITING code, so not every instruction applies during review. Rules
+   in files outside the touched directories, and rules explicitly silenced in
+   the code, are out of scope.
+b. **Shallow bug scan.** Read the changed lines in `$DIFF_FILE` and scan for
+   large, obvious bugs visible from the diff alone — logic errors, resource
+   leaks, missing error handling on a critical path, races the change
+   introduces. Avoid reading context beyond the changes. Ignore nitpicks and
+   likely false positives.
+c. **Git history of the modified hunks.** For the modified hunks only, use
+   `git blame` / `git log` / `git show` to find the commits that last touched
+   those lines, and flag changes that resurrect a previously-fixed bug, drop a
+   load-bearing edge case a prior commit added on purpose, or contradict a
+   recent change without acknowledging it. Scope: the modified hunks, not the
+   whole files.
+d. **Prior PRs + their review comments — BEST-EFFORT.** First check whether
+   there is any PR context to use: a GitHub remote AND prior PRs that touched
+   the files in `$FILES_FILE`. If there is no GitHub remote, or `$TARGET_KIND`
+   is not `pr` and no prior PRs are found, SKIP this angle cleanly — return
+   exactly "skipped: no PR context" with zero findings; do not error. Otherwise
+   read review comments on prior PRs touching these files (`gh pr list`,
+   `gh search prs`, `gh pr view <n> --comments`) and flag where the current
+   change repeats a problem a maintainer already called out; quote the comment.
+e. **In-code comment / invariant compliance.** Read the modified files and find
+   guidance-style comments — explicit invariants, contracts, "callers must X"
+   notes, "do not Y" warnings. Flag changes that violate one; quote the comment
+   with its file and line. Ignore trivial comments and comments unrelated to the
+   change.
+
+### Step 4b — Persist each candidate as a findings wisp
+
+Once all five angles have returned, persist the candidates so the scorer can
+re-score them and so survivors become durable work items. Findings live as beads
+under a per-run **findings container**; each candidate starts as an ephemeral
+*wisp* — it costs nothing if it is later burned — and is promoted to a permanent
+bead only if it survives scoring (step 9).
+
+If there are zero candidates, file nothing — report "no candidate findings" and
+stop. Otherwise resolve this run's molecule root and create the container ONCE.
+This is pure transport; run it verbatim:
+
+```bash
+set -uo pipefail
+# This run's bead is $GC_BEAD_ID; its molecule root carries the container.
+ROOT=$(bd show "$GC_BEAD_ID" --json | jq -r '.[0].metadata["gc.root_bead_id"] // empty')
+[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"   # single-bead molecule: the bead is its own root
+FINDINGS="${ROOT}.findings"
+
+# Create the container once; harmless if it already exists.
+bd show "$FINDINGS" >/dev/null 2>&1 || \
+  bd create --id="$FINDINGS" --parent="$ROOT" \
+    --title="Findings — triage code review (${ROOT})" \
+    --description="Container for candidate findings from this mol-triage-review run. Candidates are filed here as ephemeral wisps, re-scored, then promoted (>= {{threshold}}/100) or burned (< {{threshold}}/100). The container's surviving children are this run's findings."
+echo "findings container: $FINDINGS (root $ROOT)"
+```
+
+Then file ONE ephemeral wisp per candidate. The first description line MUST be
+`Confidence: X/100` — the angle's self-rating, which the step-5 scorer parses and
+re-scores — and the wisp carries a `category:<angle>` label so its origin stays
+traceable. The categories, one per angle above, are:
+`rule-adherence` (a), `bug-scan` (b), `git-history` (c), `prior-prs` (d),
+`in-code-invariants` (e). Use a body file for the multi-line description:
+
+```bash
+# Repeat per candidate, substituting the real values.
+BODY=$(mktemp)
+cat > "$BODY" <<'EOF'
+Confidence: <self-rating 0-100>/100
+
+<file>:<line range> — <what is wrong>
+
+Angle: <which angle / which rule>
+Evidence: <quoted rule + path:line, a diff line, a commit SHA, a prior-PR
+comment, or an in-code comment>
+EOF
+WISP=$(bd create --ephemeral --silent \
+        --parent="$FINDINGS" \
+        --labels="category:<angle>" \
+        --priority=<best-guess 0-4> \
+        --title="<one-line summary>" \
+        --body-file="$BODY")
+echo "filed wisp $WISP (category <angle>)"
+```
+
+Keep the mapping from each wisp ID to its candidate — you re-score it in step 5
+and promote/burn it in step 9. You can re-enumerate the wisps at any time with
+`bd show "$FINDINGS" --json`: the candidates are its ephemeral children.
+
+### Step 5 — Score each candidate finding (score_model, one per finding, in parallel)
+
+For EACH candidate finding from step 4, launch one `{{score_model}}` Task
+sub-agent IN PARALLEL. Give it the finding, the step-3 summary, the relevant
+diff hunk, and the step-2 rule-file paths. It re-scores the finding 0-100 — do
+NOT take the angle's self-rating at face value — using this rubric, handed to it
+**verbatim** (the Anthropic code-review command's rubric; do not paraphrase):
+
+> 0: Not confident at all. This is a false positive that doesn't stand up to light scrutiny, or is a pre-existing issue.
+> 25: Somewhat confident. This might be a real issue, but may also be a false positive. The agent wasn't able to verify that it's a real issue. If the issue is stylistic, it is one that was not explicitly called out in the relevant CLAUDE.md.
+> 50: Moderately confident. The agent was able to verify this is a real issue, but it might be a nitpick or not happen very often in practice. Relative to the rest of the PR, it's not very important.
+> 75: Highly confident. The agent double checked the issue, and verified that it is very likely it is a real issue that will be hit in practice. The existing approach in the PR is insufficient. The issue is very important and will directly impact the code's functionality, or it is an issue that is directly mentioned in the relevant CLAUDE.md.
+> 100: Absolutely certain. The agent double checked the issue, and confirmed that it is definitely a real issue, that will happen frequently in practice. The evidence directly confirms this.
+
+For a finding flagged on a project-rule violation, the scorer must FIRST verify
+that the cited rule file actually calls out that issue specifically before
+scoring it high; if the rule does not actually say it, score it low. (Same
+glosses as above: read "the relevant CLAUDE.md" as any of the step-2 rule files,
+and "PR" as the diff under review.) The scorer returns a single integer 0-100
+plus a one-line rationale citing specific evidence (a diff line, a quoted rule,
+a commit SHA, a prior-PR comment, or an in-code comment).
+
+Record each re-score against its wisp ID (from step 4b). That authoritative
+re-score — not the angle's self-rating — is what step 6 filters on and step 9
+acts on; the wisp body keeps the self-rating, and the re-score travels in the
+promote reason.
+
+### Step 6 — Deterministic confidence filter (no model)
+
+This is policy, not judgment — do NOT use a sub-agent. Using the step-5 re-scores,
+mark each wisp **survive** (`>= {{threshold}}`) or **reject** (`< {{threshold}}`).
+This only records the decision; the promote (survive) / burn (reject) that acts on
+it is step 9. Continue to step 9 even when nothing survives — the rejected wisps
+still need to be burned and the audit recorded; there will simply be zero
+promotions.
+
+### Step 7 — Dedup-merge survivors
+
+Steps 4-5 run five angles independently, so the SAME underlying issue can be
+flagged more than once — e.g. the shallow bug scan (b) and the git-history angle
+(c) both report the same resurrected bug at the same lines. Each became its own
+surviving wisp in step 4b, and step 9 would otherwise promote each into its own
+bead. This step collapses those duplicates so each real issue becomes exactly ONE
+finding bead that cites every angle which raised it.
+
+This is a LIGHT merge you do yourself, in your own context — NOT a sub-agent and
+NOT a re-analysis. You already hold every candidate finding (from step 4) and the
+wisp-ID ↔ finding mapping (from step 4b), so you have everything you need.
+
+Operate ONLY on the **survivors** — the wisps step 6 marked `survive`. Rejected
+wisps are burned in step 9 regardless, so there is nothing to merge there.
+
+1. **Cluster the survivors.** Group together survivors that describe the SAME
+   underlying issue: the same file, an overlapping line range, AND the same root
+   cause. All three must match. Be conservative — same file and line but a
+   DIFFERENT root cause (e.g. a naming-rule violation and a nil-deref that happen
+   to sit on the same line) are DISTINCT issues and MUST stay separate. When in
+   doubt, do not merge. A survivor that shares its issue with no other is a
+   cluster of one and passes through unchanged.
+
+2. **For each cluster of two or more,** pick ONE wisp to keep — the *canonical*
+   wisp — and fold the others into it:
+   - Canonical = the survivor with the highest step-5 re-score. Break ties by the
+     richer evidence, then by the lexicographically smallest wisp ID (so the
+     choice is deterministic). The canonical wisp keeps the cluster's highest
+     re-score for its step-9 promote reason.
+   - Enrich the canonical wisp so it cites every angle in the cluster: add each
+     other survivor's `category:<angle>` label to it, and append a merge note
+     recording each merged angle and its evidence. This is pure transport — run
+     it verbatim for each non-canonical wisp (`$DUP`, category `$DUP_CAT`,
+     re-score `$DUP_SCORE`) being folded into the canonical `$KEEP`:
+
+     The `bd` commands themselves are unindented so the here-document terminator
+     sits at the start of its line (an indented `EOF` would not close the
+     here-doc):
+
+```bash
+bd update "$KEEP" --add-label "category:$DUP_CAT"
+bd update "$KEEP" --append-notes "$(cat <<EOF
+merged duplicate $DUP (angle: $DUP_CAT, re-score: ${DUP_SCORE}/100)
+  <one line: what that angle flagged + its key evidence>
+EOF
+)"
+```
+
+   - Reclassify every non-canonical wisp in the cluster from `survive` to
+     **merged** — it is BURNED in step 9, not promoted, so the cluster yields
+     exactly one bead.
+
+After this step every survivor is either a **canonical survivor** (promote in
+step 9) or a **merged duplicate** (burn in step 9). Keep a count of how many
+wisps you merged — step 9's audit reports it. Distinct issues — different file,
+non-overlapping lines, or a different root cause — are never merged.
+
+### Step 8 — Re-check eligibility (aux_model)
+
+A cheap final guard mirroring step 1. Because the input is a static diff that
+cannot change mid-flight, this almost always collapses to "still eligible" — but
+re-run the step-1 eligibility sub-agent once more on `$DIFF_FILE`. If it now says
+skip, STOP and emit nothing.
+
+### Step 9 — Emit findings (promote survivors, burn rejects)
+
+Materialize the step-6/7 decision against the wisps you filed in step 4b. There is
+NO PR comment — math-city work is not always PR-shaped; the durable output is the
+findings container and its surviving child beads, plus the audit note on this
+run's bead.
+
+Resolve `$FINDINGS` exactly as in step 4b (`ROOT` from `gc.root_bead_id`, falling
+back to `$GC_BEAD_ID`; `FINDINGS="${ROOT}.findings"`). For each wisp under the
+container, act on its FINAL decision from steps 6-7:
+
+- **promote** — a canonical survivor: it cleared the step-6 filter (re-score
+  `>= {{threshold}}`) AND was not folded into another wisp in step 7. Promote it
+  to a permanent bead. Promotion preserves the wisp's ID, its labels (including
+  any `category:` labels added during the step-7 merge), and its parent (the
+  findings container), so the survivor stays attached under `$FINDINGS`:
+
+  ```bash
+  bd promote "$WISP" --reason="confidence <re-score>/100: <one-line rationale>"
+  ```
+
+- **burn** — a sub-threshold reject (re-score `< {{threshold}}`) OR a duplicate
+  merged into its canonical survivor in step 7. Burn it. `--force` skips the
+  confirmation prompt for unattended use:
+
+  ```bash
+  bd mol burn --force "$WISP"
+  ```
+
+After every wisp has been promoted or burned, write the audit summary to THIS
+run's bead notes (not a separate bead), then close the container:
+
+```bash
+bd update "$GC_BEAD_ID" --append-notes "$(cat <<EOF
+mol-triage-review audit ($FINDINGS):
+  considered: <N candidates>          (= promoted + merged + burned)
+  promoted:   <P>  (<promoted bead IDs>)
+  merged:     <M>  (step-7 duplicates folded into a survivor, then burned)
+  burned:     <B>  (sub-threshold rejects)
+  notable:    <any re-score that disagreed materially with the angle self-rating>
+EOF
+)"
+bd close "$FINDINGS" --reason="review complete: promoted <P>, burned <B>"
+```
+
+`bd show "$FINDINGS"` now lists only the survivors — the promoted permanent
+beads; the burned wisps are gone. That container, plus the audit note on this
+run's bead, is the complete output of the review.
+'''

@@ -1,0 +1,108 @@
+description = """
+Smoke test for graph.v2 ralph [steps.check] loop in an EXTERNAL worktree.
+
+Verifies gastownhall/gascity#3029: the ralph exec check is NOT rejected
+when work_dir points outside the city/store path, the loop iterates to its
+attempt cap, and on cap it hands off to a human (gc.outcome=fail) with no
+infinite spin.
+
+Flow:
+  1. workspace-setup (agent): create an external git worktree sibling to the
+     polecats/ dir, write an always-fail check script into it, and record
+     work_dir on the workflow ROOT bead so the ralph control bead inherits it
+     via resolveInheritedMetadata (bead -> ParentID -> gc.root_bead_id).
+  2. iterate (ralph): a trivial iteration body; the controller then runs the
+     relative exec check (smoke-ralph-check.sh, exit 1) under work_dir. The
+     check always fails, so the loop iterates attempt 1 -> attempt 2, then
+     terminates at max_attempts=2 with gc.outcome=fail.
+
+Slung via:  gc sling gascity/gasvillage.polecat <bead> --on mol-ralph-smoke --nudge
+"""
+formula = "mol-ralph-smoke"
+contract = "graph.v2"
+
+[requires]
+formula_compiler = ">=2.0.0"
+
+[[steps]]
+id = "workspace-setup"
+title = "Smoke setup: external worktree + failing check + work_dir on root"
+description = '''
+Set up the external worktree this smoke test exercises. Run exactly this block
+(it is fully self-contained), then stop:
+
+```bash
+set -uo pipefail
+echo "[workspace-setup] GC_AGENT=${GC_AGENT:-} GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
+
+# Resolve the workflow ROOT bead so the ralph control bead can inherit work_dir.
+ROOT=$(bd show "$GC_BEAD_ID" --json | jq -r '.[0].metadata["gc.root_bead_id"] // empty')
+if [ -z "$ROOT" ]; then
+  echo "FATAL: cannot resolve gc.root_bead_id from $GC_BEAD_ID" >&2
+  exit 1
+fi
+gc bd heartbeat "$GC_BEAD_ID" || true
+
+# Create a STABLE external worktree as a sibling of the polecats/ dir. This is
+# external to the city/store path (so it exercises #3029) and survives any
+# single polecat being reaped between steps.
+WT_BASE=$(cd "$PWD/../.." && pwd)
+WORKTREE="$WT_BASE/smoke-ralph-$ROOT"
+git worktree remove --force "$WORKTREE" 2>/dev/null || true
+rm -rf "$WORKTREE"
+git worktree add --detach "$WORKTREE" HEAD
+
+# Write the always-fail check script INTO the worktree. It is referenced by a
+# RELATIVE path from the formula, so it resolves under work_dir (the worktree).
+cat > "$WORKTREE/smoke-ralph-check.sh" <<'CHECK'
+#!/usr/bin/env bash
+echo "smoke-ralph-check: forcing iterate (exit 1)" >&2
+exit 1
+CHECK
+chmod +x "$WORKTREE/smoke-ralph-check.sh"
+
+# Record work_dir on the ROOT bead (control bead inherits it) and on this bead.
+bd update "$ROOT" --set-metadata work_dir="$WORKTREE"
+bd update "$GC_BEAD_ID" --set-metadata work_dir="$WORKTREE" || true
+
+echo "[workspace-setup] done WORKTREE=$WORKTREE ROOT=$ROOT"
+ls -l "$WORKTREE/smoke-ralph-check.sh"
+
+# Close this setup step so the workflow advances to the ralph iterate step.
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "workspace-setup: created $WORKTREE, wrote smoke-ralph-check.sh (exit 1), set work_dir=$WORKTREE on root $ROOT"
+```
+
+Exit criteria: external worktree created, smoke-ralph-check.sh present and
+executable inside it, work_dir recorded on the root bead, this step closed.
+'''
+
+[[steps]]
+id = "iterate"
+title = "Smoke iterate: trivial body; failing check forces iterate-to-cap"
+needs = ["workspace-setup"]
+description = '''
+This is a smoke-test iteration body. There is no real work to do — the point
+is to let the controller run the failing exec check after the body closes. Run
+exactly this block, then stop:
+
+```bash
+set -uo pipefail
+echo "[iterate] body GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
+gc bd heartbeat "$GC_BEAD_ID" || true
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "smoke iteration body (no-op); controller runs the always-fail check next"
+```
+
+Exit criteria: this iteration body bead is closed. The controller then runs the
+relative exec check below under work_dir; it always exits 1, so the loop
+iterates to the cap and hands off to a human.
+'''
+
+[steps.check]
+max_attempts = 2
+
+[steps.check.check]
+mode = "exec"
+path = "smoke-ralph-check.sh"
+timeout = "30s"

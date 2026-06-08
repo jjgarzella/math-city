@@ -1,0 +1,3 @@
+file	line	root_cause	angle
+app.go	5	missing-empty-slice-guard	bug-scan
+app.go	5	missing-empty-slice-guard	git-history

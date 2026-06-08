@@ -1,0 +1,3 @@
+issue	fp_bullet_substring
+double-space-formatting	Issues that a linter, typechecker, or compiler would catch
+no-test-for-Greet	General code quality issues

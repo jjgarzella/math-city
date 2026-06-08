@@ -210,7 +210,7 @@ description = "Expanded via compose.expand into the expansion-smoke-reviewer fra
 id = "apply-fixes"
 title = "Apply fixes (canned verdict keyed on attempt)"
 needs = ["review-pipeline"]
-metadata = { "gc.run_target" = "polecat" }
+metadata = { "gc.run_target" = "gasvillage.polecat" }
 description = '''
 Write the CANNED review.verdict for this attempt — the verdict glue the loop's
 check reads. There is nothing to actually fix; this stands in for the real

@@ -20,7 +20,7 @@ type = "expansion"
 [[template]]
 id = "{target}.review"
 title = "Smoke reviewer lane (canned, no-op)"
-metadata = { "gc.run_target" = "polecat" }
+metadata = { "gc.run_target" = "gasvillage.polecat" }
 description = '''
 Trivial smoke reviewer lane — there is NO real diff to review. The point is to
 exercise compose.expand inside the ralph iteration body. Run exactly this block,
@@ -41,7 +41,7 @@ Exit criteria: this reviewer-lane bead is closed pass.
 id = "{target}.synthesize"
 title = "Smoke synthesize (canned, no-op)"
 needs = ["{target}.review"]
-metadata = { "gc.run_target" = "polecat" }
+metadata = { "gc.run_target" = "gasvillage.polecat" }
 description = '''
 Trivial smoke synthesis — there are no findings to merge. Run exactly this
 block, then stop:

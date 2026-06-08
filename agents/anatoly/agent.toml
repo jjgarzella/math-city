@@ -1,5 +1,6 @@
 scope = "rig"
 dir = "phd-thesis"
+provider = "codex"
 wake_mode = "fresh"
 work_dir = ".gc/worktrees/{{.Rig}}/{{.AgentBase}}"
 idle_timeout = "4h"

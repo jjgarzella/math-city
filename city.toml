@@ -12,13 +12,13 @@ base = "builtin:codex"
 ready_delay_ms = 0
 
 [[named_session]]
-template = "jacob"
+template = "anatoly"
 scope = "rig"
 dir = "phd-thesis"
 mode = "on_demand"
 
 [[named_session]]
-template = "dustin"
+template = "kurt"
 scope = "rig"
 dir = "gascity"
 mode = "on_demand"
@@ -30,7 +30,7 @@ dir = "gascity"
 mode = "on_demand"
 
 [[named_session]]
-template = "bhargav"
+template = "bryan"
 scope = "rig"
 dir = "math-experiments"
 mode = "on_demand"

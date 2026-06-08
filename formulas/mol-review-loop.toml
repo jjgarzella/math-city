@@ -1,0 +1,228 @@
+description = """
+Shared, reviewer-AGNOSTIC review→fix ralph loop (gascity gcs-f4j.3). Built once
+and reused by every review-loop variant: the Tier-2 quorum variant (gcs-f4j.5)
+composes a real reviewer into the review-pipeline slot via compose.expand, and
+the implement-side lifecycle (gcs-6r2) triggers this loop against a feature
+branch. This is the de-smoked production sibling of mol-review-loop-smoke — same
+shape, real glue, no canned verdict.
+
+Shape:
+  workspace-setup -> review-loop (ralph [steps.check])
+  review-loop body children = [review-pipeline (placeholder) -> apply-fixes]
+
+Each ralph iteration:
+  1. review-pipeline reviews the current state of the branch and persists its
+     findings. It is a PLACEHOLDER here — the base loop runs it as a no-op
+     reviewer slot; the quorum variant (gcs-f4j.5) replaces it via
+     `[[compose.expand]]` with a real two-lane reviewer + synthesis.
+  2. apply-fixes (pool-dispatched, gc.run_target=gasvillage.polecat, a fresh
+     polecat context per iteration) resumes the branch, applies this attempt's
+     findings, and writes review.verdict onto its own bead. Its fix-mode
+     behavior — resume branch + apply findings + set review.verdict — is the
+     interface owned by gcs-6r2; the severity-threshold fix policy is owned by
+     gcs-f4j.5. THIS formula owns only the verdict glue.
+  3. The controller runs the verdict-glue check (the shared
+     formulas/lib/review-verdict.sh, installed into work_dir at setup): it reads
+     the newest review.verdict on this attempt's apply-fixes bead and exits
+     0 = converged (stop, clean pass) or 1 = iterate (next attempt).
+
+Termination — NO abort_scope. Both terminals are clean:
+  • converged: a `done` verdict makes the check exit 0; the ralph control bead
+    closes gc.outcome=pass.
+  • capped: the verdict never converges, the loop iterates to the cap
+    (max_attempts = 3) and the ralph control bead closes gc.outcome=fail with no
+    spin. Neither path triggers an abort_scope cascade.
+
+The iteration cap is 3. It is a literal `max_attempts` because the formula
+compiler parses that field as an integer before variable substitution, so it
+cannot be templated; a variant that needs a different cap sets its own literal.
+
+Optional fire-and-forget notify: pass --var notify_target=<session id-or-alias>
+and the verdict check sends a best-effort `gc session nudge` on the terminal
+transition (converged or capped). Empty (the default) = no notify.
+
+Sling (base loop, single no-op reviewer):
+  gc sling gascity/gasvillage.polecat <bead> --on mol-review-loop --nudge
+"""
+formula = "mol-review-loop"
+contract = "graph.v2"
+
+[requires]
+formula_compiler = ">=2.0.0"
+
+[vars.target]
+description = """
+What to review — a PR (number, #number, or URL), a branch name, a commit range,
+or empty for {{base_branch}}..HEAD (the changes on the current branch). Passed
+through to the composed reviewer (gcs-f4j.5) and to apply-fixes; the base loop's
+placeholder reviewer does not resolve a diff itself.
+"""
+default = ""
+
+[vars.base_branch]
+description = "Base branch the change is measured against (default target {{base_branch}}..HEAD, and the merge-base for a bare branch name)."
+default = "main"
+
+[vars.notify_target]
+description = """
+Optional fire-and-forget notify recipient — a running session id or alias. When
+non-empty it is recorded on the molecule root as gc.review_loop.notify; the
+verdict-glue check sends a best-effort `gc session nudge` on the terminal
+transition (converged or capped). Empty (the default) disables notify.
+"""
+default = ""
+
+[[steps]]
+id = "workspace-setup"
+title = "Install the verdict-glue check into work_dir + record loop metadata"
+description = '''
+Prepare the loop: install the shared verdict-glue check into the work_dir under
+review so the ralph check's relative path resolves there, and record the loop
+metadata the controller-run check needs. This is pure transport — run exactly
+this block, then stop:
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+echo "[workspace-setup] GC_AGENT=${GC_AGENT:-} GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
+
+# Resolve the molecule ROOT so the ralph control bead inherits work_dir.
+ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
+[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"   # single-bead molecule: the bead is its own root
+gc bd heartbeat "$GC_BEAD_ID" || true
+
+# The work_dir under review: an inherited work_dir on the root wins (the
+# implement side / sling caller recorded the feature-branch worktree the loop
+# resumes); otherwise default to this session's worktree.
+WORK_DIR=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | (.metadata["work_dir"] // .metadata["gc.work_dir"] // empty)')
+[ -z "$WORK_DIR" ] && WORK_DIR="$PWD"
+
+# Install the shared, reviewer-agnostic verdict-glue check INTO work_dir. The
+# single source of truth is the city's lib, referenced via $GC_CITY (set by the
+# runtime) so it resolves no matter which branch is checked out here. The check
+# is referenced by a RELATIVE path from the formula, so it must live under
+# work_dir (gastownhall/gascity#2320).
+VERDICT_SRC="${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-verdict.sh"
+[ -x "$VERDICT_SRC" ] || { echo "ERROR: shared verdict check missing or not executable at $VERDICT_SRC" >&2; exit 1; }
+cp -f "$VERDICT_SRC" "$WORK_DIR/.gc-review-verdict.sh"
+chmod +x "$WORK_DIR/.gc-review-verdict.sh"
+
+# Record work_dir on the ROOT (the ralph control bead inherits it for the check)
+# and on this bead. Carry the optional notify target onto the root so the
+# controller-run check can fire its fire-and-forget nudge.
+bd update "$ROOT" --set-metadata work_dir="$WORK_DIR"
+bd update "$GC_BEAD_ID" --set-metadata work_dir="$WORK_DIR" || true
+NOTIFY="{{notify_target}}"
+[ -n "$NOTIFY" ] && bd update "$ROOT" --set-metadata gc.review_loop.notify="$NOTIFY"
+
+echo "[workspace-setup] WORK_DIR=$WORK_DIR ROOT=$ROOT notify=${NOTIFY:-<none>}"
+ls -l "$WORK_DIR/.gc-review-verdict.sh"
+
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "workspace-setup: installed .gc-review-verdict.sh into $WORK_DIR, recorded work_dir on root $ROOT"
+```
+
+Exit criteria: .gc-review-verdict.sh present and executable in work_dir, work_dir
+recorded on the root bead, this step closed pass.
+'''
+
+[[steps]]
+id = "review-loop"
+title = "Review loop: ralph [steps.check] over [review-pipeline -> apply-fixes]"
+needs = ["workspace-setup"]
+description = '''
+Reviewer-agnostic ralph review→fix loop. There is no agent action on this
+control step itself — after each iteration body closes, the controller runs the
+relative exec check (.gc-review-verdict.sh, installed at workspace-setup) and
+either stops (verdict converged) or spawns the next attempt, up to the cap.
+The iteration body (children below) is [review-pipeline -> apply-fixes].
+'''
+
+[steps.check]
+# Iteration cap = 3 (literal; max_attempts is parsed as an int before variable
+# substitution, so it cannot be templated — a variant needing a different cap
+# sets its own literal). On cap exhaustion the control bead closes
+# gc.outcome=fail with no spin and no abort_scope.
+max_attempts = 3
+
+[steps.check.check]
+mode = "exec"
+path = ".gc-review-verdict.sh"
+timeout = "120s"
+
+[[steps.children]]
+id = "review-pipeline"
+title = "Review pipeline (placeholder; replaced via compose.expand in the quorum variant)"
+metadata = { "gc.run_target" = "gasvillage.polecat" }
+description = '''
+PLACEHOLDER reviewer slot. In the base loop this runs as a no-op reviewer that
+surfaces no findings — it exists so the loop is a runnable, reviewer-agnostic
+skeleton. The Tier-2 quorum variant (gcs-f4j.5) replaces this step via
+`[[compose.expand]]` with a real two-lane reviewer + synthesis that persists
+durable findings for apply-fixes to consume.
+
+Base-loop behavior — run exactly this block, then stop:
+
+```bash
+set -uo pipefail
+echo "[review-pipeline] placeholder reviewer (no-op) GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
+gc bd heartbeat "$GC_BEAD_ID" || true
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "review-pipeline placeholder (no-op): replaced by the quorum reviewer via compose.expand in gcs-f4j.5"
+```
+
+Exit criteria: this reviewer-slot bead is closed pass. apply-fixes runs next.
+'''
+
+[[steps.children]]
+id = "apply-fixes"
+title = "Apply fixes + set review.verdict (fix-mode interface owned by gcs-6r2)"
+needs = ["review-pipeline"]
+metadata = { "gc.run_target" = "gasvillage.polecat" }
+description = '''
+Pool-dispatched to a FRESH polecat each iteration (gc.run_target=gasvillage.polecat),
+so every attempt starts with clean context. You resume the branch under review,
+apply this attempt's review findings, and write the review.verdict the loop's
+check reads.
+
+## Fix-mode (interface owned by gcs-6r2; severity policy owned by gcs-f4j.5)
+
+Resume the work_dir recorded on the molecule root (the feature branch under
+review), read this attempt's findings from the review-pipeline output, and apply
+the fixes per the severity-threshold fix policy (default: fix blocker/major/minor,
+surface nits). Commit your changes with a descriptive body. This behavior is the
+mol-polecat-base implement lifecycle (gcs-6r2) running in fix mode; this formula
+does not re-specify it.
+
+## Verdict glue (owned by THIS formula)
+
+After the fix pass, write review.verdict onto THIS bead — the glue the loop's
+check reads. Set it to:
+  • `done`    — the review surfaced nothing actionable (or the branch is clean
+                after this round's fixes and needs no re-review) → the loop
+                converges and stops, a clean pass.
+  • `iterate` — you applied fixes that change the branch and need a fresh review
+                → the loop runs another attempt (bounded by the cap).
+
+Run exactly this block, substituting the verdict you determined above. In the
+base loop the placeholder reviewer surfaces no findings, so VERDICT=done:
+
+```bash
+set -uo pipefail
+VERDICT=done   # set to "iterate" when this round applied fixes needing re-review
+echo "[apply-fixes] GC_BEAD_ID=${GC_BEAD_ID:-} -> review.verdict=$VERDICT"
+gc bd heartbeat "$GC_BEAD_ID" || true
+
+# Set the verdict BEFORE closing so it is visible when the controller runs the
+# check (the check bead is blocked by this body, so it runs after this closes).
+bd update "$GC_BEAD_ID" --set-metadata review.verdict="$VERDICT"
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "apply-fixes: review.verdict=$VERDICT"
+```
+
+Exit criteria: review.verdict set on this bead, this bead closed pass. The
+controller then runs .gc-review-verdict.sh: review.verdict=done -> exit 0 (stop);
+review.verdict=iterate -> exit 1 (next attempt or cap).
+'''

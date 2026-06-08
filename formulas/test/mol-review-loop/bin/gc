@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Test stub for `gc`, used by the verdict-glue tests (test_02). It records
+# `gc session nudge` invocations to $GC_NUDGE_LOG so the test can assert the
+# optional fire-and-forget notify fired (or did not). All other `gc` calls are
+# no-op successes. If GC_NUDGE_FAIL=1 the nudge exits non-zero, to prove the
+# check swallows a failed (fire-and-forget) notify and never changes its exit.
+set -u
+if [ "${1:-}" = "session" ] && [ "${2:-}" = "nudge" ]; then
+  shift 2
+  [ -n "${GC_NUDGE_LOG:-}" ] && printf '%s\n' "$*" >> "$GC_NUDGE_LOG"
+  [ "${GC_NUDGE_FAIL:-0}" = "1" ] && exit 7
+  exit 0
+fi
+exit 0

@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Recording/canned stub for `bd`, used by the verdict-glue tests (test_02). It
+# NEVER touches a real Dolt store — it returns the minimum canned JSON the
+# shared verdict check (formulas/lib/review-verdict.sh) consumes, driven by env
+# knobs the test sets. Every invocation is appended to $BD_LOG when set.
+#
+# Env knobs (set by the test):
+#   GC_BEAD_ID         the ralph subject bead id the check resolves
+#   BD_ATTEMPT         gc.attempt returned for `bd show $GC_BEAD_ID --json`
+#   BD_ROOT            gc.root_bead_id returned for the subject + the root id
+#   BD_NOTIFY          gc.review_loop.notify on the root (absent if empty)
+#   BD_MAXATT          gc.max_attempts on the ralph control bead (absent if empty)
+#   BD_LIST_VERDICTS   ';'-separated 'verdict,timestamp' apply-fixes beads for
+#                      `bd list` (empty => no apply-fixes verdict beads)
+set -u
+[ -n "${BD_LOG:-}" ] && printf '%s\n' "$*" >> "$BD_LOG"
+
+has_flag() { for a in "$@"; do [ "$a" = "$1" ] && return 0; done; return 1; }
+
+sub="${1:-}"
+case "$sub" in
+  show)
+    target="${2:-}"
+    has_flag --json "$@" || { exit 0; }
+    if [ "$target" = "${GC_BEAD_ID:-}" ]; then
+      jq -cn --arg a "${BD_ATTEMPT:-}" --arg r "${BD_ROOT:-}" \
+        '[{metadata: {"gc.attempt": $a, "gc.root_bead_id": $r}}]'
+      exit 0
+    fi
+    if [ "$target" = "${BD_ROOT:-}" ]; then
+      if [ -n "${BD_NOTIFY:-}" ]; then
+        jq -cn --arg n "$BD_NOTIFY" '[{metadata: {"gc.review_loop.notify": $n}}]'
+      else
+        printf '[{"metadata":{}}]\n'
+      fi
+      exit 0
+    fi
+    printf '[]\n'
+    ;;
+  list)
+    # `bd list --all --json --limit=0` — apply-fixes verdict beads + the ralph
+    # control bead carrying gc.max_attempts.
+    has_flag --json "$@" || { printf '[]\n'; exit 0; }
+    {
+      idx=0
+      if [ -n "${BD_LIST_VERDICTS:-}" ]; then
+        IFS=';' read -ra entries <<< "$BD_LIST_VERDICTS"
+        for e in "${entries[@]}"; do
+          [ -z "$e" ] && continue
+          v="${e%%,*}"; t="${e#*,}"
+          idx=$((idx + 1))
+          jq -cn --arg id "apply-$idx" --arg r "${BD_ROOT:-}" --arg a "${BD_ATTEMPT:-}" \
+            --arg ref "mol-review-loop.review-loop.iteration.${BD_ATTEMPT:-1}.apply-fixes" \
+            --arg v "$v" --arg t "$t" \
+            '{id: $id, updated_at: $t, metadata: {"gc.root_bead_id": $r, "gc.attempt": $a, "gc.step_ref": $ref, "review.verdict": $v}}'
+        done
+      fi
+      if [ -n "${BD_MAXATT:-}" ]; then
+        jq -cn --arg r "${BD_ROOT:-}" --arg m "$BD_MAXATT" \
+          '{id: "ctl", metadata: {"gc.root_bead_id": $r, "gc.kind": "ralph", "gc.max_attempts": $m}}'
+      fi
+    } | jq -cs '.'
+    ;;
+  *)
+    # update/heartbeat/etc. — no-op success.
+    exit 0
+    ;;
+esac

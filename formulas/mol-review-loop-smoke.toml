@@ -1,0 +1,251 @@
+description = """
+Smoke test for the shared mol-review-loop dispatch surface (gascity gcs-f4j.1).
+The mol-ralph-smoke move applied to the review loop: a STRIPPED mol-review-loop
+that de-risks the graph.v2 dispatch surface cheaply BEFORE the real reviewer is
+built (gcs-f4j.3). Surfaces any #2391-style sling/reparent breakage early.
+
+What it proves end-to-end:
+  1. compose.expand expands a trivial 2-step reviewer fragment
+     (expansion-smoke-reviewer) INSIDE the ralph iteration body.
+  2. The loop iterates on the canned review.verdict (check exit 1) then stops
+     on it (check exit 0).
+  3. The iteration cap is honored with no infinite spin.
+  4. The loop terminates cleanly — no abort_scope; both the converged-pass and
+     the capped paths reach a clean terminal.
+
+Shape (mirrors mol-adopt-pr-v2, stripped):
+  workspace-setup -> review-loop (ralph [steps.check])
+  review-loop body children = [review-pipeline (compose.expand'd) -> apply-fixes]
+  apply-fixes writes a CANNED review.verdict keyed on gc.attempt:
+    attempt <  converge_at -> review.verdict=iterate (check exit 1, iterate)
+    attempt >= converge_at -> review.verdict=done    (check exit 0, stop=pass)
+
+Scenarios (one sling each):
+  CONVERGE (default):  iterate on attempt 1, stop (pass) on attempt 2.
+    gc sling gascity/gasvillage.polecat <bead> --on mol-review-loop-smoke --nudge
+  CAP-EXHAUSTION:      verdict never flips -> hit max_attempts -> gc.outcome=fail,
+                       no spin.
+    gc sling gascity/gasvillage.polecat <bead> --on mol-review-loop-smoke \\
+      --var converge_at=99 --nudge
+
+The verdict-glue check (smoke-review-verdict.sh) reuses the adopt-pr two-read
+robustness: it reads the newest review.verdict on THIS attempt's apply-fixes
+bead and exits 0 (done/pass -> stop) or 1 (iterate). It is written into an
+external worktree at setup and referenced by a RELATIVE path so it resolves
+under work_dir (gastownhall/gascity#3029 / #2320).
+"""
+formula = "mol-review-loop-smoke"
+contract = "graph.v2"
+
+[requires]
+formula_compiler = ">=2.0.0"
+
+[vars.converge_at]
+description = """
+Attempt at which the canned review.verdict flips from iterate -> done. Default
+2 => iterate on attempt 1, stop (pass) on attempt 2. Set greater than the cap
+(e.g. 99) to exercise the cap-exhaustion path: the verdict never flips, the loop
+iterates to max_attempts and terminates with gc.outcome=fail and no spin.
+"""
+default = "2"
+
+[[steps]]
+id = "workspace-setup"
+title = "Smoke setup: external worktree + verdict check + work_dir on root"
+description = '''
+Set up the external worktree this smoke test exercises and write the verdict
+check into it. Run exactly this block (it is fully self-contained), then stop:
+
+```bash
+set -uo pipefail
+echo "[workspace-setup] GC_AGENT=${GC_AGENT:-} GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
+
+# Resolve the workflow ROOT bead so the ralph control bead inherits work_dir.
+ROOT=$(bd show "$GC_BEAD_ID" --json | jq -r '.[0].metadata["gc.root_bead_id"] // empty')
+if [ -z "$ROOT" ]; then
+  echo "FATAL: cannot resolve gc.root_bead_id from $GC_BEAD_ID" >&2
+  exit 1
+fi
+gc bd heartbeat "$GC_BEAD_ID" || true
+
+# Create a STABLE external worktree as a sibling of the polecats/ dir. External
+# to the city/store path (exercises #3029) and survives any single polecat being
+# reaped between steps.
+WT_BASE=$(cd "$PWD/../.." && pwd)
+WORKTREE="$WT_BASE/smoke-review-loop-$ROOT"
+git worktree remove --force "$WORKTREE" 2>/dev/null || true
+rm -rf "$WORKTREE"
+git worktree add --detach "$WORKTREE" HEAD
+
+# Write the verdict check INTO the worktree. Referenced by a RELATIVE path from
+# the formula, so it resolves under work_dir (the worktree). It reads the newest
+# review.verdict on THIS attempt's apply-fixes bead (two-read stable sample) and
+# exits 0 (done/approved/pass -> stop) or 1 (iterate).
+cat > "$WORKTREE/smoke-review-verdict.sh" <<'CHECK'
+#!/usr/bin/env bash
+# Verdict-glue check for mol-review-loop-smoke.
+# exit 0 = pass (stop iterating); exit 1 = iterate; exit 2 = could not determine.
+set -uo pipefail
+
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+
+BEAD_ID="${GC_BEAD_ID:-}"
+if [ -z "$BEAD_ID" ]; then
+  echo "ERROR: GC_BEAD_ID not set" >&2
+  exit 2
+fi
+
+# Resolve attempt + root from the ralph subject bead (with retries for store lag).
+ATTEMPT="${GC_ITERATION:-}"
+ROOT=""
+i=0
+while [ "$i" -lt 5 ]; do
+  BJSON=$(bd show "$BEAD_ID" --json 2>/dev/null | json_payload)
+  if [ -n "$BJSON" ]; then
+    if [ -z "$ATTEMPT" ]; then
+      ATTEMPT=$(printf '%s\n' "$BJSON" | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.attempt"] // ""')
+    fi
+    ROOT=$(printf '%s\n' "$BJSON" | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // ""')
+    [ -n "$ATTEMPT" ] && [ -n "$ROOT" ] && break
+  fi
+  i=$((i + 1))
+  sleep 0.2
+done
+if [ -z "$ATTEMPT" ] || [ -z "$ROOT" ]; then
+  echo "ERROR: missing gc.attempt ($ATTEMPT) or gc.root_bead_id ($ROOT) on $BEAD_ID" >&2
+  exit 2
+fi
+
+# Two-read stable sample of the newest review.verdict on this attempt's
+# apply-fixes bead. Keeps sampling until two consecutive reads agree, so we
+# observe everything the store will make visible within the budget.
+prev=""
+current=""
+i=0
+while [ "$i" -lt 10 ]; do
+  current=$(
+    bd list --all --json --limit=0 2>/dev/null |
+      json_payload |
+      jq -r --arg root "$ROOT" --arg attempt "$ATTEMPT" '
+        [ .[]
+          | select(.metadata["gc.root_bead_id"] == $root)
+          | select((.metadata["gc.attempt"] // "") == $attempt)
+          | select((.metadata["gc.step_ref"] // "") | test("apply-fixes"))
+          | select((.metadata["review.verdict"] // "") != "")
+          | { v: .metadata["review.verdict"], t: (.updated_at // .created_at // ""), id: (.id // "") }
+        ] | sort_by(.t, .id) | (.[-1].v // "")
+      ' 2>/dev/null
+  ) || current=""
+  if [ -n "$current" ] && [ "$current" = "$prev" ]; then
+    break
+  fi
+  prev="$current"
+  i=$((i + 1))
+  sleep 0.2
+done
+if [ -z "$current" ]; then
+  echo "ERROR: no review.verdict for root=$ROOT attempt=$ATTEMPT" >&2
+  exit 2
+fi
+
+case "$current" in
+  done|approved|pass)
+    echo "review.verdict=$current (attempt $ATTEMPT) -> stop"
+    exit 0
+    ;;
+  iterate|fail|retry)
+    echo "review.verdict=$current (attempt $ATTEMPT) -> iterate"
+    exit 1
+    ;;
+  *)
+    echo "unknown review.verdict=$current (attempt $ATTEMPT) -> iterate" >&2
+    exit 1
+    ;;
+esac
+CHECK
+chmod +x "$WORKTREE/smoke-review-verdict.sh"
+
+# Record work_dir on the ROOT bead (control bead inherits it) and on this bead.
+bd update "$ROOT" --set-metadata work_dir="$WORKTREE"
+bd update "$GC_BEAD_ID" --set-metadata work_dir="$WORKTREE" || true
+
+echo "[workspace-setup] done WORKTREE=$WORKTREE ROOT=$ROOT"
+ls -l "$WORKTREE/smoke-review-verdict.sh"
+
+# Close this setup step so the workflow advances to the ralph review loop.
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "workspace-setup: created $WORKTREE, wrote smoke-review-verdict.sh, set work_dir=$WORKTREE on root $ROOT"
+```
+
+Exit criteria: external worktree created, smoke-review-verdict.sh present and
+executable inside it, work_dir recorded on the root bead, this step closed.
+'''
+
+[[steps]]
+id = "review-loop"
+title = "Review loop: ralph [steps.check] + compose.expand reviewer + canned verdict"
+needs = ["workspace-setup"]
+description = '''
+Reviewer-agnostic ralph review loop. There is no agent action on this control
+step itself — the controller runs the relative exec check after each iteration
+body closes. The iteration body (children below) is [review-pipeline ->
+apply-fixes]; review-pipeline is expanded via compose.expand into the
+expansion-smoke-reviewer fragment, and apply-fixes writes the canned verdict.
+'''
+
+[steps.check]
+max_attempts = 3
+
+[steps.check.check]
+mode = "exec"
+path = "smoke-review-verdict.sh"
+timeout = "60s"
+
+[[steps.children]]
+id = "review-pipeline"
+title = "Review pipeline (placeholder; expanded via compose.expand)"
+description = "Expanded via compose.expand into the expansion-smoke-reviewer fragment."
+
+[[steps.children]]
+id = "apply-fixes"
+title = "Apply fixes (canned verdict keyed on attempt)"
+needs = ["review-pipeline"]
+metadata = { "gc.run_target" = "polecat" }
+description = '''
+Write the CANNED review.verdict for this attempt — the verdict glue the loop's
+check reads. There is nothing to actually fix; this stands in for the real
+apply-fixes (gcs-f4j.3 / gcs-6r2 interface). Run exactly this block, then stop:
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+
+ATTEMPT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.attempt"] // ""')
+[ -n "$ATTEMPT" ] || ATTEMPT=1
+CONVERGE_AT="{{converge_at}}"
+
+if [ "$ATTEMPT" -ge "$CONVERGE_AT" ]; then
+  VERDICT=done
+else
+  VERDICT=iterate
+fi
+echo "[apply-fixes] attempt=$ATTEMPT converge_at=$CONVERGE_AT -> review.verdict=$VERDICT"
+gc bd heartbeat "$GC_BEAD_ID" || true
+
+# Set the verdict BEFORE closing so it is visible when the controller runs the
+# check (the check bead is blocked by this body, so it runs after this closes).
+bd update "$GC_BEAD_ID" --set-metadata review.verdict="$VERDICT"
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "canned verdict: attempt=$ATTEMPT converge_at=$CONVERGE_AT review.verdict=$VERDICT"
+```
+
+Exit criteria: review.verdict set on this bead, this bead closed pass. The
+controller then runs smoke-review-verdict.sh: review.verdict=iterate -> exit 1
+(iterate to next attempt or hit the cap); review.verdict=done -> exit 0 (stop).
+'''
+
+[compose]
+[[compose.expand]]
+target = "review-pipeline"
+with = "expansion-smoke-reviewer"

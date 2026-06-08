@@ -1,0 +1,59 @@
+description = """
+Trivial 2-step "reviewer" expansion fragment for the mol-review-loop smoke
+test (gcs-f4j.1). It does NO real review — it exists only to prove that
+compose.expand expands a reviewer fragment INSIDE the ralph iteration body of
+mol-review-loop-smoke.
+
+Two no-op steps stand in for a real reviewer lane + synthesis:
+  1. {target}.review     — a single (claude) reviewer lane (canned, no-op)
+  2. {target}.synthesize — merge step (canned, no-op)
+
+The canned review.verdict is written by the loop's apply-fixes step, NOT here:
+this fragment is deliberately reviewer-agnostic, mirroring the real shared
+mol-review-loop (gcs-f4j.3) where the verdict glue lives in apply-fixes.
+"""
+formula = "expansion-smoke-reviewer"
+version = 2
+contract = "graph.v2"
+type = "expansion"
+
+[[template]]
+id = "{target}.review"
+title = "Smoke reviewer lane (canned, no-op)"
+metadata = { "gc.run_target" = "polecat" }
+description = '''
+Trivial smoke reviewer lane — there is NO real diff to review. The point is to
+exercise compose.expand inside the ralph iteration body. Run exactly this block,
+then stop:
+
+```bash
+set -uo pipefail
+echo "[smoke-reviewer] review lane GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
+gc bd heartbeat "$GC_BEAD_ID" || true
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "smoke reviewer lane (no-op): expanded inside ralph body via compose.expand"
+```
+
+Exit criteria: this reviewer-lane bead is closed pass.
+'''
+
+[[template]]
+id = "{target}.synthesize"
+title = "Smoke synthesize (canned, no-op)"
+needs = ["{target}.review"]
+metadata = { "gc.run_target" = "polecat" }
+description = '''
+Trivial smoke synthesis — there are no findings to merge. Run exactly this
+block, then stop:
+
+```bash
+set -uo pipefail
+echo "[smoke-reviewer] synthesize GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
+gc bd heartbeat "$GC_BEAD_ID" || true
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "smoke synthesize (no-op)"
+```
+
+Exit criteria: this synthesis bead is closed pass. The loop's apply-fixes step
+runs next and writes the canned review.verdict.
+'''

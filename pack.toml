@@ -10,3 +10,15 @@ schema = 2
 
 [imports.gasvillage]
 source = "packs/gasvillage"
+
+# Argos — generic rate-limit-recovery watchdog. Composed at city scope
+# (the same way the gastown example city imports it). Its city-scoped,
+# always-resident named session comes up as a city agent. Imported from the
+# city root pack so the relative `source` resolves against the city root.
+[imports.argos]
+source = "packs/argos"
+
+# julia-tools — reusable Julia CI + repo-hygiene FORMULAS (new-julia-repo + julia-harden).
+# Formula-only pack (no agents/sessions). Citywide registration per the gcs-4os epic design.
+[imports.julia-tools]
+source = "packs/julia-tools"

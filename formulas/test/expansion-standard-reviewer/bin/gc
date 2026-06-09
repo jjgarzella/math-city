@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# No-op stub for `gc`, used by the analyze-lifecycle transport test. The analyze
+# block only calls `gc bd heartbeat`; every gc invocation here is a success no-op
+# so the block runs without a live controller.
+set -u
+exit 0

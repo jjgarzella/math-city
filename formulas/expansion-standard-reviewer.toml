@@ -1,0 +1,268 @@
+description = """
+Canonical standard (8-pass) code-review reviewer — the bead-native, single-
+provider sibling of the Tier-1 triage reviewer (mol-triage-review). Ports
+jjgarzella/code-formulas `standard-code-review` (qdhenry Claude-Command-Suite
+/dev/code-review): a universal-breadth audit across six lenses
+(quality / security / performance / architecture / testing / docs), preceded by
+an analyze pass and followed by a synthesis pass. Breadth is the whole point —
+this complements the surgical triage reviewer, it does not replace it.
+
+This is the ONE canonical reviewer fragment (gcs-f4j.8). Two THIN hosts expand it
+(zero prompt duplication): a standalone host (mol-standard-review, gcs-f4j.8.4)
+slingable like mol-triage-review, and a loop variant (mol-review-loop-standard,
+gcs-f4j.8.5) that composes it into mol-review-loop's review-pipeline slot. The
+fragment is EXPANDED (compose.expand), not poured: the controller schedules its
+beads directly as flat graph children, so at gascity polecat pool=1 nothing
+babysits a poured child molecule and there is no self-deadlock.
+
+Shape (built incrementally; THIS file currently carries the analyze pass only):
+  <target>.analyze    — gcs-f4j.8.1 (THIS): resolve the diff via the SHARED
+                        resolve-diff.sh, write a change summary, run an
+                        eligibility gate, and persist diff/files/summary as
+                        DURABLE artifacts under the molecule root. Lanes are
+                        self-contained beads: they read these durable inputs,
+                        never this session's memory.
+  <target>.<lens>     — gcs-f4j.8.2: the six review lenses (quality / security /
+                        performance / architecture / testing / docs), each a
+                        self-contained lane bead that reads the durable inputs.
+  <target>.synthesize — gcs-f4j.8.3: dedup-merge across the six lanes, assign
+                        severity (blocker / major / minor / nit), emit durable
+                        finding beads under the molecule root's findings container.
+
+(The step IDs use the `{target}` expansion placeholder — substituted with the
+host's placeholder step id when the fragment is expanded into a host. Above it is
+written <target> to avoid implying it is a variable.)
+
+Dual scope via the `review_target` var (same contract as resolve-diff.sh): a
+diff-shaped target (PR | branch | range | base..HEAD) scopes the lenses to the
+changed surface; a path / '.' target keeps qdhenry's scope-free whole-repo audit
+— but ONLY on the standalone host. The loop variant always feeds a branch diff, so
+a path target never reaches the loop.
+
+VAR-NAMING NOTE: the review target var is `review_target`, NOT `target`. In an
+expansion template `{target}` is reserved — it is the expansion placeholder for
+the host's target step id (substituted before vars), so a var literally named
+`target` could never be referenced. The thin hosts keep their own `target` var
+and map it onto `review_target` through `[[compose.expand]]` vars. Expansion
+templates substitute vars with SINGLE braces (`{review_target}`), unlike the
+double-brace `{{var}}` of workflow formulas.
+"""
+formula = "expansion-standard-reviewer"
+version = 2
+contract = "graph.v2"
+type = "expansion"
+
+[requires]
+formula_compiler = ">=2.0.0"
+
+# --------------------------------------------------------------------------
+# Variables — the fragment's full var contract. Referenced with SINGLE braces
+# ({name}) because expansion templates substitute via substituteVars. The
+# analyze pass uses review_target / base_branch / aux_model now; review_model and
+# severity_threshold are forward-declared here (the skeleton owns the contract)
+# and consumed by the six lenses (gcs-f4j.8.2) and synthesis (gcs-f4j.8.3).
+# --------------------------------------------------------------------------
+
+[vars.review_target]
+description = "What to review — a PR (number, #number, or PR URL), a branch name, a commit range, or base_branch..HEAD. Empty (the default) resolves to base_branch..HEAD (the changes on the current branch). A path or '.' is the scope-free whole-repo audit — honored on the standalone host only; the loop variant always feeds a diff. Named review_target, not target: {target} is the reserved expansion placeholder."
+default = ""
+
+[vars.base_branch]
+description = "Base branch the change is measured against. Used for the default target (base_branch..HEAD) and as the merge-base when the target is a bare branch name."
+default = "main"
+
+[vars.review_model]
+description = "Model size for the six review lenses (quality / security / performance / architecture / testing / docs). qdhenry's universal audit uses a capable model; default sonnet. Consumed by the lenses (gcs-f4j.8.2)."
+default = "sonnet"
+
+[vars.aux_model]
+description = "Model size for the cheap auxiliary reasoning in the analyze pass — the change summary and the eligibility gate. Default haiku."
+default = "haiku"
+
+[vars.severity_threshold]
+description = "Lowest severity a finding must reach to be surfaced/promoted by synthesis. Ordering blocker > major > minor > nit; the threshold is severity-gated, not confidence-gated (rank, do not suppress whole categories). Default minor surfaces blocker/major/minor and demotes nits. Consumed by synthesis (gcs-f4j.8.3)."
+default = "minor"
+
+# --------------------------------------------------------------------------
+# Analyze pass — resolve diff + change summary + eligibility gate, persisted
+# durably so every downstream lane bead is self-contained.
+# --------------------------------------------------------------------------
+
+[[template]]
+id = "{target}.analyze"
+title = "Analyze: resolve diff + change summary + eligibility gate"
+metadata = { "gc.run_target" = "gasvillage.polecat" }
+description = '''
+You are the ANALYZE pass of the standard (8-pass) code review. You run as ONE
+bead-native polecat session. Your job is to turn the review target into DURABLE
+inputs the six review lenses can each consume independently:
+
+  1. resolve the review target to a unified diff (or recognize a whole-repo audit),
+  2. write a short change summary, and
+  3. decide eligibility (skip trivial / generated / empty changes).
+
+Persist all three as DURABLE artifacts hung off the molecule ROOT — NOT in this
+session's shell or context. The lenses run as SEPARATE beads in SEPARATE sessions
+and read these durable inputs; they never see your session memory. Lanes
+communicate via beads and these files, never via shared shell state.
+
+Model tiers (the analyze pass uses aux; the rest of the fragment uses these too):
+- review_model        = `{review_model}` — the six review lenses (gcs-f4j.8.2)
+- aux_model           = `{aux_model}`     — this pass's summary + eligibility gate
+- severity_threshold  = `{severity_threshold}` — synthesis surfaces findings at or
+  above this severity (gcs-f4j.8.3)
+
+## 1. Resolve the diff + open the durable input store (run verbatim)
+
+This block is pure transport — no judgment. It resolves the target through the
+SHARED, vendor-neutral resolver (`resolve-diff.sh`, the single source of truth the
+triage reviewer calls too), copies the diff + touched-file list into a durable
+store keyed on the molecule root, and records the store handle on the root so
+every lane resolves it identically — branch-independent, via `$GC_CITY`. Run it
+exactly, then read what it printed:
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+echo "[analyze] GC_AGENT=${GC_AGENT:-} GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
+gc bd heartbeat "$GC_BEAD_ID" || true
+
+# Molecule ROOT — the durable inputs hang off it so every lane finds them.
+ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
+[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"   # single-bead molecule: the bead is its own root
+
+# work_dir under review: an inherited work_dir on the root wins (the loop's
+# workspace-setup / standalone host records the worktree the reviewer scopes to);
+# otherwise this session's worktree. Record it so the lenses resume the same tree.
+WORK_DIR=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | (.metadata["work_dir"] // .metadata["gc.work_dir"] // empty)')
+[ -z "$WORK_DIR" ] && WORK_DIR="$PWD"
+bd update "$ROOT" --set-metadata work_dir="$WORK_DIR" >/dev/null 2>&1 || true
+
+# Durable input store, keyed on the molecule root and referenced via $GC_CITY (set
+# by the runtime) — exactly like the shared resolver — so it resolves no matter
+# which worktree a lane runs in. These files persist on disk: that is what makes
+# each lane bead self-contained.
+INPUTS_DIR="${GC_CITY:?GC_CITY must be set by the runtime}/.gc/review-inputs/${ROOT}"
+mkdir -p "$INPUTS_DIR"
+
+# The SHARED resolver — referenced via $GC_CITY, never a repo-relative path, so it
+# resolves even when the branch under review does not carry it.
+RESOLVER="${GC_CITY}/formulas/lib/resolve-diff.sh"
+[ -x "$RESOLVER" ] || { echo "ERROR: shared resolver missing or not executable at $RESOLVER" >&2; exit 2; }
+
+# Resolve IN the work_dir under review (the checked-out change). stdout carries the
+# eval-able TARGET_KIND/DIFF_FILE/FILES_FILE (empty on an empty diff); stderr
+# narrates. Exit 2 = path/whole-tree, exit 3 = PR fetch failed. review_target and
+# base_branch are baked in at expansion (single-brace expansion vars).
+RESOLVED="$(cd "$WORK_DIR" && "$RESOLVER" "{review_target}" "{base_branch}")"; RC=$?
+
+if [ "$RC" -eq 3 ]; then
+  echo "ERROR: PR diff fetch failed for the review target; cannot review." >&2
+  exit 3
+elif [ "$RC" -eq 2 ]; then
+  # A path / whole-tree target. On the STANDALONE host this is the deliberate
+  # scope-free whole-repo audit (qdhenry's mode); the loop never sends a path, so
+  # this branch is only reached standalone. No diff — the lenses scope to the tree.
+  TARGET_KIND="path"
+  : > "$INPUTS_DIR/files"
+  printf 'whole-repo audit: no diff — the six lenses scope to the entire repository checked out at %s\n' \
+    "$WORK_DIR" > "$INPUTS_DIR/diff"
+  echo "[analyze] whole-repo audit mode (the review target is a path/tree)"
+elif [ "$RC" -ne 0 ]; then
+  echo "ERROR: resolver exited $RC for the review target." >&2
+  exit "$RC"
+elif [ -z "$RESOLVED" ]; then
+  # exit 0 + empty stdout = empty diff: nothing to review (deterministically
+  # ineligible — recorded as such below; no judgment needed).
+  TARGET_KIND="empty"
+  : > "$INPUTS_DIR/diff"
+  : > "$INPUTS_DIR/files"
+  echo "[analyze] empty diff — nothing to review."
+else
+  eval "$RESOLVED"   # sets TARGET_KIND, DIFF_FILE, FILES_FILE
+  cp -f "$DIFF_FILE"  "$INPUTS_DIR/diff"
+  cp -f "$FILES_FILE" "$INPUTS_DIR/files"
+  echo "[analyze] resolved kind=$TARGET_KIND -> durable $INPUTS_DIR/{diff,files}"
+fi
+
+# Record the durable handle + resolved kind on the ROOT so lanes resolve them
+# bead-natively. (eligibility + summary are recorded in step 3, after the gate.)
+bd update "$ROOT" --set-metadata gc.review.inputs_dir="$INPUTS_DIR"
+bd update "$ROOT" --set-metadata gc.review.target_kind="$TARGET_KIND"
+echo "[analyze] INPUTS_DIR=$INPUTS_DIR  TARGET_KIND=$TARGET_KIND  ROOT=$ROOT  WORK_DIR=$WORK_DIR"
+```
+
+After this block you hold (printed above): `INPUTS_DIR` (the durable store),
+`TARGET_KIND` (one of `pr` / `branch` / `range` / `path` / `empty`), and `ROOT`.
+The unified diff is `$INPUTS_DIR/diff`; the touched-file list is
+`$INPUTS_DIR/files`.
+
+## 2. Change summary + eligibility gate (aux_model reasoning)
+
+This is cheap auxiliary reasoning at the `{aux_model}` tier. Decide two things:
+
+**Eligibility** — should this change be reviewed at all? It is determined by
+`TARGET_KIND`:
+- `empty` → INELIGIBLE. Reason: empty diff, nothing to review. (Deterministic —
+  no judgment.)
+- `path`  → ELIGIBLE. A whole-repo audit is never "trivial". (Deterministic.)
+- `pr` / `branch` / `range` → read `$INPUTS_DIR/diff` and judge. Mark INELIGIBLE
+  (skip) if ANY of these hold — mirroring mol-triage-review's eligibility gate:
+    * the diff is trivial — whitespace / formatting / comment-only, a version
+      bump, or a generated-file-only change;
+    * the change is clearly automated (a dependency-bump or codegen commit) and
+      obviously fine;
+    * this exact change has already been reviewed by this formula (a findings
+      container under `$ROOT` already exists).
+  Otherwise mark ELIGIBLE. (Anthropic's "PR closed/draft" clauses are dropped: a
+  resolved diff has no open/closed state.)
+
+**Change summary** — 2-5 sentences: what the change does and the parts most worth
+reviewing (intent, the touched files, the target kind). For an `empty` target the
+summary is simply "no changes"; for a `path` target it is "whole-repo audit of
+<repo>". The six lenses each start from this shared summary instead of
+re-deriving it.
+
+## 3. Persist the summary + eligibility verdict (run verbatim, substituting your values)
+
+Recomputes `ROOT` and `INPUTS_DIR` from scratch (a fresh shell does not inherit
+step 1's variables), writes your summary durably, records the eligibility verdict
+on the root, and closes this pass. Substitute the three values you determined:
+`ELIGIBLE` (`yes` or `no`), `REASON` (one line), and the summary body in the
+here-document:
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+
+ELIGIBLE="yes"                       # <-- set to "no" to skip per the gate above
+REASON="eligible: non-trivial change under review"   # <-- one-line reason
+
+ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
+[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"
+INPUTS_DIR="${GC_CITY:?GC_CITY must be set by the runtime}/.gc/review-inputs/${ROOT}"
+mkdir -p "$INPUTS_DIR"
+
+# Durable change summary — the shared starting context for all six lenses.
+cat > "$INPUTS_DIR/summary.md" <<'SUMMARY'
+<your 2-5 sentence change summary here>
+SUMMARY
+
+# Record the eligibility verdict on the ROOT (the lenses + synthesis read it).
+bd update "$ROOT" --set-metadata gc.review.eligible="$ELIGIBLE"
+bd update "$ROOT" --set-metadata gc.review.eligibility_reason="$REASON"
+
+gc bd heartbeat "$GC_BEAD_ID" || true
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "analyze: eligible=$ELIGIBLE ($REASON); durable inputs in $INPUTS_DIR (diff, files, summary.md)"
+echo "[analyze] done: eligible=$ELIGIBLE  summary+inputs in $INPUTS_DIR"
+```
+
+Exit criteria: `$INPUTS_DIR/{diff,files,summary.md}` exist; the molecule root
+carries `gc.review.inputs_dir`, `gc.review.target_kind`, `gc.review.eligible`, and
+`gc.review.eligibility_reason`; this analyze bead is closed `gc.outcome=pass`. The
+six review lenses (gcs-f4j.8.2) run next, each reading the durable inputs.
+'''

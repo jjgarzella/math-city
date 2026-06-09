@@ -1,0 +1,466 @@
+description = """
+Polecat IMPLEMENT lifecycle — native graph.v2, feature-branch, NON-MERGING
+(gascity gcs-f4j.6 / gcs-6r2). A complete, runnable polecat work lifecycle: it
+implements a single work bead on an isolated feature branch, then — instead of
+merging — pushes the branch and TRIGGERS the reviewer-agnostic review→fix loop
+(mol-review-loop), then drains. The HUMAN is the gate; nothing here auto-merges.
+
+This is the implement half of the review system. The review LOOP owns the
+automated fix cycle; this formula owns producing/resuming the branch under
+review. The two meet at one seam: this lifecycle records the feature-branch
+worktree as `work_dir` on the work bead (the molecule ROOT), and mol-review-loop's
+workspace-setup + apply-fixes resume that exact work_dir. So "idempotent resume"
+here IS the fix-mode interface apply-fixes references — slinging this (or the
+loop) on a bead whose branch already exists RESUMES it, never restarts.
+
+## Where it runs
+
+Set as the polecat `default_sling_formula`, so a bare
+`gc sling <rig>/<polecat> <bead>` gets a real lifecycle (branch + preflight +
+self-review + trigger-review) instead of a raw bead with no structure. It is the
+UNSPECIFIED-implementation default only; review is dispatched EXPLICITLY with a
+formula and is never this default.
+
+## Single session
+
+load-context → workspace-setup → preflight-tests → implement → self-review →
+trigger-review all run in ONE polecat session (gc.continuation_group=main,
+gc.session_affinity=require). Every step is idempotent so a crash/restart resumes
+cleanly: the branch and worktree are recorded on the bead the moment they exist.
+
+## Variables
+
+| Variable | Source | Description |
+|----------|--------|-------------|
+| base_branch | caller | Base branch to branch from / measure against (default: main). |
+| review_formula | caller | Review-loop formula the terminal triggers (default: mol-review-loop). Swap for a triage/quorum variant via --var; keeps review reviewer-agnostic. |
+| setup_command | rig `formula_vars` | Setup/install command. Empty = skip. |
+| typecheck_command | rig `formula_vars` | Type check command. Empty = skip. |
+| lint_command | rig `formula_vars` | Lint command. Empty = skip. |
+| build_command | rig `formula_vars` | Build command. Empty = skip. |
+| test_command | rig `formula_vars` | Test command. Empty = skip. |
+
+## Sling
+
+  gc sling gascity/gasvillage.polecat <bead> --on mol-polecat-implement --nudge
+
+or, since it is the polecat default_sling_formula, simply:
+
+  gc sling gascity/gasvillage.polecat <bead> --nudge
+"""
+formula = "mol-polecat-implement"
+contract = "graph.v2"
+
+[requires]
+formula_compiler = ">=2.0.0"
+
+[vars.base_branch]
+description = "Base branch to branch from and measure the change against (default target {{base_branch}}..HEAD)."
+default = "main"
+
+[vars.review_formula]
+description = """
+The review-loop formula the non-merging terminal triggers against the pushed
+branch. Default mol-review-loop (the shared reviewer-agnostic loop). Swap for a
+triage/quorum loop variant via --var review_formula=<name> — dispatch policy
+(which reviewer/tier) lives in the caller, never here.
+"""
+default = "mol-review-loop"
+
+[vars.setup_command]
+description = "Setup/install command (e.g., go mod download). From rig `formula_vars` or empty to skip."
+default = ""
+
+[vars.typecheck_command]
+description = "Type check command (e.g., tsc --noEmit). From rig `formula_vars` or empty to skip."
+default = ""
+
+[vars.lint_command]
+description = "Lint command (e.g., go vet ./...). From rig `formula_vars` or empty to skip."
+default = ""
+
+[vars.build_command]
+description = "Build command (e.g., go build ./...). From rig `formula_vars` or empty to skip."
+default = ""
+
+[vars.test_command]
+description = "Test command (e.g., make test). From rig `formula_vars` or empty to skip."
+default = ""
+
+[[steps]]
+id = "load-context"
+title = "Load context and resolve the work bead"
+metadata = { "gc.continuation_group" = "main", "gc.session_affinity" = "require" }
+description = '''
+Prime your environment and understand the assignment before touching the tree.
+Run exactly this block, then read the bead and proceed:
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+echo "[load-context] GC_AGENT=${GC_AGENT:-} GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
+gc prime || true
+bd prime || true
+gc bd heartbeat "$GC_BEAD_ID" || true
+
+# Resolve the molecule ROOT — the work bead you are implementing. Children of a
+# `--on <bead>` molecule carry gc.root_bead_id pointing at it; a single-bead
+# molecule is its own root.
+ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
+[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"
+echo "[load-context] work bead ROOT=$ROOT"
+
+bd show "$ROOT"
+bd show "$ROOT" --json | json_payload | jq 'if type=="array" then .[0] else . end | .metadata'
+gc mail inbox || true
+```
+
+Read the work bead carefully. If `metadata.branch` / `metadata.work_dir` already
+exist, a prior attempt or the review loop's apply-fixes left a branch — you will
+RESUME it in workspace-setup, not start over. If `metadata.rejection_reason` or
+review findings are present, this is a fix pass: focus on what those name.
+
+Understand: what needs to be done, which files, what "done" looks like. If the
+requirements are unclear after reading the bead and docs, escalate (do not guess):
+
+```bash
+gc mail send "${GC_RIG:+$GC_RIG/}mayor" -s "BLOCKED: unclear requirements" \
+  -m "Work bead: $ROOT. Question: <what you need clarified>"
+```
+
+Close this step when you understand the work:
+
+```bash
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "load-context: resolved work bead $ROOT, understood the assignment"
+```
+
+Exit criteria: you understand the work and have resolved the work bead.
+'''
+
+[[steps]]
+id = "workspace-setup"
+title = "Set up an isolated worktree and feature branch (idempotent resume)"
+needs = ["load-context"]
+metadata = { "gc.continuation_group" = "main", "gc.session_affinity" = "require" }
+description = '''
+Ensure you are in an isolated git worktree on a clean feature branch. Every
+check is idempotent — safe to re-run after a crash/restart, and safe to re-sling
+on an existing branch to RESUME it. The branch and worktree are recorded on the
+work bead the moment they exist so the review loop (and a recovering polecat) can
+find and resume them — this recording IS the seam mol-review-loop resumes.
+
+**Config: base_branch = {{base_branch}}**
+**Config: setup_command = {{setup_command}}**
+
+Run exactly this block:
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+gc bd heartbeat "$GC_BEAD_ID" || true
+
+ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
+[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"
+meta() { bd show "$ROOT" --json 2>/dev/null | json_payload \
+  | jq -r "if type==\"array\" then .[0] else . end | (.metadata[\"$1\"] // empty)"; }
+
+git fetch --prune origin
+
+# --- Worktree: reuse the one recorded on the work bead, else create one. ---
+WORKTREE=$(meta work_dir)
+if [ -n "$WORKTREE" ] && [ -d "$WORKTREE" ]; then
+    cd "$WORKTREE"
+else
+    WORKTREE_PATH="$(pwd)/worktrees/$ROOT"
+    git worktree add "$WORKTREE_PATH" --detach "origin/{{base_branch}}"
+    cd "$WORKTREE_PATH"
+    WORKTREE="$WORKTREE_PATH"
+fi
+# Record on the work bead (ROOT) so a restart, the witness, AND the review loop
+# can find/resume this exact worktree. work_dir on ROOT is what mol-review-loop
+# reads to resume the branch under review.
+bd update "$ROOT" --set-metadata work_dir="$WORKTREE"
+
+# --- Branch: resume the recorded branch, else create one from fresh origin. ---
+BRANCH=$(meta branch)
+if [ -n "$BRANCH" ]; then
+    # Authoritative (rejection/fix-mode resume, or caller-supplied). Fetch the
+    # remote branch first; fast-forward local to it or STOP on divergence.
+    git fetch origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null \
+      || echo "note: origin/$BRANCH not found yet; checking local refs"
+    if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+        if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+            git checkout "$BRANCH"
+            git merge --ff-only "origin/$BRANCH" || {
+                echo "STOP: local $BRANCH diverged from origin/$BRANCH; reconcile before continuing" >&2
+                gc runtime drain-ack; exit 1; }
+        else
+            git checkout --track -b "$BRANCH" "origin/$BRANCH"
+        fi
+    elif git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+        git checkout "$BRANCH"
+    else
+        echo "STOP: metadata.branch=$BRANCH set but no local/origin branch exists; not creating a different one" >&2
+        gc runtime drain-ack; exit 1
+    fi
+    # Fix-mode resume: rebase onto latest base, clear the rejection marker.
+    REJECTION=$(meta rejection_reason)
+    if [ -n "$REJECTION" ]; then
+        git rebase "origin/{{base_branch}}" || {
+            echo "Rebase conflict (likely the rejection reason) — resolve, then: git rebase --continue" >&2; }
+        bd update "$ROOT" --unset-metadata rejection_reason || true
+    fi
+else
+    # Fresh branch — always from the freshly-fetched origin tip, never a stale
+    # local ref (reused worktrees lag the remote and inherit already-merged
+    # commits with stale hashes).
+    BRANCH="polecat/$ROOT"
+    git branch -D "$BRANCH" 2>/dev/null || true
+    git checkout -B "$BRANCH" "origin/{{base_branch}}"
+    bd update "$ROOT" --set-metadata branch="$BRANCH"
+fi
+
+git status
+{{setup_command}}
+
+echo "[workspace-setup] WORKTREE=$WORKTREE BRANCH=$BRANCH ROOT=$ROOT"
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "workspace-setup: worktree=$WORKTREE branch=$BRANCH (recorded on $ROOT)"
+```
+
+Exit criteria: in your worktree, on a clean feature branch rebased on latest
+{{base_branch}}, deps installed, worktree + branch recorded on the work bead.
+'''
+
+[[steps]]
+id = "preflight-tests"
+title = "Verify pre-flights pass on the base branch"
+needs = ["workspace-setup"]
+metadata = { "gc.continuation_group" = "main", "gc.session_affinity" = "require" }
+description = '''
+Confirm the codebase is healthy BEFORE you start, so a failure you see later is
+yours, not pre-existing.
+
+**Config: typecheck_command = {{typecheck_command}}**
+**Config: lint_command = {{lint_command}}**
+**Config: build_command = {{build_command}}**
+**Config: test_command = {{test_command}}**
+
+**If resuming an existing branch (fix mode), SKIP this step** — pre-flights were
+verified on the prior attempt. Close it and proceed.
+
+Run the configured pre-flights (empty commands skip silently) — from inside the
+worktree (cwd does not persist between steps):
+
+```bash
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
+[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"
+WORK_DIR=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["work_dir"] // empty')
+[ -n "$WORK_DIR" ] && cd "$WORK_DIR"
+gc bd heartbeat "$GC_BEAD_ID" || true
+
+{{typecheck_command}}
+{{lint_command}}
+{{build_command}}
+{{test_command}}
+```
+
+If they PASS, proceed. If they FAIL on {{base_branch}}, the base is broken — do
+NOT fix pre-existing failures (not your assignment) and do NOT push to
+{{base_branch}}. File a bead and proceed with your work:
+
+```bash
+bd create --title "Pre-existing failure on {{base_branch}}: <description>" --type bug --priority 1
+```
+
+Close this step:
+
+```bash
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "preflight-tests: base healthy (or pre-existing failure filed)"
+```
+
+Exit criteria: pre-flights pass (or a pre-existing-failure bead is filed), ready
+to implement.
+'''
+
+[[steps]]
+id = "implement"
+title = "Implement the solution"
+needs = ["preflight-tests"]
+metadata = { "gc.continuation_group" = "main", "gc.session_affinity" = "require" }
+description = '''
+Do the actual work on your feature branch. cwd does not persist between steps —
+re-enter the worktree and resolve the work bead ROOT first (so commit footers
+reference it):
+
+```bash
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
+[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"
+WORK_DIR=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["work_dir"] // empty')
+[ -n "$WORK_DIR" ] && cd "$WORK_DIR"
+gc bd heartbeat "$GC_BEAD_ID" || true
+```
+
+**Working principles:**
+- Follow existing codebase conventions.
+- Keep changes scoped to the assigned bead; do not gold-plate or scope-creep.
+- Make atomic, focused commits as you go:
+  `git add <files> && git commit -m "<type>: <description> ($ROOT)"`
+  (types: feat, fix, refactor, test, docs, chore)
+- **Fix mode** (resumed branch with findings / rejection_reason): focus on what
+  the review findings name; don't redo everything.
+- Discovered out-of-scope work → file it, don't fix it here:
+  `bd create --title "Found: <description>" --type bug --priority 2`
+
+If stuck >15 min, or you need credentials/access, escalate — do NOT wait:
+
+```bash
+gc mail send "${GC_RIG:+$GC_RIG/}mayor" -s "HELP: stuck on $ROOT" \
+  -m "Problem: <what's blocking>. Tried: <what you attempted>."
+```
+
+If context is filling up, `gc runtime request-restart` (blocks until the
+controller kills you; a fresh polecat resumes this branch from the bead metadata).
+
+Close this step when the implementation is complete and committed:
+
+```bash
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "implement: <brief summary of the change>"
+```
+
+Exit criteria: implementation complete, all changes committed on the feature branch.
+'''
+
+[[steps]]
+id = "self-review"
+title = "Self-review the diff and run quality checks"
+needs = ["implement"]
+metadata = { "gc.continuation_group" = "main", "gc.session_affinity" = "require" }
+description = '''
+Review your own change and verify it before handing it to the reviewer. A diff
+that fails locally will fail in review too — catch it now.
+
+**Config: setup_command = {{setup_command}}**
+**Config: typecheck_command = {{typecheck_command}}**
+**Config: lint_command = {{lint_command}}**
+**Config: build_command = {{build_command}}**
+**Config: test_command = {{test_command}}**
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
+[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"
+WORK_DIR=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["work_dir"] // empty')
+[ -n "$WORK_DIR" ] && cd "$WORK_DIR"
+gc bd heartbeat "$GC_BEAD_ID" || true
+
+# 1. Review the diff.
+git diff "origin/{{base_branch}}...HEAD"
+git log --oneline "origin/{{base_branch}}..HEAD"
+git diff --stat "origin/{{base_branch}}...HEAD"
+```
+
+Check for: bugs, security issues, style violations, missing error handling,
+debug cruft, unintended file changes. Fix anything you find.
+
+```bash
+# 2. Run quality checks (empty commands skip silently). ALL must pass.
+{{setup_command}}
+{{typecheck_command}}
+{{lint_command}}
+{{build_command}}
+{{test_command}}
+```
+
+If your change caused a failure, fix it. If pre-existing, file a bead. Then make
+sure everything is committed (NEVER discard work with `git checkout -- .`):
+
+```bash
+git status   # must be clean
+if [ -n "$(git status --porcelain)" ]; then
+    git add -A && git commit -m "chore: self-review touch-up ($ROOT)"
+fi
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "self-review: checks pass, working tree clean"
+```
+
+Exit criteria: all checks pass, all changes committed, working tree clean.
+'''
+
+[[steps]]
+id = "trigger-review"
+title = "Push the branch, trigger the review loop, and drain (non-merging terminal)"
+needs = ["self-review"]
+metadata = { "gc.continuation_group" = "main", "gc.session_affinity" = "require" }
+description = '''
+The non-merging terminal. You do NOT merge and you do NOT close the work bead —
+the human is the gate. You push the feature branch, hand off to the
+reviewer-agnostic review→fix loop against that branch, then drain. Fire-and-forget:
+draining releases the pool slot so a fresh polecat runs the queued review loop
+(the gascity polecat pool is max=1; holding the slot would deadlock the loop).
+
+**Config: review_formula = {{review_formula}}**
+**Config: base_branch = {{base_branch}}**
+
+Run exactly this block:
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+gc bd heartbeat "$GC_BEAD_ID" || true
+
+ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
+[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"
+WORK_DIR=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["work_dir"] // empty')
+[ -n "$WORK_DIR" ] && cd "$WORK_DIR"
+
+# 1. Belt-and-suspenders: nothing uncommitted should remain.
+if [ -n "$(git status --porcelain)" ]; then
+    git add -A && git commit -m "chore: capture remaining work ($ROOT)"
+fi
+
+# 2. Push the feature branch. The branch recorded on ROOT in workspace-setup is
+#    authoritative (cwd/HEAD may be detached after a resume); fall back to HEAD.
+BRANCH=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["branch"] // empty')
+[ -z "$BRANCH" ] && BRANCH=$(git branch --show-current)
+git push -u origin "HEAD:$BRANCH"
+bd update "$ROOT" --set-metadata branch="$BRANCH"
+
+# 3. Trigger the review→fix loop ON the work bead. It resumes work_dir (this
+#    branch) and reviews {{base_branch}}..HEAD. review_formula is swappable so
+#    the implement side stays reviewer-agnostic. Routed to the polecat pool;
+#    --nudge wakes it once this session drains the slot.
+gc sling "${GC_RIG:+$GC_RIG/}gasvillage.polecat" "$ROOT" \
+  --on "{{review_formula}}" --var "base_branch={{base_branch}}" --nudge
+
+# 4. Close THIS step (the implement lifecycle is done; the work bead stays OPEN
+#    for review + the human gate — do NOT close ROOT).
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "trigger-review: pushed $BRANCH, slung {{review_formula}} on $ROOT; draining"
+
+# 5. Drain and exit — you are gone. The review loop runs in a fresh polecat.
+gc runtime drain-ack
+exit 0
+```
+
+Exit criteria: branch pushed, branch recorded on the work bead, review loop
+triggered against it, this step closed, session drained. The work bead remains
+open for review and the human gate.
+'''

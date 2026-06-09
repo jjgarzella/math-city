@@ -16,13 +16,13 @@ effort = "high"
 [[named_session]]
 template = "anatoly"
 scope = "rig"
-dir = "phd-thesis"
+dir = "Nemo.jl"
 mode = "on_demand"
 
 [[named_session]]
 template = "kurt"
 scope = "rig"
-dir = "gascity"
+dir = "GPUFiniteFieldMatrices.jl"
 mode = "on_demand"
 
 [[named_session]]
@@ -111,7 +111,10 @@ source = "./packs/gasvillage"
 [[patches.agent]]
 dir = "math-experiments"
 name = "labtech.tick"
-suspended = true
+suspended = false
+[patches.agent.option_defaults]
+model = "sonnet"
+effort = "high"
 
 [daemon]
 formula_v2 = true

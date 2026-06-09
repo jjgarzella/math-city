@@ -34,7 +34,7 @@ mode = "on_demand"
 [[named_session]]
 template = "bryan"
 scope = "rig"
-dir = "math-experiments"
+dir = "GPUPolynomials.jl"
 mode = "on_demand"
 
 [[rigs]]
@@ -106,6 +106,22 @@ default_branch = "master"
 [rigs.imports.gasvillage]
 source = "./packs/gasvillage"
 
+[[rigs]]
+name = "MMPSingularities.jl"
+prefix = "mmp"
+default_branch = "main"
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "./packs/gasvillage"
+
+[[rigs]]
+name = "GPUPolynomials.jl"
+prefix = "gpp"
+default_branch = "main"
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "./packs/gasvillage"
+
 [patches]
 
 [[patches.agent]]
@@ -113,8 +129,8 @@ dir = "math-experiments"
 name = "labtech.tick"
 suspended = false
 [patches.agent.option_defaults]
-model = "sonnet"
 effort = "high"
+model = "sonnet"
 
 [daemon]
 formula_v2 = true

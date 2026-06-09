@@ -51,6 +51,12 @@ source = "packs/labtech"
 name = "gascity"
 prefix = "gcs"
 default_branch = "main"
+# Per-rig CI commands consumed by polecat preflight + self-review (mol-polecat-*).
+# gascity is a Go SDK; empty keys (setup/typecheck) skip silently.
+[rigs.formula_vars]
+lint_command = "go vet ./..."
+build_command = "go build ./..."
+test_command = "make test"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"

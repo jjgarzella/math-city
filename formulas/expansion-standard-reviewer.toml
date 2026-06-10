@@ -15,16 +15,22 @@ fragment is EXPANDED (compose.expand), not poured: the controller schedules its
 beads directly as flat graph children, so at gascity polecat pool=1 nothing
 babysits a poured child molecule and there is no self-deadlock.
 
-Shape (built incrementally; THIS file currently carries the analyze pass only):
-  <target>.analyze    — gcs-f4j.8.1 (THIS): resolve the diff via the SHARED
+Shape (built incrementally; THIS file carries the analyze pass + the six review
+lenses — synthesis lands in gcs-f4j.8.3):
+  <target>.analyze    — gcs-f4j.8.1: resolve the diff via the SHARED
                         resolve-diff.sh, write a change summary, run an
                         eligibility gate, and persist diff/files/summary as
                         DURABLE artifacts under the molecule root. Lanes are
                         self-contained beads: they read these durable inputs,
                         never this session's memory.
-  <target>.<lens>     — gcs-f4j.8.2: the six review lenses (quality / security /
-                        performance / architecture / testing / docs), each a
-                        self-contained lane bead that reads the durable inputs.
+  <target>.<lens>     — gcs-f4j.8.2 (THIS): the six review lenses (quality /
+                        security / performance / architecture / testing / docs),
+                        each a SEPARATELY-DISPATCHED, self-contained lane bead
+                        (its own run_target → its own session → its own per-lane
+                        opt_model) that reads the durable inputs and files
+                        category-labelled candidate wisps. Separate dispatch is
+                        what makes per-lane model selection possible; the shared
+                        lane transport lives in formulas/lib/review-lane.sh.
   <target>.synthesize — gcs-f4j.8.3: dedup-merge across the six lanes, assign
                         severity (blocker / major / minor / nit), emit durable
                         finding beads under the molecule root's findings container.
@@ -57,10 +63,21 @@ formula_compiler = ">=2.0.0"
 
 # --------------------------------------------------------------------------
 # Variables — the fragment's full var contract. Referenced with SINGLE braces
-# ({name}) because expansion templates substitute via substituteVars. The
-# analyze pass uses review_target / base_branch / aux_model now; review_model and
-# severity_threshold are forward-declared here (the skeleton owns the contract)
-# and consumed by the six lenses (gcs-f4j.8.2) and synthesis (gcs-f4j.8.3).
+# ({name}) because expansion templates substitute via substituteVars (this holds
+# in [[template]] metadata values too, not only the description — so the per-lane
+# opt_model below resolves at expansion). The analyze pass uses review_target /
+# base_branch / aux_model; the six lenses each carry their own model var
+# (gcs-f4j.8.2); severity_threshold is consumed by synthesis (gcs-f4j.8.3).
+#
+# Per-lane model right-sizing: each lens is a SEPARATELY-DISPATCHED step (its own
+# session), so each can ride a different model via its step-metadata `opt_model`
+# — the reconciler folds opt_model into the spawned session's --model, validated
+# against the run_target provider's options_schema (an invalid value is
+# skipped+logged, falling back to the agent default). The defaults are tiered:
+# deep (opus) for the judgment lenses (security, architecture), standard (sonnet)
+# for quality + performance, cheap (haiku) for the mechanical lenses (testing,
+# docs). The values opus/sonnet/haiku are the claude provider's model choices;
+# the live-spawn fold confirmation is tracked in gcs-f4j.8.2.1.
 # --------------------------------------------------------------------------
 
 [vars.review_target]
@@ -71,12 +88,32 @@ default = ""
 description = "Base branch the change is measured against. Used for the default target (base_branch..HEAD) and as the merge-base when the target is a bare branch name."
 default = "main"
 
-[vars.review_model]
-description = "Model size for the six review lenses (quality / security / performance / architecture / testing / docs). qdhenry's universal audit uses a capable model; default sonnet. Consumed by the lenses (gcs-f4j.8.2)."
-default = "sonnet"
-
 [vars.aux_model]
 description = "Model size for the cheap auxiliary reasoning in the analyze pass — the change summary and the eligibility gate. Default haiku."
+default = "haiku"
+
+[vars.quality_model]
+description = "Model for the quality lens (code smells / anti-patterns / style / dead code / error handling on the changed surface). Standard tier; default sonnet. Rendered into the quality step's opt_model metadata."
+default = "sonnet"
+
+[vars.security_model]
+description = "Model for the security lens (vulnerabilities / secrets / authz / input validation on the changed surface). A judgment lens — deep tier; default opus. Rendered into the security step's opt_model metadata."
+default = "opus"
+
+[vars.performance_model]
+description = "Model for the performance lens (bottlenecks / inefficient algorithms or queries / leaks on the changed surface). Standard tier; default sonnet. Rendered into the performance step's opt_model metadata."
+default = "sonnet"
+
+[vars.architecture_model]
+description = "Model for the architecture lens (organization / abstraction / coupling / scalability of the change). A judgment lens — deep tier; default opus. Rendered into the architecture step's opt_model metadata."
+default = "opus"
+
+[vars.testing_model]
+description = "Model for the testing lens (coverage / structure / missing scenarios for the changed surface). A mechanical lens — cheap tier; default haiku. Rendered into the testing step's opt_model metadata."
+default = "haiku"
+
+[vars.docs_model]
+description = "Model for the docs lens (comments / API docs / README / undocumented invariants touched by the change). A mechanical lens — cheap tier; default haiku. Rendered into the docs step's opt_model metadata."
 default = "haiku"
 
 [vars.severity_threshold]
@@ -106,9 +143,11 @@ session's shell or context. The lenses run as SEPARATE beads in SEPARATE session
 and read these durable inputs; they never see your session memory. Lanes
 communicate via beads and these files, never via shared shell state.
 
-Model tiers (the analyze pass uses aux; the rest of the fragment uses these too):
-- review_model        = `{review_model}` — the six review lenses (gcs-f4j.8.2)
+Model tiers across the fragment:
 - aux_model           = `{aux_model}`     — this pass's summary + eligibility gate
+- the six review lenses each ride their OWN per-lane model (gcs-f4j.8.2), set on
+  each lens step's opt_model metadata — deep (opus) for security + architecture,
+  standard (sonnet) for quality + performance, cheap (haiku) for testing + docs
 - severity_threshold  = `{severity_threshold}` — synthesis surfaces findings at or
   above this severity (gcs-f4j.8.3)
 
@@ -265,4 +304,539 @@ Exit criteria: `$INPUTS_DIR/{diff,files,summary.md}` exist; the molecule root
 carries `gc.review.inputs_dir`, `gc.review.target_kind`, `gc.review.eligible`, and
 `gc.review.eligibility_reason`; this analyze bead is closed `gc.outcome=pass`. The
 six review lenses (gcs-f4j.8.2) run next, each reading the durable inputs.
+'''
+
+# ==========================================================================
+# The six review lenses — quality / security / performance / architecture /
+# testing / docs. Each is a SEPARATELY-DISPATCHED, self-contained lane bead:
+# its own [[template]] → its own gc.run_target → its own session → its own
+# per-lane opt_model. They all `needs = ["{target}.analyze"]`, read the analyze
+# pass's DURABLE inputs (never another lane's session memory), review ONLY the
+# changed surface through their lens, and file each candidate as a
+# category-labelled ephemeral wisp under the run's findings container. The
+# repeated transport (load inputs → gate → file wisp → close) lives once in the
+# shared formulas/lib/review-lane.sh; only the lens reasoning differs per lane.
+# A lens that finds nothing self-skips to a clean pass — it is never pruned from
+# the graph. Breadth is the point: keep all six, do NOT collapse to bugs-only.
+# ==========================================================================
+
+[[template]]
+id = "{target}.quality"
+title = "Quality lane — code smells / anti-patterns / dead code / error handling on the changed surface"
+needs = ["{target}.analyze"]
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{quality_model}" }
+description = '''
+You are the QUALITY review lane of the standard (8-pass) code review — one of six
+sibling lanes (quality / security / performance / architecture / testing / docs),
+each a SEPARATE bead-native polecat session. You read the DURABLE inputs the
+analyze pass recorded and review ONLY the changed surface through the code-quality
+lens. You never see the other lanes' sessions; you communicate only through beads.
+
+## 1. Load the durable inputs + eligibility gate (run verbatim)
+
+Pure transport — no judgment. Source the shared lane helper (referenced via
+`$GC_CITY`, branch-independent — the same pattern as the shared diff resolver) and
+load the inputs the analyze pass hung off the molecule root:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
+review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+
+if [ "$REVIEW_ELIGIBLE" = "no" ]; then
+  # The analyze pass deemed the change ineligible (empty / trivial / generated).
+  # This lane is a clean no-op — close pass and file nothing. It is NOT pruned
+  # from the graph: every lane runs and self-skips when it has nothing to do.
+  review_lane_close "quality: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  exit 0
+fi
+echo "[quality] kind=$REVIEW_TARGET_KIND  diff=$REVIEW_DIFF  files=$REVIEW_FILES  summary=$REVIEW_SUMMARY"
+```
+
+You now hold the change summary (`$REVIEW_SUMMARY`), the unified diff
+(`$REVIEW_DIFF`), and the touched-file list (`$REVIEW_FILES`). For a `path` target
+(`$REVIEW_TARGET_KIND` = `path`) there is no diff — audit the whole repository
+checked out at the root's `work_dir` (qdhenry's scope-free mode, standalone host
+only). Otherwise scope STRICTLY to the changed surface in `$REVIEW_DIFF`.
+
+## 2. Review through the code-quality lens (at the {quality_model} tier)
+
+Read `$REVIEW_SUMMARY` first for intent, then `$REVIEW_DIFF`. Review ONLY the
+changed lines (plus the immediately surrounding context needed to judge them) for:
+
+- code smells, anti-patterns, and likely bugs introduced by the change;
+- naming and style inconsistencies with the surrounding code;
+- unused imports / variables / dead code the change adds;
+- error-handling and logging regressions in the new code.
+
+Stay on the changed surface: a pre-existing issue the diff does not touch is out of
+scope. If nothing on the changed surface warrants a finding, that is a valid result
+— file nothing and close pass (step 3). Do not pad.
+
+For each genuine candidate, hold: a one-line title; the `file:line` in the changed
+surface; what is wrong and why it matters; the evidence (a quoted diff line); an
+honest self-rated confidence 0-100 (the synthesis pass re-scores and assigns final
+severity — do not inflate); and a best-guess priority 0-4.
+
+## 3. File each candidate as a category-labelled wisp + close (run verbatim per candidate)
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-lane.sh"
+review_lane_load_inputs
+
+# Repeat per candidate, substituting your values:
+BODY=$(mktemp)
+cat > "$BODY" <<'EOF'
+<file>:<line range> — <what is wrong and why it matters, scoped to the change>
+
+Evidence: <a quoted diff line / the changed construct>
+Suggested severity: <blocker|major|minor|nit>   # a hint; synthesis decides
+EOF
+review_lane_file_finding quality <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
+
+# After all candidates — or immediately, if this lens found nothing (clean pass):
+review_lane_close "quality: filed <N> candidate finding(s) (category:quality)"
+```
+
+Exit criteria: every code-quality candidate on the changed surface is filed as a
+`category:quality` wisp under `${REVIEW_ROOT}.findings` with a `Confidence: X/100`
+first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean pass.
+'''
+
+[[template]]
+id = "{target}.security"
+title = "Security lane — vulnerabilities / secrets / authz / input validation on the changed surface"
+needs = ["{target}.analyze"]
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{security_model}" }
+description = '''
+You are the SECURITY review lane of the standard (8-pass) code review — one of six
+sibling lanes (quality / security / performance / architecture / testing / docs),
+each a SEPARATE bead-native polecat session. You read the DURABLE inputs the
+analyze pass recorded and review ONLY the changed surface through the security
+lens. You never see the other lanes' sessions; you communicate only through beads.
+
+## 1. Load the durable inputs + eligibility gate (run verbatim)
+
+Pure transport — no judgment. Source the shared lane helper (referenced via
+`$GC_CITY`, branch-independent — the same pattern as the shared diff resolver) and
+load the inputs the analyze pass hung off the molecule root:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
+review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+
+if [ "$REVIEW_ELIGIBLE" = "no" ]; then
+  # The analyze pass deemed the change ineligible (empty / trivial / generated).
+  # This lane is a clean no-op — close pass and file nothing. It is NOT pruned
+  # from the graph: every lane runs and self-skips when it has nothing to do.
+  review_lane_close "security: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  exit 0
+fi
+echo "[security] kind=$REVIEW_TARGET_KIND  diff=$REVIEW_DIFF  files=$REVIEW_FILES  summary=$REVIEW_SUMMARY"
+```
+
+You now hold the change summary (`$REVIEW_SUMMARY`), the unified diff
+(`$REVIEW_DIFF`), and the touched-file list (`$REVIEW_FILES`). For a `path` target
+(`$REVIEW_TARGET_KIND` = `path`) there is no diff — audit the whole repository
+checked out at the root's `work_dir` (qdhenry's scope-free mode, standalone host
+only). Otherwise scope STRICTLY to the changed surface in `$REVIEW_DIFF`.
+
+## 2. Review through the security lens (at the {security_model} tier)
+
+Read `$REVIEW_SUMMARY` first for intent, then `$REVIEW_DIFF`. Review ONLY the
+changed lines (plus the surrounding context needed to judge reachability) for:
+
+- common vulnerabilities the change introduces or makes reachable — injection
+  (SQL / command / template), XSS, SSRF, path traversal, unsafe deserialization,
+  SSTI, and the like;
+- hardcoded secrets, API keys, tokens, or passwords added or exposed by the change;
+- authentication / authorization logic the change introduces, weakens, or bypasses;
+- input validation and sanitization at the trust boundaries the change touches.
+
+Stay on the changed surface: a pre-existing weakness the diff does not touch is out
+of scope. Reason about reachability — a flagged sink only matters if the change can
+actually reach it. If nothing on the changed surface warrants a finding, that is a
+valid result — file nothing and close pass (step 3). Do not pad.
+
+For each genuine candidate, hold: a one-line title; the `file:line` in the changed
+surface; the vulnerability class and how it is reached; the evidence (a quoted diff
+line); an honest self-rated confidence 0-100 (the synthesis pass re-scores and
+assigns final severity — do not inflate); and a best-guess priority 0-4.
+
+## 3. File each candidate as a category-labelled wisp + close (run verbatim per candidate)
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-lane.sh"
+review_lane_load_inputs
+
+# Repeat per candidate, substituting your values:
+BODY=$(mktemp)
+cat > "$BODY" <<'EOF'
+<file>:<line range> — <the vulnerability and how the change reaches it>
+
+Evidence: <a quoted diff line / the changed construct>
+Suggested severity: <blocker|major|minor|nit>   # a hint; synthesis decides
+EOF
+review_lane_file_finding security <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
+
+# After all candidates — or immediately, if this lens found nothing (clean pass):
+review_lane_close "security: filed <N> candidate finding(s) (category:security)"
+```
+
+Exit criteria: every security candidate on the changed surface is filed as a
+`category:security` wisp under `${REVIEW_ROOT}.findings` with a `Confidence: X/100`
+first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean pass.
+'''
+
+[[template]]
+id = "{target}.performance"
+title = "Performance lane — bottlenecks / inefficient algorithms or queries / leaks on the changed surface"
+needs = ["{target}.analyze"]
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{performance_model}" }
+description = '''
+You are the PERFORMANCE review lane of the standard (8-pass) code review — one of
+six sibling lanes (quality / security / performance / architecture / testing /
+docs), each a SEPARATE bead-native polecat session. You read the DURABLE inputs the
+analyze pass recorded and review ONLY the changed surface through the performance
+lens. You never see the other lanes' sessions; you communicate only through beads.
+
+## 1. Load the durable inputs + eligibility gate (run verbatim)
+
+Pure transport — no judgment. Source the shared lane helper (referenced via
+`$GC_CITY`, branch-independent — the same pattern as the shared diff resolver) and
+load the inputs the analyze pass hung off the molecule root:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
+review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+
+if [ "$REVIEW_ELIGIBLE" = "no" ]; then
+  # The analyze pass deemed the change ineligible (empty / trivial / generated).
+  # This lane is a clean no-op — close pass and file nothing. It is NOT pruned
+  # from the graph: every lane runs and self-skips when it has nothing to do.
+  review_lane_close "performance: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  exit 0
+fi
+echo "[performance] kind=$REVIEW_TARGET_KIND  diff=$REVIEW_DIFF  files=$REVIEW_FILES  summary=$REVIEW_SUMMARY"
+```
+
+You now hold the change summary (`$REVIEW_SUMMARY`), the unified diff
+(`$REVIEW_DIFF`), and the touched-file list (`$REVIEW_FILES`). For a `path` target
+(`$REVIEW_TARGET_KIND` = `path`) there is no diff — audit the whole repository
+checked out at the root's `work_dir` (qdhenry's scope-free mode, standalone host
+only). Otherwise scope STRICTLY to the changed surface in `$REVIEW_DIFF`.
+
+## 2. Review through the performance lens (at the {performance_model} tier)
+
+Read `$REVIEW_SUMMARY` first for intent, then `$REVIEW_DIFF`. Review ONLY the
+changed lines (plus the surrounding context needed to judge hot paths) for:
+
+- performance bottlenecks the change introduces;
+- inefficient algorithms or data-access patterns added — N+1 queries, missing
+  indexes, accidental quadratic loops, repeated work inside loops, unbounded reads;
+- memory-usage patterns and potential leaks in the new code (unbounded growth,
+  retained references, missing close/free);
+- where the stack warrants it, bundle-size / allocation / optimization regressions.
+
+Stay on the changed surface: a pre-existing hot spot the diff does not touch is out
+of scope. Prefer findings with a plausible real-world impact over micro-optimisation
+nits. If nothing on the changed surface warrants a finding, that is a valid result
+— file nothing and close pass (step 3). Do not pad.
+
+For each genuine candidate, hold: a one-line title; the `file:line` in the changed
+surface; the inefficiency and its expected impact; the evidence (a quoted diff
+line); an honest self-rated confidence 0-100 (the synthesis pass re-scores and
+assigns final severity — do not inflate); and a best-guess priority 0-4.
+
+## 3. File each candidate as a category-labelled wisp + close (run verbatim per candidate)
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-lane.sh"
+review_lane_load_inputs
+
+# Repeat per candidate, substituting your values:
+BODY=$(mktemp)
+cat > "$BODY" <<'EOF'
+<file>:<line range> — <the inefficiency and its expected impact>
+
+Evidence: <a quoted diff line / the changed construct>
+Suggested severity: <blocker|major|minor|nit>   # a hint; synthesis decides
+EOF
+review_lane_file_finding performance <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
+
+# After all candidates — or immediately, if this lens found nothing (clean pass):
+review_lane_close "performance: filed <N> candidate finding(s) (category:performance)"
+```
+
+Exit criteria: every performance candidate on the changed surface is filed as a
+`category:performance` wisp under `${REVIEW_ROOT}.findings` with a `Confidence: X/100`
+first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean pass.
+'''
+
+[[template]]
+id = "{target}.architecture"
+title = "Architecture lane — organization / abstraction / coupling / scalability of the change"
+needs = ["{target}.analyze"]
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{architecture_model}" }
+description = '''
+You are the ARCHITECTURE review lane of the standard (8-pass) code review — one of
+six sibling lanes (quality / security / performance / architecture / testing /
+docs), each a SEPARATE bead-native polecat session. You read the DURABLE inputs the
+analyze pass recorded and review ONLY the changed surface through the
+architecture-and-design lens. You never see the other lanes' sessions; you
+communicate only through beads.
+
+## 1. Load the durable inputs + eligibility gate (run verbatim)
+
+Pure transport — no judgment. Source the shared lane helper (referenced via
+`$GC_CITY`, branch-independent — the same pattern as the shared diff resolver) and
+load the inputs the analyze pass hung off the molecule root:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
+review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+
+if [ "$REVIEW_ELIGIBLE" = "no" ]; then
+  # The analyze pass deemed the change ineligible (empty / trivial / generated).
+  # This lane is a clean no-op — close pass and file nothing. It is NOT pruned
+  # from the graph: every lane runs and self-skips when it has nothing to do.
+  review_lane_close "architecture: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  exit 0
+fi
+echo "[architecture] kind=$REVIEW_TARGET_KIND  diff=$REVIEW_DIFF  files=$REVIEW_FILES  summary=$REVIEW_SUMMARY"
+```
+
+You now hold the change summary (`$REVIEW_SUMMARY`), the unified diff
+(`$REVIEW_DIFF`), and the touched-file list (`$REVIEW_FILES`). For a `path` target
+(`$REVIEW_TARGET_KIND` = `path`) there is no diff — audit the whole repository
+checked out at the root's `work_dir` (qdhenry's scope-free mode, standalone host
+only). Otherwise scope STRICTLY to the changed surface in `$REVIEW_DIFF`.
+
+## 2. Review through the architecture-and-design lens (at the {architecture_model} tier)
+
+Read `$REVIEW_SUMMARY` first for intent, then `$REVIEW_DIFF`. Architecture findings
+often span the touched files (`$REVIEW_FILES`) rather than single lines — judge the
+DESIGN the change introduces:
+
+- organization and separation of concerns — does the change put logic in the right
+  layer / module, or smear responsibilities across boundaries;
+- abstraction and modularity — leaky, premature, or missing abstractions introduced;
+- dependency management and coupling the change adds — new cross-module or
+  cross-layer edges, cycles, or reaching past a stable interface;
+- scalability and maintainability impact of the design choices in the change.
+
+Stay anchored to the change: critique the design the diff introduces, not the whole
+pre-existing architecture. If the change is sound by design, that is a valid result
+— file nothing and close pass (step 3). Do not pad.
+
+For each genuine candidate, hold: a one-line title; the relevant `file:line`(s) the
+concern spans; the design problem and why it matters for maintainability/scale; the
+evidence (the changed construct / the new dependency edge); an honest self-rated
+confidence 0-100 (the synthesis pass re-scores and assigns final severity — do not
+inflate); and a best-guess priority 0-4.
+
+## 3. File each candidate as a category-labelled wisp + close (run verbatim per candidate)
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-lane.sh"
+review_lane_load_inputs
+
+# Repeat per candidate, substituting your values:
+BODY=$(mktemp)
+cat > "$BODY" <<'EOF'
+<file>:<line range> (and any other spanned locations) — <the design problem and why it matters>
+
+Evidence: <the changed construct / the new dependency edge>
+Suggested severity: <blocker|major|minor|nit>   # a hint; synthesis decides
+EOF
+review_lane_file_finding architecture <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
+
+# After all candidates — or immediately, if this lens found nothing (clean pass):
+review_lane_close "architecture: filed <N> candidate finding(s) (category:architecture)"
+```
+
+Exit criteria: every architecture candidate the change raises is filed as a
+`category:architecture` wisp under `${REVIEW_ROOT}.findings` with a `Confidence: X/100`
+first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean pass.
+'''
+
+[[template]]
+id = "{target}.testing"
+title = "Testing lane — coverage / structure / missing scenarios for the changed surface"
+needs = ["{target}.analyze"]
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{testing_model}" }
+description = '''
+You are the TESTING review lane of the standard (8-pass) code review — one of six
+sibling lanes (quality / security / performance / architecture / testing / docs),
+each a SEPARATE bead-native polecat session. You read the DURABLE inputs the
+analyze pass recorded and review the test coverage of ONLY the changed surface.
+You never see the other lanes' sessions; you communicate only through beads.
+
+## 1. Load the durable inputs + eligibility gate (run verbatim)
+
+Pure transport — no judgment. Source the shared lane helper (referenced via
+`$GC_CITY`, branch-independent — the same pattern as the shared diff resolver) and
+load the inputs the analyze pass hung off the molecule root:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
+review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+
+if [ "$REVIEW_ELIGIBLE" = "no" ]; then
+  # The analyze pass deemed the change ineligible (empty / trivial / generated).
+  # This lane is a clean no-op — close pass and file nothing. It is NOT pruned
+  # from the graph: every lane runs and self-skips when it has nothing to do.
+  review_lane_close "testing: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  exit 0
+fi
+echo "[testing] kind=$REVIEW_TARGET_KIND  diff=$REVIEW_DIFF  files=$REVIEW_FILES  summary=$REVIEW_SUMMARY"
+```
+
+You now hold the change summary (`$REVIEW_SUMMARY`), the unified diff
+(`$REVIEW_DIFF`), and the touched-file list (`$REVIEW_FILES`). For a `path` target
+(`$REVIEW_TARGET_KIND` = `path`) there is no diff — audit the whole repository
+checked out at the root's `work_dir` (qdhenry's scope-free mode, standalone host
+only). Otherwise scope STRICTLY to the changed surface in `$REVIEW_DIFF`.
+
+## 2. Review through the testing lens (at the {testing_model} tier)
+
+Read `$REVIEW_SUMMARY` first for intent, then `$REVIEW_DIFF`. Judge the test
+coverage of the change — inspect both the changed product code and any test files
+in `$REVIEW_FILES`:
+
+- changed or added behavior left without test coverage;
+- quality and structure of the tests the change adds (clear arrange/act/assert,
+  no over-mocking, meaningful names);
+- missing edge-case and failure-path scenarios for the new code;
+- tests that assert the wrong thing or would not actually catch a regression in
+  the change.
+
+Stay on the changed surface: gaps in pre-existing code the diff does not touch are
+out of scope. If the change is adequately tested, that is a valid result — file
+nothing and close pass (step 3). Do not pad.
+
+For each genuine candidate, hold: a one-line title; the `file:line` of the untested
+or weakly-tested change; what scenario is missing or wrong; the evidence (the
+uncovered changed construct); an honest self-rated confidence 0-100 (the synthesis
+pass re-scores and assigns final severity — do not inflate); and a best-guess
+priority 0-4.
+
+## 3. File each candidate as a category-labelled wisp + close (run verbatim per candidate)
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-lane.sh"
+review_lane_load_inputs
+
+# Repeat per candidate, substituting your values:
+BODY=$(mktemp)
+cat > "$BODY" <<'EOF'
+<file>:<line range> — <the coverage gap or weak test, scoped to the change>
+
+Evidence: <the uncovered changed construct / the weak assertion>
+Suggested severity: <blocker|major|minor|nit>   # a hint; synthesis decides
+EOF
+review_lane_file_finding testing <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
+
+# After all candidates — or immediately, if this lens found nothing (clean pass):
+review_lane_close "testing: filed <N> candidate finding(s) (category:testing)"
+```
+
+Exit criteria: every testing candidate on the changed surface is filed as a
+`category:testing` wisp under `${REVIEW_ROOT}.findings` with a `Confidence: X/100`
+first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean pass.
+'''
+
+[[template]]
+id = "{target}.docs"
+title = "Docs lane — comments / API docs / README / invariants touched by the change"
+needs = ["{target}.analyze"]
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{docs_model}" }
+description = '''
+You are the DOCS review lane of the standard (8-pass) code review — one of six
+sibling lanes (quality / security / performance / architecture / testing / docs),
+each a SEPARATE bead-native polecat session. You read the DURABLE inputs the
+analyze pass recorded and review the documentation impact of ONLY the changed
+surface. You never see the other lanes' sessions; you communicate only through beads.
+
+## 1. Load the durable inputs + eligibility gate (run verbatim)
+
+Pure transport — no judgment. Source the shared lane helper (referenced via
+`$GC_CITY`, branch-independent — the same pattern as the shared diff resolver) and
+load the inputs the analyze pass hung off the molecule root:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
+review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+
+if [ "$REVIEW_ELIGIBLE" = "no" ]; then
+  # The analyze pass deemed the change ineligible (empty / trivial / generated).
+  # This lane is a clean no-op — close pass and file nothing. It is NOT pruned
+  # from the graph: every lane runs and self-skips when it has nothing to do.
+  review_lane_close "docs: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  exit 0
+fi
+echo "[docs] kind=$REVIEW_TARGET_KIND  diff=$REVIEW_DIFF  files=$REVIEW_FILES  summary=$REVIEW_SUMMARY"
+```
+
+You now hold the change summary (`$REVIEW_SUMMARY`), the unified diff
+(`$REVIEW_DIFF`), and the touched-file list (`$REVIEW_FILES`). For a `path` target
+(`$REVIEW_TARGET_KIND` = `path`) there is no diff — audit the whole repository
+checked out at the root's `work_dir` (qdhenry's scope-free mode, standalone host
+only). Otherwise scope STRICTLY to the changed surface in `$REVIEW_DIFF`.
+
+## 2. Review through the documentation lens (at the {docs_model} tier)
+
+Read `$REVIEW_SUMMARY` first for intent, then `$REVIEW_DIFF`. Judge the documentation
+impact of the change:
+
+- code comments and inline docs for the changed code — missing, stale, or now-wrong
+  because the change moved the behavior out from under them;
+- API / interface documentation completeness for signatures the change adds or alters;
+- README / setup / usage / config docs the change makes stale or incomplete;
+- undocumented invariants or non-obvious behavior the change introduces.
+
+Stay on the changed surface: documentation gaps in code the diff does not touch are
+out of scope. If the change is adequately documented, that is a valid result — file
+nothing and close pass (step 3). Do not pad.
+
+For each genuine candidate, hold: a one-line title; the `file:line` (code or doc)
+the gap lives at; what is missing, stale, or wrong; the evidence (the changed
+signature / the now-stale doc line); an honest self-rated confidence 0-100 (the
+synthesis pass re-scores and assigns final severity — do not inflate); and a
+best-guess priority 0-4.
+
+## 3. File each candidate as a category-labelled wisp + close (run verbatim per candidate)
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-lane.sh"
+review_lane_load_inputs
+
+# Repeat per candidate, substituting your values:
+BODY=$(mktemp)
+cat > "$BODY" <<'EOF'
+<file>:<line range> — <what doc is missing, stale, or wrong, scoped to the change>
+
+Evidence: <the changed signature / the now-stale doc line>
+Suggested severity: <blocker|major|minor|nit>   # a hint; synthesis decides
+EOF
+review_lane_file_finding docs <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
+
+# After all candidates — or immediately, if this lens found nothing (clean pass):
+review_lane_close "docs: filed <N> candidate finding(s) (category:docs)"
+```
+
+Exit criteria: every documentation candidate the change raises is filed as a
+`category:docs` wisp under `${REVIEW_ROOT}.findings` with a `Confidence: X/100`
+first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean pass.
 '''

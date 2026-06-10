@@ -154,3 +154,70 @@ meta_val() {
   [ -f "${AB_META_LOG:-/nonexistent}" ] || { printf ''; return; }
   grep "^$1=" "$AB_META_LOG" | tail -1 | sed "s/^$1=//"
 }
+
+# --- review-lane (lib + lane) runners ----------------------------------------
+LANE_LIB="$SUITE_DIR/../../lib/review-lane.sh"
+
+# lane_sandbox — create (once per scenario) a sandbox GC_CITY carrying the real
+# review-lane.sh and a populated durable-input store for LB_ROOT, then export the
+# scenario env the stub bd reads. Caller may pre-set LB_ROOT / LB_ELIGIBLE /
+# LB_TARGET_KIND before the first call; sensible defaults otherwise. Sets/refreshes
+# LB_CITY, LB_INPUTS_DIR, LB_CREATE_LOG, LB_UPDATE_LOG, LB_META_LOG.
+lane_sandbox() {
+  LB_ROOT="${LB_ROOT:-root-lane-$$}"
+  LB_WORKDIR="${LB_WORKDIR:-${TMPDIR:-/tmp}}"
+  LB_TARGET_KIND="${LB_TARGET_KIND:-range}"
+  LB_ELIGIBLE="${LB_ELIGIBLE:-yes}"
+  LB_REASON="${LB_REASON:-eligible: non-trivial change}"
+  if [ -z "${LB_CITY:-}" ]; then
+    LB_CITY="$(mktemp -d "${TMPDIR:-/tmp}/esr-lanecity.XXXXXX")"
+    mkdir -p "$LB_CITY/formulas/lib"
+    cp -f "$LANE_LIB" "$LB_CITY/formulas/lib/review-lane.sh"
+    chmod +x "$LB_CITY/formulas/lib/review-lane.sh"
+    LB_INPUTS_DIR="$LB_CITY/.gc/review-inputs/$LB_ROOT"
+    mkdir -p "$LB_INPUTS_DIR"
+    printf 'diff --git a/app.go b/app.go\n+func Added() {}\n' > "$LB_INPUTS_DIR/diff"
+    printf 'app.go\n' > "$LB_INPUTS_DIR/files"
+    printf 'a small test change\n' > "$LB_INPUTS_DIR/summary.md"
+  fi
+  : "${LB_CREATE_LOG:=$(mktemp)}"
+  : "${LB_UPDATE_LOG:=$(mktemp)}"
+  : "${LB_META_LOG:=$(mktemp)}"
+}
+
+# lane_env <args...> — run the given command with the sandbox scenario env + the
+# stub bd/gc on PATH. Used to source the lib directly or run a rendered block.
+lane_env() {
+  GC_CITY="$LB_CITY" \
+  GC_BEAD_ID="${LB_BEAD_ID:-lane-bead}" \
+  GC_AGENT="gascity/test.polecat" \
+  BD_ROOT="$LB_ROOT" \
+  BD_WORKDIR="$LB_WORKDIR" \
+  BD_META_LOG="$LB_META_LOG" \
+  BD_CREATE_LOG="$LB_CREATE_LOG" \
+  BD_UPDATE_LOG="$LB_UPDATE_LOG" \
+  BD_REVIEW_INPUTS_DIR="$LB_INPUTS_DIR" \
+  BD_REVIEW_TARGET_KIND="$LB_TARGET_KIND" \
+  BD_REVIEW_ELIGIBLE="$LB_ELIGIBLE" \
+  BD_REVIEW_ELIGIBILITY_REASON="$LB_REASON" \
+  PATH="$SUITE_DIR/bin:$PATH" \
+  "$@"
+}
+
+# run_lane_block <lens> <signature> — render the lens lane's ```bash block
+# containing <signature> and run it verbatim against the sandbox + stubs. Sets
+# LB_RC (exit code) and LB_OUT (combined stdout+stderr). Re-uses the scenario set
+# up by lane_sandbox (call it first).
+run_lane_block() {
+  local lens="$1" sig="$2" script
+  LB_BEAD_ID="lane-bead-$lens"
+  script="$(formula_py block "{target}.$lens" "$sig")" || {
+    LB_RC=99; LB_OUT="render failed: no block with signature [$sig] in $lens"; return 1; }
+  LB_OUT="$(lane_env bash -c "$script" 2>&1)"
+  LB_RC=$?
+}
+
+# create_log_has <needle> — true if any bd-create record contains <needle>.
+create_log_has() { grep -q -- "$1" "${LB_CREATE_LOG:-/nonexistent}" 2>/dev/null; }
+# update_log_has <needle> — true if any bd-update record contains <needle>.
+update_log_has() { grep -q -- "$1" "${LB_UPDATE_LOG:-/nonexistent}" 2>/dev/null; }

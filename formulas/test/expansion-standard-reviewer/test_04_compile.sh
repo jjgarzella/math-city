@@ -17,21 +17,36 @@ assert_eq "0" "$rc" "gc formula show expansion-standard-reviewer exits 0 (expand
 
 # {target} placeholder -> the synthetic target id 'main'; vars substitute single-brace.
 assert_contains "$SHOW" "expansion-standard-reviewer.main.analyze" "compiled: {target}.analyze -> main.analyze"
+for lens in quality security performance architecture testing docs; do
+  assert_contains "$SHOW" "expansion-standard-reviewer.main.$lens" "compiled: {target}.$lens -> main.$lens"
+done
 assert_contains "$SHOW" "workflow-finalize" "compiled: clean terminal (workflow-finalize)"
 
 # A JSON render must show NO leftover {{double}} braces and NO unsubstituted
-# single-brace vars in the analyze step (the failure mode the syntax bug caused).
+# single-brace vars in the analyze step (the failure mode the syntax bug caused),
+# AND each lens step's opt_model metadata must substitute to a real model value
+# (not the literal {lens_model} brace) — the per-lane model-selection mechanism.
 RENDER="$(gc formula show expansion-standard-reviewer --json 2>/dev/null \
   | python3 -c '
 import json,sys,re
 d=json.load(sys.stdin)
 desc="".join(s.get("description","") for s in d["steps"] if s.get("id","").endswith(".analyze"))
 bad_double=re.findall(r"\{\{\s*\w+\s*\}\}", desc)
-bad_single=re.findall(r"\{(review_target|base_branch|review_model|aux_model|severity_threshold)\}", desc)
+bad_single=re.findall(r"\{(review_target|base_branch|aux_model|severity_threshold)\}", desc)
 print("DOUBLE="+str(len(bad_double)))
 print("SINGLE="+str(len(bad_single)))
 print("RESOLVER_ARGS_OK=" + ("yes" if "\"\" \"main\"" in desc else "no"))
+tier={"quality":"sonnet","security":"opus","performance":"sonnet","architecture":"opus","testing":"haiku","docs":"haiku"}
+ok=True
+for s in d["steps"]:
+    sid=s.get("id","")
+    for lens,want in tier.items():
+        if sid.endswith("."+lens):
+            got=(s.get("metadata") or {}).get("opt_model","")
+            if got!=want or "{" in got: ok=False
+print("OPT_MODEL_OK=" + ("yes" if ok else "no"))
 ')"
 assert_contains "$RENDER" "DOUBLE=0" "no leftover {{double-brace}} after expansion"
 assert_contains "$RENDER" "SINGLE=0" "no unsubstituted single-brace vars after expansion"
 assert_contains "$RENDER" "RESOLVER_ARGS_OK=yes" "resolver called with substituted vars (default \"\" \"main\")"
+assert_contains "$RENDER" "OPT_MODEL_OK=yes" "each lens opt_model metadata substitutes to its tiered model (no literal brace)"

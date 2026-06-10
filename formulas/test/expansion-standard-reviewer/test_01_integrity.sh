@@ -11,16 +11,28 @@ assert_eq "expansion-standard-reviewer" "$(formula_py formula-name)" "formula na
 assert_eq "graph.v2"  "$(formula_py contract)" "graph.v2 contract"
 assert_eq "expansion" "$(formula_py ftype)"    "type = expansion (canonical fragment)"
 
-# --- vars: exactly the five-tunable contract, with the documented defaults ----
+# --- vars: the full contract (4 shared + 6 per-lane model vars), with defaults -
+# The single review_model of the skeleton is superseded by six per-lane model
+# vars (gcs-f4j.8.2): each lens is a separate dispatch, so each rides its own
+# opt_model, right-sized by tier.
 defined="$(formula_py defined-vars | tr '\n' ' ')"
-assert_eq "aux_model base_branch review_model review_target severity_threshold " "$defined" \
-  "defines exactly aux_model, base_branch, review_model, review_target, severity_threshold"
+assert_eq "architecture_model aux_model base_branch docs_model performance_model quality_model review_target security_model severity_threshold testing_model " "$defined" \
+  "defines the 4 shared vars + 6 per-lane model vars (review_model superseded)"
 
 assert_eq ""       "$(formula_py var-default review_target)"      "review_target default = empty (base_branch..HEAD)"
 assert_eq "main"   "$(formula_py var-default base_branch)"        "base_branch default = main"
-assert_eq "sonnet" "$(formula_py var-default review_model)"       "review_model default = sonnet"
 assert_eq "haiku"  "$(formula_py var-default aux_model)"          "aux_model default = haiku"
 assert_eq "minor"  "$(formula_py var-default severity_threshold)" "severity_threshold default = minor"
+assert_eq ""       "$(formula_py var-default review_model 2>/dev/null)" "review_model removed (superseded by per-lane vars)"
+
+# Per-lane model defaults are tiered: deep (opus) for the judgment lenses, standard
+# (sonnet) for quality/performance, cheap (haiku) for the mechanical lenses.
+assert_eq "sonnet" "$(formula_py var-default quality_model)"      "quality_model default = sonnet (standard tier)"
+assert_eq "opus"   "$(formula_py var-default security_model)"     "security_model default = opus (deep tier)"
+assert_eq "sonnet" "$(formula_py var-default performance_model)"  "performance_model default = sonnet (standard tier)"
+assert_eq "opus"   "$(formula_py var-default architecture_model)" "architecture_model default = opus (deep tier)"
+assert_eq "haiku"  "$(formula_py var-default testing_model)"      "testing_model default = haiku (cheap tier)"
+assert_eq "haiku"  "$(formula_py var-default docs_model)"         "docs_model default = haiku (cheap tier)"
 
 # --- expansion syntax: single-brace var refs, no {{double}} drift ------------
 # Expansion templates substitute {name}, not {{name}}; a stray {{var}} would
@@ -28,7 +40,7 @@ assert_eq "minor"  "$(formula_py var-default severity_threshold)" "severity_thre
 # that every defined var IS referenced single-brace somewhere in the template.
 assert_eq "0" "$(formula_py double-braces)" "no {{double-brace}} var refs (expansion uses single brace)"
 refs="$(formula_py var-refs | tr '\n' ' ')"
-assert_eq "aux_model base_branch review_model review_target severity_threshold " "$refs" \
+assert_eq "architecture_model aux_model base_branch docs_model performance_model quality_model review_target security_model severity_threshold testing_model " "$refs" \
   "every defined var is referenced single-brace (no dangling var)"
 
 # The review-target var is review_target, NOT target — {target} is the reserved
@@ -36,17 +48,54 @@ assert_eq "aux_model base_branch review_model review_target severity_threshold "
 # `target` var that would be shadowed by the placeholder.
 assert_eq "" "$(formula_py var-default target 2>/dev/null)" "no var literally named 'target' (reserved placeholder)"
 
-# --- exactly one template today: the analyze pass ----------------------------
+# --- seven templates: the analyze pass + the six review lenses ---------------
 tids="$(formula_py template-ids | tr '\n' ' ')"
-assert_eq "{target}.analyze " "$tids" "one template: {target}.analyze (lenses + synthesis land in .2/.3)"
+assert_eq "{target}.analyze {target}.quality {target}.security {target}.performance {target}.architecture {target}.testing {target}.docs " \
+  "$tids" "seven templates: analyze + the six lenses (synthesis lands in .3)"
 
-# The step id uses the {target} expansion placeholder so the host's placeholder
+# Every step id uses the {target} expansion placeholder so the host's placeholder
 # step id prefixes it (review-pipeline.analyze in the loop, etc).
-assert_contains "$(formula_py template-ids)" "{target}." "analyze id carries the {target} expansion placeholder"
+for sid in analyze quality security performance architecture testing docs; do
+  assert_contains "$tids" "{target}.$sid " "step {target}.$sid carries the {target} expansion placeholder"
+done
 
-# --- analyze is a single pool-dispatched lane --------------------------------
+# --- analyze is a pool-dispatched lane ---------------------------------------
 assert_eq "gasvillage.polecat" "$(formula_py meta '{target}.analyze' gc.run_target)" \
-  "analyze gc.run_target = gasvillage.polecat (single run_target)"
+  "analyze gc.run_target = gasvillage.polecat"
+
+# --- the six lenses: separate dispatch, depend on analyze, per-lane opt_model -
+# Each lens is its OWN step (own session) so per-lane model selection rides its
+# opt_model metadata; all six depend on the analyze pass's durable inputs.
+lens_model() { # <lens> -> the single-brace var its opt_model references
+  case "$1" in
+    quality) echo "{quality_model}" ;; security) echo "{security_model}" ;;
+    performance) echo "{performance_model}" ;; architecture) echo "{architecture_model}" ;;
+    testing) echo "{testing_model}" ;; docs) echo "{docs_model}" ;;
+  esac
+}
+for lens in quality security performance architecture testing docs; do
+  assert_eq "gasvillage.polecat" "$(formula_py meta "{target}.$lens" gc.run_target)" \
+    "$lens lane gc.run_target = gasvillage.polecat (separate dispatch)"
+  assert_eq "{target}.analyze" "$(formula_py needs "{target}.$lens" | tr '\n' ' ' | sed 's/ $//')" \
+    "$lens lane needs {target}.analyze"
+  assert_eq "$(lens_model "$lens")" "$(formula_py meta "{target}.$lens" opt_model)" \
+    "$lens lane opt_model references its per-lane model var"
+done
+
+# --- the six lenses: diff-scoped, self-contained, wisp convention ------------
+# Each lane must read the durable inputs (not session memory), scope to the
+# changed surface, gate on eligibility, and file category-labelled wisps with a
+# Confidence self-rating — the breadth the standard reviewer adds over triage.
+for lens in quality security performance architecture testing docs; do
+  D="$(formula_py desc "{target}.$lens")"
+  assert_contains "$D" "review-lane.sh"        "$lens lane sources the shared lane helper"
+  assert_contains "$D" "review_lane_load_inputs" "$lens lane loads the durable analyze inputs"
+  assert_contains "$D" "REVIEW_ELIGIBLE"       "$lens lane gates on the eligibility verdict"
+  assert_contains "$D" "changed surface"       "$lens lane scopes to the changed surface (diff-scoped)"
+  assert_contains "$D" "category:$lens"        "$lens lane files category:$lens wisps"
+  assert_contains "$D" "Confidence: X/100"     "$lens lane uses the Confidence self-rating wisp convention"
+  assert_contains "$D" "clean pass"            "$lens lane self-skips to a clean pass with zero findings"
+done
 
 # --- analyze prompt: the three jobs it owns ----------------------------------
 DESC="$(formula_py desc '{target}.analyze')"

@@ -17,6 +17,7 @@ Commands:
   var-default <name>        the `default` of [vars.<name>]
   template-ids              [[template]] ids, one per line
   meta <id> <key>           metadata[<key>] of template <id>
+  needs <id>                needs[] of template <id>, one per line
   title <id>                title of template <id>
   desc <id>                 raw (unsubstituted) description of template <id>
   var-refs                  sorted unique single-brace {name} refs across template
@@ -102,6 +103,13 @@ def main() -> int:
         if t is None:
             sys.stderr.write(f"no template {sys.argv[3]!r}\n"); return 1
         print(t.get("metadata", {}).get(sys.argv[4], "")); return 0
+    if cmd == "needs":
+        t = find_template(data, sys.argv[3])
+        if t is None:
+            sys.stderr.write(f"no template {sys.argv[3]!r}\n"); return 1
+        for n in t.get("needs", []):
+            print(n)
+        return 0
     if cmd == "title":
         t = find_template(data, sys.argv[3])
         if t is None:

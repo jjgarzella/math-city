@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Test stub for `gc`, used by the apply-fixes lib test (test_02). The apply-fixes
+# transport calls `gc bd heartbeat` (a no-op success here) and never nudges
+# directly; `gc session nudge` is recorded to $GC_NUDGE_LOG anyway so the test can
+# assert it is NOT fired from the lib (the loop's verdict-glue check owns notify,
+# not apply-fixes). All other `gc` calls are no-op successes.
+set -u
+if [ "${1:-}" = "session" ] && [ "${2:-}" = "nudge" ]; then
+  shift 2
+  [ -n "${GC_NUDGE_LOG:-}" ] && printf '%s\n' "$*" >> "$GC_NUDGE_LOG"
+  exit 0
+fi
+exit 0

@@ -1,0 +1,376 @@
+description = """
+Standard (8-pass) review->fix loop — the codex-free production loop variant
+(gascity gcs-f4j.8.5). It is the de-smoked, real-reviewer sibling of
+mol-review-loop-smoke and the loop counterpart of the standalone host
+mol-standard-review: the SAME canonical reviewer fragment
+(expansion-standard-reviewer, gcs-f4j.8) `[[compose.expand]]`d into
+mol-review-loop's review-pipeline slot, with a REAL apply-fixes that consumes the
+reviewer's synthesis output. Zero prompt duplication — every reviewer prompt lives
+in the one fragment; this file is the loop skeleton + the verdict mapping.
+
+This is the reviewer that finally fills mol-review-loop's no-op review-pipeline
+placeholder (gcs-u45i): a slung base mol-review-loop reviews NOTHING and trivially
+converges; THIS variant runs the analyze -> six lenses -> synthesis reviewer
+in-loop and feeds its durable findings to apply-fixes. Single-provider only —
+codex is unavailable, so the quorum variant (gcs-f4j.5) stays parked; it will reuse
+this exact machinery, swapping only the reviewer fragment.
+
+Shape (mirrors mol-review-loop / mol-review-loop-smoke):
+  workspace-setup -> review-loop (ralph [steps.check])
+  review-loop body children = [review-pipeline (compose.expand'd) -> apply-fixes]
+
+Each ralph iteration:
+  1. review-pipeline runs the standard reviewer — analyze (resolve the diff via
+     the shared resolve-diff.sh) -> six lenses (quality / security / performance /
+     architecture / testing / docs) -> synthesis. Synthesis dedup-merges, assigns
+     severity, promotes the survivors to DURABLE findings under <root>.findings,
+     and records gc.review.synthesis_verdict (pass / pass_with_findings / fail /
+     blocked) + counts on the molecule root.
+  2. apply-fixes (pool-dispatched, gc.run_target=gasvillage.polecat — a fresh
+     polecat context per iteration) resumes the branch under review, reads the
+     synthesis verdict + the durable findings, applies the fixes per the
+     severity-threshold fix policy, and maps the synthesis verdict onto the loop's
+     done/iterate review.verdict. The verdict->severity->fix mapping is the SHARED,
+     reviewer-agnostic formulas/lib/review-apply-fixes.sh (the codex-independent
+     half of gcs-f4j.5); the per-finding fix-vs-surface call is the agent's
+     judgment (ZFC), not Go logic.
+  3. The controller runs the SHARED verdict-glue check (formulas/lib/review-verdict.sh,
+     installed into work_dir at setup — the exact same check the base loop uses):
+     review.verdict=done -> exit 0 (converged, stop, clean pass); iterate -> exit 1
+     (next attempt, bounded by the cap).
+
+Why EXPAND, not pour: the controller schedules the fragment's beads directly as
+flat graph children inside the ralph iteration body, so at gascity polecat pool=1
+nothing has to babysit a poured child molecule whose lanes also need that one slot
+-> no self-deadlock.
+
+Severity threshold (severity_threshold, default minor): the fix policy is
+fix blocker/major/minor, surface nit. It flows into the fragment's synthesis pass
+(which promotes durable findings at or above the threshold and burns the rest —
+the burned tally is the "surfaced but sub-threshold" count apply-fixes reports) AND
+into apply-fixes as the fix threshold the agent applies per finding. Ranking, never
+category suppression.
+
+Synthesis verdict -> review.verdict mapping (formulas/lib/review-apply-fixes.sh):
+  pass               -> done     (no actionable finding; converge)
+  pass_with_findings -> iterate when fixes were applied, else done
+  fail               -> iterate  (a blocker was fixed; re-review)
+  blocked            -> done + ESCALATE (terminate-to-human: synthesis could not
+                        run, or a blocker is genuinely unfixable; the loop stops
+                        instead of spinning to the cap, and gc.review.loop_outcome
+                        =blocked-needs-human is flagged on the root for the human gate)
+
+Termination — NO abort_scope. Both terminals are clean (same as the base loop):
+  • converged: a done verdict makes the check exit 0; the ralph control bead closes
+    gc.outcome=pass.
+  • capped: the verdict never converges, the loop iterates to the cap
+    (max_attempts = 3) and the ralph control bead closes gc.outcome=fail, no spin.
+
+The iteration cap is 3 (literal max_attempts — the compiler parses it as an int
+before variable substitution, so it cannot be templated; a variant needing a
+different cap sets its own literal).
+
+Optional fire-and-forget notify: pass --var notify_target=<session id-or-alias> and
+the verdict check sends a best-effort `gc session nudge` on the terminal transition
+(converged, capped, or a blocked escalation). Empty (the default) = no notify.
+
+Sling (review the changes on the current branch, default target base_branch..HEAD):
+  gc sling gascity/gasvillage.polecat <bead> --on mol-review-loop-standard --nudge
+Tune the reviewer (any fragment var flows through, e.g. a deeper synthesis tier):
+  gc sling gascity/gasvillage.polecat <bead> --on mol-review-loop-standard \\
+    --var severity_threshold=major --var synthesis_model=opus --nudge
+"""
+formula = "mol-review-loop-standard"
+contract = "graph.v2"
+
+[requires]
+formula_compiler = ">=2.0.0"
+
+# --------------------------------------------------------------------------
+# Variables — the loop re-declares the fragment's full var contract (so the
+# whole reviewer is tunable from one --var surface, mapping the loop's `target`
+# onto the fragment's `review_target`) plus the loop's own knobs (notify_target;
+# severity_threshold doubles as the apply-fixes fix threshold). Each fragment var
+# is propagated by the [[compose.expand]] vars block below (single-brace {name},
+# resolved against these vars at compile time). Defaults mirror the fragment's so
+# an un-tuned sling behaves exactly like the documented model tiering.
+# --------------------------------------------------------------------------
+
+[vars.target]
+description = """
+What to review — a PR (number, #number, or PR URL), a branch name, a commit
+range, or empty for base_branch..HEAD (the changes on the current branch). Mapped
+onto the fragment's review_target. A path / whole-repo audit is NOT honored in the
+loop (the loop always feeds a branch diff to fix); use the standalone host
+mol-standard-review for a scope-free audit.
+"""
+default = ""
+
+[vars.base_branch]
+description = "Base branch the change is measured against (the default target base_branch..HEAD, and the merge-base for a bare branch name)."
+default = "main"
+
+[vars.severity_threshold]
+description = """
+The fix policy threshold (ordering blocker > major > minor > nit). Default minor:
+fix blocker/major/minor, surface nit. It flows BOTH into the fragment's synthesis
+pass (which promotes durable findings at or above it and burns the rest — the
+burned count is the surfaced-but-sub-threshold tally apply-fixes reports) AND into
+apply-fixes as the threshold the agent applies per finding. Severity-gated ranking,
+never whole-category suppression.
+"""
+default = "minor"
+
+[vars.aux_model]
+description = "Model for the analyze pass's cheap auxiliary reasoning (change summary + eligibility gate). Default haiku."
+default = "haiku"
+
+[vars.quality_model]
+description = "Model for the quality lens (code smells / anti-patterns / dead code / error handling). Standard tier; default sonnet."
+default = "sonnet"
+
+[vars.security_model]
+description = "Model for the security lens (vulnerabilities / secrets / authz / input validation). A judgment lens — deep tier; default opus."
+default = "opus"
+
+[vars.performance_model]
+description = "Model for the performance lens (bottlenecks / inefficient algorithms or queries / leaks). Standard tier; default sonnet."
+default = "sonnet"
+
+[vars.architecture_model]
+description = "Model for the architecture lens (organization / abstraction / coupling / scalability). A judgment lens — deep tier; default opus."
+default = "opus"
+
+[vars.testing_model]
+description = "Model for the testing lens (coverage / structure / missing scenarios). A mechanical lens — cheap tier; default haiku."
+default = "haiku"
+
+[vars.docs_model]
+description = "Model for the docs lens (comments / API docs / README / undocumented invariants). A mechanical lens — cheap tier; default haiku."
+default = "haiku"
+
+[vars.synthesis_model]
+description = "Model for the synthesis pass (dedup-merge across the six lanes + final severity assignment). A judgment pass — deep tier; default opus."
+default = "opus"
+
+[vars.notify_target]
+description = """
+Optional fire-and-forget notify recipient — a running session id or alias. When
+non-empty it is recorded on the molecule root as gc.review_loop.notify; the
+verdict-glue check sends a best-effort `gc session nudge` on the terminal
+transition (converged or capped). Empty (the default) disables notify.
+"""
+default = ""
+
+[[steps]]
+id = "workspace-setup"
+title = "Install the verdict-glue check into work_dir + record loop metadata"
+description = '''
+Prepare the loop: install the shared verdict-glue check into the work_dir under
+review so the ralph check's relative path resolves there, and record the loop
+metadata the controller-run check needs. This is pure transport — run exactly
+this block, then stop:
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+echo "[workspace-setup] GC_AGENT=${GC_AGENT:-} GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
+
+# Resolve the molecule ROOT so the ralph control bead inherits work_dir.
+ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
+[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"   # single-bead molecule: the bead is its own root
+gc bd heartbeat "$GC_BEAD_ID" || true
+
+# The work_dir under review: an inherited work_dir on the root wins (the
+# implement side / sling caller recorded the feature-branch worktree the loop
+# resumes); otherwise default to this session's worktree.
+WORK_DIR=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | (.metadata["work_dir"] // .metadata["gc.work_dir"] // empty)')
+[ -z "$WORK_DIR" ] && WORK_DIR="$PWD"
+
+# Install the shared, reviewer-agnostic verdict-glue check INTO work_dir. The
+# single source of truth is the city's lib, referenced via $GC_CITY (set by the
+# runtime) so it resolves no matter which branch is checked out here. The check
+# is referenced by a RELATIVE path from the formula, so it must live under
+# work_dir (gastownhall/gascity#2320).
+VERDICT_SRC="${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-verdict.sh"
+[ -x "$VERDICT_SRC" ] || { echo "ERROR: shared verdict check missing or not executable at $VERDICT_SRC" >&2; exit 1; }
+cp -f "$VERDICT_SRC" "$WORK_DIR/.gc-review-verdict.sh"
+chmod +x "$WORK_DIR/.gc-review-verdict.sh"
+
+# Record work_dir on the ROOT (the ralph control bead inherits it for the check)
+# and on this bead. Carry the optional notify target onto the root so the
+# controller-run check can fire its fire-and-forget nudge.
+bd update "$ROOT" --set-metadata work_dir="$WORK_DIR"
+bd update "$GC_BEAD_ID" --set-metadata work_dir="$WORK_DIR" || true
+NOTIFY="{{notify_target}}"
+[ -n "$NOTIFY" ] && bd update "$ROOT" --set-metadata gc.review_loop.notify="$NOTIFY"
+
+echo "[workspace-setup] WORK_DIR=$WORK_DIR ROOT=$ROOT notify=${NOTIFY:-<none>}"
+ls -l "$WORK_DIR/.gc-review-verdict.sh"
+
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "workspace-setup: installed .gc-review-verdict.sh into $WORK_DIR, recorded work_dir on root $ROOT"
+```
+
+Exit criteria: .gc-review-verdict.sh present and executable in work_dir, work_dir
+recorded on the root bead, this step closed pass.
+'''
+
+[[steps]]
+id = "review-loop"
+title = "Review loop: ralph [steps.check] over [review-pipeline (standard reviewer) -> apply-fixes]"
+needs = ["workspace-setup"]
+description = '''
+Standard-reviewer ralph review->fix loop. There is no agent action on this control
+step itself — after each iteration body closes, the controller runs the relative
+exec check (.gc-review-verdict.sh, installed at workspace-setup) and either stops
+(verdict converged) or spawns the next attempt, up to the cap. The iteration body
+(children below) is [review-pipeline -> apply-fixes]; review-pipeline is expanded
+via compose.expand into the expansion-standard-reviewer fragment, and apply-fixes
+maps the reviewer's synthesis verdict onto the loop's review.verdict.
+'''
+
+[steps.check]
+# Iteration cap = 3 (literal; max_attempts is parsed as an int before variable
+# substitution, so it cannot be templated — a variant needing a different cap sets
+# its own literal). On cap exhaustion the control bead closes gc.outcome=fail with
+# no spin and no abort_scope.
+max_attempts = 3
+
+[steps.check.check]
+mode = "exec"
+path = ".gc-review-verdict.sh"
+timeout = "120s"
+
+[[steps.children]]
+id = "review-pipeline"
+title = "Standard (8-pass) reviewer (placeholder; expanded via compose.expand)"
+metadata = { "gc.run_target" = "gasvillage.polecat" }
+description = '''
+PLACEHOLDER reviewer slot — never runs as written. It is replaced at compile time
+by `[[compose.expand]]` with the canonical expansion-standard-reviewer fragment
+(analyze -> six lenses -> synthesis). If you are reading this in a live bead, the
+expansion did not apply; that is a wiring bug in this loop variant. The expanded
+synthesis pass records gc.review.synthesis_verdict + durable findings on the
+molecule root, which apply-fixes (next) consumes.
+'''
+
+[[steps.children]]
+id = "apply-fixes"
+title = "Apply fixes + map synthesis verdict -> review.verdict"
+needs = ["review-pipeline"]
+metadata = { "gc.run_target" = "gasvillage.polecat" }
+description = '''
+Pool-dispatched to a FRESH polecat each iteration (gc.run_target=gasvillage.polecat),
+so every attempt starts with clean context. You resume the branch under review,
+consume the standard reviewer's synthesis output (the verdict + the durable
+findings it just promoted), apply the fixes per the severity-threshold fix policy,
+and write the review.verdict the loop's check reads.
+
+The verdict->severity->fix TRANSPORT is the shared, reviewer-agnostic
+formulas/lib/review-apply-fixes.sh (the codex-independent half of gcs-f4j.5,
+reused unchanged by the quorum variant). It is PURE transport: it reads the
+synthesis output, enumerates the durable findings, maps a fixed verdict
+vocabulary, and writes the result. WHICH findings you fix vs surface, whether a
+blocker is fixable, and whether you actually changed the branch are YOUR judgment
+(ZFC) — the lib never decides that.
+
+## 1. Load the run, branch on the verdict, enumerate findings (run verbatim)
+
+Load the run and decide the terminal cases in ONE block, so the synthesis output
+is in scope where you branch on it:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-apply-fixes.sh"
+export FIX_THRESHOLD="{{severity_threshold}}"   # fix policy: fix at/above, surface below
+review_apply_fixes_load          # sets REVIEW_ROOT/SYNTHESIS_VERDICT/FINDINGS/WORK_DIR/FIX_THRESHOLD + heartbeats
+
+# cwd does NOT persist between steps — resume the branch under review.
+[ -n "$REVIEW_WORK_DIR" ] && cd "$REVIEW_WORK_DIR"
+echo "[apply-fixes] verdict=$REVIEW_SYNTHESIS_VERDICT promoted=$REVIEW_SYNTHESIS_PROMOTED burned(surfaced sub-threshold)=$REVIEW_SYNTHESIS_BURNED at $PWD"
+
+# blocked / no verdict — synthesis could not run (ineligible / missing inputs) and
+# iterating cannot help. TERMINATE-TO-HUMAN: stop the loop and flag a human.
+if [ -z "$REVIEW_SYNTHESIS_VERDICT" ] || [ "$REVIEW_SYNTHESIS_VERDICT" = "blocked" ]; then
+  review_apply_fixes_escalate "synthesis verdict=${REVIEW_SYNTHESIS_VERDICT:-<none>} — cannot make progress"
+  exit 0
+fi
+
+# pass — no finding survived at or above the threshold; the branch is clean.
+if [ "$REVIEW_SYNTHESIS_VERDICT" = "pass" ]; then
+  review_apply_fixes_set_verdict done "clean: synthesis pass, no findings at/above $FIX_THRESHOLD (surfaced sub-threshold: ${REVIEW_SYNTHESIS_BURNED:-0})"
+  exit 0
+fi
+
+# pass_with_findings / fail — there are durable findings to address. Enumerate
+# them ranked must-fix first, then read each one's full body below.
+review_apply_fixes_findings            # TSV: id  severity  category  title (blocker -> nit)
+```
+
+Read each finding's full body for the file:line + evidence:
+
+```bash
+bd show <finding_id>                   # repeat per id from the TSV above
+```
+
+## 2. Apply the fixes (YOUR judgment — fix vs surface, per finding)
+
+Resume the branch (you cd'd into REVIEW_WORK_DIR above) and, for each finding:
+- severity at or above `FIX_THRESHOLD` (default minor: blocker/major/minor) — FIX it.
+- below the threshold (e.g. a nit when the threshold is minor) — SURFACE it (note
+  it in your commit body / summary) but do not fix it.
+
+A `fail` verdict means at least one blocker survived; you MUST fix the blocker(s).
+If a blocker is genuinely unfixable here (needs a human decision, missing access,
+out of scope), do NOT fake a fix — escalate and stop:
+
+```bash
+# only if a blocker cannot be fixed:
+review_apply_fixes_escalate "unfixable blocker: <finding id + why>"
+exit 0
+```
+
+Otherwise apply the fixes and commit with a descriptive body. This fix-mode
+behavior — resume branch + apply findings + commit — is the mol-polecat-base
+implement lifecycle running in fix mode; this loop does not re-specify it.
+
+## 3. Map the verdict + write it (run verbatim)
+
+Tell the lib whether you changed the branch this round; it maps the synthesis
+verdict onto the loop's done/iterate review.verdict and closes this bead:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-apply-fixes.sh"
+review_apply_fixes_load
+
+APPLIED=yes   # set to "no" ONLY if you changed nothing (e.g. all findings were sub-threshold nits you surfaced)
+VERDICT=$(review_apply_fixes_map_verdict "$REVIEW_SYNTHESIS_VERDICT" "$APPLIED")
+review_apply_fixes_set_verdict "$VERDICT" "synthesis=$REVIEW_SYNTHESIS_VERDICT applied=$APPLIED -> $VERDICT"
+```
+
+Exit criteria: either review_apply_fixes_escalate ran (blocked / unfixable -> done
++ gc.review.loop_outcome=blocked-needs-human on the root) or review.verdict
+(done|iterate) is set on this bead and it is closed pass. The controller then runs
+.gc-review-verdict.sh: review.verdict=done -> exit 0 (converged, stop);
+iterate -> exit 1 (next attempt or cap).
+'''
+
+# --------------------------------------------------------------------------
+# Compose the canonical reviewer into the review-pipeline slot — the SAME
+# fragment the standalone host (mol-standard-review) expands, so the two share
+# every prompt. The vars block maps the loop's vars into the fragment: the loop's
+# `target` -> the fragment's `review_target` (the fragment reserves the bare name
+# `target` for the expansion placeholder), severity_threshold + every model 1:1.
+# Values use SINGLE braces because expansion override vars resolve against the
+# loop's vars at compile time (substituteVars), not at render time.
+# --------------------------------------------------------------------------
+
+[compose]
+[[compose.expand]]
+target = "review-pipeline"
+with = "expansion-standard-reviewer"
+vars = { review_target = "{target}", base_branch = "{base_branch}", aux_model = "{aux_model}", quality_model = "{quality_model}", security_model = "{security_model}", performance_model = "{performance_model}", architecture_model = "{architecture_model}", testing_model = "{testing_model}", docs_model = "{docs_model}", synthesis_model = "{synthesis_model}", severity_threshold = "{severity_threshold}" }

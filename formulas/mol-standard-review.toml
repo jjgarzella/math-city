@@ -1,0 +1,139 @@
+# Standalone standard (8-pass) code review — the directly-slingable host for the
+# canonical reviewer fragment (expansion-standard-reviewer, gcs-f4j.8). This is
+# the standard-tier sibling of mol-triage-review: where triage is one cheap,
+# always-on session that fans out internally, this host runs the BREADTH audit —
+# an analyze pass, six independently-dispatched review lenses
+# (quality / security / performance / architecture / testing / docs), and a
+# synthesis pass — as a real graph.v2 molecule.
+#
+# THIN host, ZERO prompt duplication: every reviewer prompt lives in the ONE
+# canonical fragment. This file is just the placeholder slot + the
+# `[[compose.expand]]` that materializes the fragment into it, declaring the
+# fragment's full var contract so the whole reviewer is tunable from the host
+# (and mapping the host's `target` onto the fragment's `review_target`). The loop
+# variant (mol-review-loop-standard, gcs-f4j.8.5) expands the SAME fragment into
+# mol-review-loop's review-pipeline slot, so the two hosts share every prompt.
+#
+# Build epic: gcs-f4j.8 (standard-review reviewer). THIS host: gcs-f4j.8.4.
+#   gcs-f4j.8.1  fragment + analyze pass
+#   gcs-f4j.8.2  the six review lenses + shared lib/review-lane.sh
+#   gcs-f4j.8.3  synthesis (dedup-merge + severity + durable findings + verdict)
+#   gcs-f4j.8.4  THIS standalone host + integrity/lifecycle tests + dogfood
+#   gcs-f4j.8.5  loop variant mol-review-loop-standard
+#
+# Why EXPAND, not pour: the controller schedules the fragment's beads directly as
+# flat graph children of this host, so at gascity polecat pool=1 nothing has to
+# babysit a poured child molecule and there is no self-deadlock. The analyze pass
+# resolves the diff via the SHARED, vendor-neutral lib/resolve-diff.sh (the same
+# resolver the triage reviewer calls), persists DURABLE inputs hung off the
+# molecule root, and the six lens beads each read those inputs in their own
+# session — never this host's memory.
+#
+# Dual scope (via `target`, same contract as resolve-diff.sh): a diff-shaped
+# target (PR | branch | range | base..HEAD) scopes the lenses to the changed
+# surface; a path / '.' target keeps qdhenry's scope-free whole-repo audit — a
+# capability unique to this STANDALONE host (the loop variant always feeds a
+# branch diff).
+#
+# Sling:
+#   gc sling gascity/gasvillage.polecat <bead> --on mol-standard-review --nudge
+# Review the changes on the current branch (default target {{base_branch}}..HEAD):
+#   gc sling gascity/gasvillage.polecat <bead> --on mol-standard-review --nudge
+# Whole-repo audit:
+#   gc sling gascity/gasvillage.polecat <bead> --on mol-standard-review \
+#     --var target=. --nudge
+formula = "mol-standard-review"
+contract = "graph.v2"
+
+[requires]
+formula_compiler = ">=2.0.0"
+
+# --------------------------------------------------------------------------
+# Variables — the host re-declares the fragment's full var contract so the whole
+# reviewer is tunable from one `--var` surface. Each is propagated into the
+# fragment by the `[[compose.expand]]` vars block below (single-brace {name},
+# resolved against these host vars at compile time). The host's `target` maps
+# onto the fragment's reserved-name-avoiding `review_target`; every other var is
+# 1:1. Defaults mirror the fragment's defaults so an un-tuned sling behaves
+# exactly like the fragment's documented model tiering.
+# --------------------------------------------------------------------------
+
+[vars]
+
+[vars.target]
+description = "What to review — a PR (number, #number, or PR URL), a branch name, a commit range, base_ref..HEAD, or a path / '.' for a whole-repo audit. Empty (the default) resolves to {{base_branch}}..HEAD — the changes on the current branch. Mapped onto the fragment's review_target."
+default = ""
+
+[vars.base_branch]
+description = "Base branch the change is measured against — the default target ({{base_branch}}..HEAD) and the merge-base when target is a bare branch name."
+default = "main"
+
+[vars.aux_model]
+description = "Model for the analyze pass's cheap auxiliary reasoning (change summary + eligibility gate). Default haiku."
+default = "haiku"
+
+[vars.quality_model]
+description = "Model for the quality lens (code smells / anti-patterns / dead code / error handling). Standard tier; default sonnet."
+default = "sonnet"
+
+[vars.security_model]
+description = "Model for the security lens (vulnerabilities / secrets / authz / input validation). A judgment lens — deep tier; default opus."
+default = "opus"
+
+[vars.performance_model]
+description = "Model for the performance lens (bottlenecks / inefficient algorithms or queries / leaks). Standard tier; default sonnet."
+default = "sonnet"
+
+[vars.architecture_model]
+description = "Model for the architecture lens (organization / abstraction / coupling / scalability). A judgment lens — deep tier; default opus."
+default = "opus"
+
+[vars.testing_model]
+description = "Model for the testing lens (coverage / structure / missing scenarios). A mechanical lens — cheap tier; default haiku."
+default = "haiku"
+
+[vars.docs_model]
+description = "Model for the docs lens (comments / API docs / README / undocumented invariants). A mechanical lens — cheap tier; default haiku."
+default = "haiku"
+
+[vars.synthesis_model]
+description = "Model for the synthesis pass (dedup-merge across the six lanes + final severity assignment). A judgment pass — deep tier; default opus."
+default = "opus"
+
+[vars.severity_threshold]
+description = "Lowest severity a finding must reach to be surfaced/promoted by synthesis. Ordering blocker > major > minor > nit; severity-gated (rank, do not suppress whole categories). Default minor surfaces blocker/major/minor and demotes nits."
+default = "minor"
+
+# --------------------------------------------------------------------------
+# The single placeholder step. `[[compose.expand]]` replaces it with the
+# fragment's eight templates ({target}.analyze + the six lenses + {target}.synthesis),
+# where {target} is substituted with THIS step's id (review-pipeline). The
+# expanded analyze becomes the graph entry and synthesis the graph exit; the
+# clean graph.v2 workflow-finalize terminal is appended by the compiler.
+# --------------------------------------------------------------------------
+
+[[steps]]
+id = "review-pipeline"
+title = "Standard (8-pass) code review of {{target}}"
+metadata = { "gc.run_target" = "gasvillage.polecat" }
+description = '''
+PLACEHOLDER reviewer slot — never runs as written. It is replaced at compile
+time by `[[compose.expand]]` with the canonical expansion-standard-reviewer
+fragment (analyze -> six lenses -> synthesis). If you are reading this in a live
+bead, the expansion did not apply; that is a wiring bug in this host.
+'''
+
+# --------------------------------------------------------------------------
+# Compose the canonical reviewer into the slot. The vars block maps every host
+# var into the fragment: the host's `target` -> the fragment's `review_target`
+# (the fragment reserves the bare name `target` for the expansion placeholder),
+# and every other var 1:1. Values use SINGLE braces because expansion override
+# vars are resolved against the host's vars at compile time (substituteVars),
+# not at render time.
+# --------------------------------------------------------------------------
+
+[compose]
+[[compose.expand]]
+target = "review-pipeline"
+with = "expansion-standard-reviewer"
+vars = { review_target = "{target}", base_branch = "{base_branch}", aux_model = "{aux_model}", quality_model = "{quality_model}", security_model = "{security_model}", performance_model = "{performance_model}", architecture_model = "{architecture_model}", testing_model = "{testing_model}", docs_model = "{docs_model}", synthesis_model = "{synthesis_model}", severity_threshold = "{severity_threshold}" }

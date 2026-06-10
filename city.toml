@@ -16,7 +16,7 @@ effort = "high"
 [[named_session]]
 template = "anatoly"
 scope = "rig"
-dir = "Nemo.jl"
+dir = "DeRham.jl"
 mode = "on_demand"
 
 [[named_session]]
@@ -34,7 +34,7 @@ mode = "on_demand"
 [[named_session]]
 template = "bryan"
 scope = "rig"
-dir = "GPUPolynomials.jl"
+dir = "MMPSingularities.jl"
 mode = "on_demand"
 
 [[rigs]]

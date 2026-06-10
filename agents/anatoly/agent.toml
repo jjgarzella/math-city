@@ -1,5 +1,5 @@
 scope = "rig"
-dir = "Nemo.jl"
+dir = "DeRham.jl"
 provider = "claude"
 wake_mode = "fresh"
 work_dir = ".gc/worktrees/{{.Rig}}/{{.AgentBase}}"

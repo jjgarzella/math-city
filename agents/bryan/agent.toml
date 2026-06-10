@@ -1,5 +1,5 @@
 scope = "rig"
-dir = "GPUPolynomials.jl"
+dir = "MMPSingularities.jl"
 wake_mode = "fresh"
 work_dir = ".gc/worktrees/{{.Rig}}/{{.AgentBase}}"
 idle_timeout = "4h"

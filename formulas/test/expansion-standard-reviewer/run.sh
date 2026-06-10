@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # Deterministic test suite for the expansion-standard-reviewer fragment (the
 # canonical standard 8-pass reviewer, gcs-f4j.8). Covers the analyze pass
-# (gcs-f4j.8.1) and the six review lenses (gcs-f4j.8.2); the suite grows with
-# synthesis (.3).
+# (gcs-f4j.8.1), the six review lenses (gcs-f4j.8.2), and the synthesis pass
+# (gcs-f4j.8.3).
 #
 #   ./run.sh            run every test_*.sh
 #   ./run.sh 02 03      run only the matching test files
 #
 # Exits non-zero if any assertion fails. test_01 locks the fragment structure +
-# var contract + expansion-syntax + the six lenses' wiring; test_02 pins the
-# shared resolver contract the analyze step depends on and its no-drift wiring;
-# test_03 runs the analyze bash end-to-end against a stub bd/gc + a real resolver
-# and asserts the durable inputs + recorded metadata; test_04 expands the fragment
-# through the live gc binary (analyze + six lenses + per-lane opt_model); test_05
-# pins the shared lib/review-lane.sh transport + a lane's eligibility gate.
+# var contract + expansion-syntax + the six lenses' + synthesis' wiring; test_02
+# pins the shared resolver contract the analyze step depends on and its no-drift
+# wiring; test_03 runs the analyze bash end-to-end against a stub bd/gc + a real
+# resolver and asserts the durable inputs + recorded metadata; test_04 expands the
+# fragment through the live gc binary (analyze + six lenses + synthesis + per-lane
+# opt_model); test_05 pins the shared lib/review-lane.sh transport + a lane's
+# eligibility gate; test_06 pins the shared lib/review-synthesis.sh transport —
+# dedup-merge, severity promotion to durable findings, and the verdict.
 set -uo pipefail
 
 SUITE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

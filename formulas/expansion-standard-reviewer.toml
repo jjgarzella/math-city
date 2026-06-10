@@ -15,25 +15,31 @@ fragment is EXPANDED (compose.expand), not poured: the controller schedules its
 beads directly as flat graph children, so at gascity polecat pool=1 nothing
 babysits a poured child molecule and there is no self-deadlock.
 
-Shape (built incrementally; THIS file carries the analyze pass + the six review
-lenses — synthesis lands in gcs-f4j.8.3):
+Shape (built incrementally; THIS file now carries all three stages — the analyze
+pass, the six review lenses, and the synthesis pass):
   <target>.analyze    — gcs-f4j.8.1: resolve the diff via the SHARED
                         resolve-diff.sh, write a change summary, run an
                         eligibility gate, and persist diff/files/summary as
                         DURABLE artifacts under the molecule root. Lanes are
                         self-contained beads: they read these durable inputs,
                         never this session's memory.
-  <target>.<lens>     — gcs-f4j.8.2 (THIS): the six review lenses (quality /
-                        security / performance / architecture / testing / docs),
-                        each a SEPARATELY-DISPATCHED, self-contained lane bead
-                        (its own run_target → its own session → its own per-lane
-                        opt_model) that reads the durable inputs and files
-                        category-labelled candidate wisps. Separate dispatch is
-                        what makes per-lane model selection possible; the shared
-                        lane transport lives in formulas/lib/review-lane.sh.
-  <target>.synthesize — gcs-f4j.8.3: dedup-merge across the six lanes, assign
-                        severity (blocker / major / minor / nit), emit durable
-                        finding beads under the molecule root's findings container.
+  <target>.<lens>     — gcs-f4j.8.2: the six review lenses (quality / security /
+                        performance / architecture / testing / docs), each a
+                        SEPARATELY-DISPATCHED, self-contained lane bead (its own
+                        run_target → its own session → its own per-lane opt_model)
+                        that reads the durable inputs and files category-labelled
+                        candidate wisps. Separate dispatch is what makes per-lane
+                        model selection possible; the shared lane transport lives
+                        in formulas/lib/review-lane.sh.
+  <target>.synthesis  — gcs-f4j.8.3: a single deep-tier pass that needs all six
+                        lanes — dedup-merge across them (conservative), assign a
+                        severity (blocker / major / minor / nit), promote the
+                        survivors to DURABLE finding beads under the molecule
+                        root's findings container, and record a synthesis verdict
+                        (pass / pass_with_findings / fail / blocked). The shared
+                        verdict→severity→promote transport — the same output
+                        plumbing triage/quorum use, so apply-fixes stays
+                        reviewer-agnostic — lives in formulas/lib/review-synthesis.sh.
 
 (The step IDs use the `{target}` expansion placeholder — substituted with the
 host's placeholder step id when the fragment is expanded into a host. Above it is
@@ -119,6 +125,10 @@ default = "haiku"
 [vars.severity_threshold]
 description = "Lowest severity a finding must reach to be surfaced/promoted by synthesis. Ordering blocker > major > minor > nit; the threshold is severity-gated, not confidence-gated (rank, do not suppress whole categories). Default minor surfaces blocker/major/minor and demotes nits. Consumed by synthesis (gcs-f4j.8.3)."
 default = "minor"
+
+[vars.synthesis_model]
+description = "Model for the synthesis pass (dedup-merge across the six lanes + final severity assignment). A judgment pass — deep tier; default opus. Rendered into the synthesis step's opt_model metadata."
+default = "opus"
 
 # --------------------------------------------------------------------------
 # Analyze pass — resolve diff + change summary + eligibility gate, persisted
@@ -839,4 +849,159 @@ review_lane_close "docs: filed <N> candidate finding(s) (category:docs)"
 Exit criteria: every documentation candidate the change raises is filed as a
 `category:docs` wisp under `${REVIEW_ROOT}.findings` with a `Confidence: X/100`
 first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean pass.
+'''
+
+# ==========================================================================
+# Synthesis pass (the 8th pass, qdhenry's "recommendations") — a SINGLE
+# bead-native session that runs AFTER all six lenses. It dedup-merges the
+# candidate wisps, assigns each survivor a final severity, promotes survivors to
+# DURABLE finding beads under the run's findings container (the same output
+# plumbing the triage + quorum reviewers use, so apply-fixes stays
+# reviewer-agnostic), and records a synthesis verdict on the molecule root. The
+# verdict -> severity -> promote transport lives once in the shared
+# formulas/lib/review-synthesis.sh; only the dedup + severity reasoning is the
+# agent's. `needs` ALL SIX lenses so it sees every candidate.
+# ==========================================================================
+
+[[template]]
+id = "{target}.synthesis"
+title = "Synthesis — dedup-merge + severity + promote durable findings + verdict"
+needs = ["{target}.quality", "{target}.security", "{target}.performance", "{target}.architecture", "{target}.testing", "{target}.docs"]
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{synthesis_model}" }
+description = '''
+You are the SYNTHESIS pass of the standard (8-pass) code review — the 8th pass,
+qdhenry's "recommendations". You run as ONE bead-native polecat session AFTER all
+six lenses (quality / security / performance / architecture / testing / docs) have
+filed their candidate findings. Your job is to turn six independent lanes' raw
+candidates into a clean, deduplicated, severity-ranked set of DURABLE findings
+plus one verdict — the output apply-fixes (and the human gate) consume. You ran at
+the `{synthesis_model}` tier because dedup and severity are judgment calls.
+
+You do NOT re-review the diff for new issues — the six lenses already did that. You
+consolidate what they found. Breadth is preserved upstream; your job is to RANK,
+not to suppress whole categories (severity-gated, never confidence-suppressed).
+
+## 1. Load the run + enumerate the candidates (run verbatim)
+
+Pure transport — no judgment. Source the shared synthesis helper (referenced via
+`$GC_CITY`, branch-independent, exactly like the lane helper) and load the run:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-synthesis.sh"
+review_synthesis_load          # sets REVIEW_ROOT/FINDINGS/INPUTS_DIR/DIFF/SUMMARY/ELIGIBLE + heartbeats
+
+if [ "$REVIEW_ELIGIBLE" = "no" ]; then
+  # The analyze pass deemed the change ineligible; the lenses all no-op'd. There
+  # is nothing to synthesize — record a clean pass and stop.
+  review_synthesis_record_verdict pass 0 0 0 0 "ineligible change — nothing to synthesize"
+  exit 0
+fi
+
+# Tab-separated candidates: <wisp_id>  <category>  <confidence 0-100>  <title>
+review_synthesis_candidates | tee "$REVIEW_INPUTS_DIR/candidates.tsv"
+```
+
+If `candidates.tsv` is EMPTY, the six lenses found nothing — a clean pass. Record
+it and stop:
+
+```bash
+review_synthesis_record_verdict pass 0 0 0 0 "no candidate findings from any lane"
+exit 0
+```
+
+Otherwise read each candidate's full body for the file:line, evidence, and the
+lane's self-rated `Confidence: X/100` first line:
+
+```bash
+bd show <wisp_id>              # repeat per candidate id from candidates.tsv
+```
+
+You now hold every candidate: its originating lens (`category:`), its self-rated
+confidence (a hint — you re-judge), and its file:line + evidence.
+
+## 2. Dedup-merge (judgment — conservative, like mol-triage-review step 7)
+
+Cluster candidates that describe the SAME underlying issue. Two candidates merge
+ONLY if they share: the same file, an overlapping line range, AND the same root
+cause. Be CONSERVATIVE — when in doubt, keep them separate. Different lenses
+flagging genuinely different problems on adjacent lines are NOT duplicates.
+
+For each merge cluster, pick ONE canonical survivor (the candidate with the
+clearest evidence / tightest line range). The survivor represents the cluster; the
+others are duplicates to burn in step 4. A finding that several lenses raised is
+STRONGER, not redundant — note the contributing lenses in the survivor (you may
+`bd label add category:<lens> <survivor>` for each lens that raised it, so the
+durable bead stays traceable to every lane).
+
+## 3. Assign a final severity to each survivor (judgment)
+
+Score every surviving candidate on impact, not on the lane's self-rated
+confidence:
+
+- **blocker** — must fix before this change merges: a correctness bug, security
+  hole, data loss, or crash on the changed surface.
+- **major** — should fix: a real defect or significant risk that is not a hard
+  merge gate.
+- **minor** — worth fixing: a smaller defect, a maintainability or clarity problem.
+- **nit** — trivial / stylistic; optional.
+
+Apply the threshold `severity_threshold = {severity_threshold}` (ordering
+blocker > major > minor > nit): SURFACE every survivor whose severity is at or
+above the threshold; for survivors BELOW it (e.g. nits when the threshold is
+minor), burn them. You are ranking, not suppressing categories — a real finding in
+any lens survives if it clears the threshold.
+
+## 4. Promote survivors, burn the rest (run verbatim per candidate)
+
+Materialize your step-2/3 decisions. Promotion turns the ephemeral wisp into a
+durable finding bead (preserving its id, its category labels, and its place under
+the findings container) and stamps the final severity; burning removes a duplicate
+or a sub-threshold candidate. Keep running tallies for the verdict.
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-synthesis.sh"
+review_synthesis_load
+
+# --- promote each surviving candidate at/above the threshold: ---
+#   review_synthesis_promote <wisp_id> <blocker|major|minor|nit> "<one-line rationale>"
+review_synthesis_promote <wisp_id> <severity> "<why this severity>"
+
+# --- burn each duplicate (folded into a survivor) or sub-threshold candidate: ---
+#   review_synthesis_burn <wisp_id> "<duplicate of <survivor> | below threshold>"
+review_synthesis_burn <wisp_id> "<reason>"
+```
+
+## 5. Record the verdict (run verbatim, substituting your tallies + verdict)
+
+The synthesis verdict summarizes the run for apply-fixes and the human gate:
+
+- `fail` — at least one **blocker** survived (must-fix before merge).
+- `pass_with_findings` — findings survived but **none** are blockers (major/minor
+  are advisory/fixable, not a hard gate).
+- `pass` — no finding survived at or above the threshold (clean).
+
+`considered` = total candidates you looked at; `promoted` = survivors made durable;
+`merged` = duplicates folded into a survivor then burned; `burned` = sub-threshold
+rejects burned. (merged + burned + promoted should equal considered.)
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-synthesis.sh"
+review_synthesis_load
+review_synthesis_record_verdict <pass|pass_with_findings|fail> \
+  <considered> <promoted> <merged> <burned> \
+  "<one-line headline: e.g. 1 blocker, 2 major across security+quality>"
+```
+
+`review_synthesis_record_verdict` writes `gc.review.synthesis_verdict` + counts on
+the molecule root, closes the findings container (its surviving children are the
+durable findings), and closes this synthesis bead `gc.outcome=pass`.
+
+Exit criteria: every candidate is promoted (durable, severity-tagged child of
+`${REVIEW_ROOT}.findings`) or burned; the molecule root carries
+`gc.review.synthesis_verdict` + counts; this synthesis bead is closed
+`gc.outcome=pass`. Zero candidates is a clean `pass`. The durable findings + the
+verdict are what apply-fixes and the human gate consume.
 '''

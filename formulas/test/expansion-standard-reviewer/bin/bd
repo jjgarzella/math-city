@@ -46,15 +46,20 @@ case "$sub" in
              + (if $eligible    != "" then {"gc.review.eligible":$eligible} else {} end)
              + (if $reason      != "" then {"gc.review.eligibility_reason":$reason} else {} end))}
            | [.]'
+      elif [ -n "${BD_FINDINGS:-}" ] && [ "$target" = "${BD_FINDINGS:-}" ] && [ -n "${BD_CANDIDATES_FILE:-}" ] && [ -f "${BD_CANDIDATES_FILE}" ]; then
+        # Findings container: return the candidate wisps the lanes filed as its
+        # .children (the synthesis lib enumerates them). The test writes the
+        # children JSON to BD_CANDIDATES_FILE.
+        jq -c '[{id: $id, children: .}]' --arg id "$target" "$BD_CANDIDATES_FILE"
       else
         printf '[]\n'
       fi
       exit 0
     fi
-    # No --json: an existence check (the findings-container guard uses this). Only
-    # the known beads "exist"; anything else (e.g. <root>.findings) is absent, so
-    # the guard creates it.
+    # No --json: an existence check (the findings-container guard uses this). The
+    # known beads "exist"; the findings container exists only once populated.
     { [ "$target" = "${GC_BEAD_ID:-}" ] || [ "$target" = "${BD_ROOT:-}" ]; } && exit 0
+    { [ -n "${BD_FINDINGS:-}" ] && [ "$target" = "${BD_FINDINGS:-}" ] && [ -n "${BD_CANDIDATES_FILE:-}" ]; } && exit 0
     exit 1 ;;
   create)
     shift
@@ -86,13 +91,36 @@ case "$sub" in
         notes="$a"
       fi
       case "$a" in
-        --status=*) status="${a#*=}" ;;
-        --notes=*)  notes="${a#*=}" ;;
+        --status=*)   status="${a#*=}" ;;
+        --notes=*)    notes="${a#*=}" ;;
+        --priority=*) priority="${a#*=}" ;;
       esac
       prev="$a"
     done
     if [ -n "${BD_UPDATE_LOG:-}" ]; then
-      printf 'id=%s\tstatus=%s\tnotes=%s\n' "$bid" "$status" "$notes" >> "$BD_UPDATE_LOG"
+      printf 'id=%s\tstatus=%s\tpriority=%s\tnotes=%s\n' "$bid" "$status" "${priority:-}" "$notes" >> "$BD_UPDATE_LOG"
+    fi
+    exit 0 ;;
+  promote)
+    # `bd promote <wisp> --reason=<r>` — record the survivor promotion so the
+    # synthesis-lib test (test_06) can assert which candidates became durable.
+    shift
+    wisp="${1:-}"
+    reason="$(arg_val --reason "$@" || true)"
+    [ -n "${BD_PROMOTE_LOG:-}" ] && printf 'promote\tid=%s\treason=%s\n' "$wisp" "$reason" >> "$BD_PROMOTE_LOG"
+    exit 0 ;;
+  label)
+    # `bd label add <label> <id...>` — record severity-label stamping.
+    if [ "${2:-}" = "add" ] && [ -n "${BD_PROMOTE_LOG:-}" ]; then
+      lbl="${3:-}"; shift 3 || shift $#
+      for id in "$@"; do printf 'label\t%s\t%s\n' "$lbl" "$id" >> "$BD_PROMOTE_LOG"; done
+    fi
+    exit 0 ;;
+  mol)
+    # `bd mol burn --force <wisp>` — record the burn of a duplicate/sub-threshold.
+    if [ "${2:-}" = "burn" ] && [ -n "${BD_PROMOTE_LOG:-}" ]; then
+      shift 2
+      for a in "$@"; do case "$a" in --*) ;; *) printf 'burn\t%s\n' "$a" >> "$BD_PROMOTE_LOG" ;; esac; done
     fi
     exit 0 ;;
   heartbeat|close)

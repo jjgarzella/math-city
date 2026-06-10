@@ -20,6 +20,7 @@ assert_contains "$SHOW" "expansion-standard-reviewer.main.analyze" "compiled: {t
 for lens in quality security performance architecture testing docs; do
   assert_contains "$SHOW" "expansion-standard-reviewer.main.$lens" "compiled: {target}.$lens -> main.$lens"
 done
+assert_contains "$SHOW" "expansion-standard-reviewer.main.synthesis" "compiled: {target}.synthesis -> main.synthesis (gcs-f4j.8.3)"
 assert_contains "$SHOW" "workflow-finalize" "compiled: clean terminal (workflow-finalize)"
 
 # A JSON render must show NO leftover {{double}} braces and NO unsubstituted
@@ -36,7 +37,7 @@ bad_single=re.findall(r"\{(review_target|base_branch|aux_model|severity_threshol
 print("DOUBLE="+str(len(bad_double)))
 print("SINGLE="+str(len(bad_single)))
 print("RESOLVER_ARGS_OK=" + ("yes" if "\"\" \"main\"" in desc else "no"))
-tier={"quality":"sonnet","security":"opus","performance":"sonnet","architecture":"opus","testing":"haiku","docs":"haiku"}
+tier={"quality":"sonnet","security":"opus","performance":"sonnet","architecture":"opus","testing":"haiku","docs":"haiku","synthesis":"opus"}
 ok=True
 for s in d["steps"]:
     sid=s.get("id","")

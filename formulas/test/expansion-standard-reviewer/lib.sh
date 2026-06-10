@@ -221,3 +221,60 @@ run_lane_block() {
 create_log_has() { grep -q -- "$1" "${LB_CREATE_LOG:-/nonexistent}" 2>/dev/null; }
 # update_log_has <needle> — true if any bd-update record contains <needle>.
 update_log_has() { grep -q -- "$1" "${LB_UPDATE_LOG:-/nonexistent}" 2>/dev/null; }
+
+# --- review-synthesis (lib) runner -------------------------------------------
+SYNTH_LIB="$SUITE_DIR/../../lib/review-synthesis.sh"
+
+# synth_sandbox — create (once per scenario) a sandbox GC_CITY carrying the real
+# review-synthesis.sh + a populated durable-input store for SY_ROOT, and write the
+# candidate wisps (SY_CANDIDATES_JSON, a JSON array) to a file the stub bd returns
+# as the findings container's .children. Caller may pre-set SY_ROOT / SY_ELIGIBLE /
+# SY_TARGET_KIND / SY_CANDIDATES_JSON before the first call. Sets SY_CITY,
+# SY_INPUTS_DIR, SY_FINDINGS, SY_CANDIDATES_FILE, SY_UPDATE_LOG, SY_META_LOG,
+# SY_PROMOTE_LOG.
+synth_sandbox() {
+  SY_ROOT="${SY_ROOT:-root-synth-$$}"
+  SY_ELIGIBLE="${SY_ELIGIBLE:-yes}"
+  SY_TARGET_KIND="${SY_TARGET_KIND:-range}"
+  SY_FINDINGS="$SY_ROOT.findings"
+  if [ -z "${SY_CITY:-}" ]; then
+    SY_CITY="$(mktemp -d "${TMPDIR:-/tmp}/esr-synthcity.XXXXXX")"
+    mkdir -p "$SY_CITY/formulas/lib"
+    cp -f "$SYNTH_LIB" "$SY_CITY/formulas/lib/review-synthesis.sh"
+    chmod +x "$SY_CITY/formulas/lib/review-synthesis.sh"
+    SY_INPUTS_DIR="$SY_CITY/.gc/review-inputs/$SY_ROOT"
+    mkdir -p "$SY_INPUTS_DIR"
+    printf 'diff --git a/app.go b/app.go\n+func Added() {}\n' > "$SY_INPUTS_DIR/diff"
+    printf 'a small test change\n' > "$SY_INPUTS_DIR/summary.md"
+  fi
+  : "${SY_CANDIDATES_FILE:=$(mktemp)}"
+  : "${SY_UPDATE_LOG:=$(mktemp)}"
+  : "${SY_META_LOG:=$(mktemp)}"
+  : "${SY_PROMOTE_LOG:=$(mktemp)}"
+  printf '%s' "${SY_CANDIDATES_JSON:-[]}" > "$SY_CANDIDATES_FILE"
+}
+
+# synth_env <args...> — run a command with the synthesis sandbox env + the stub
+# bd/gc on PATH. The stub returns SY_CANDIDATES_FILE as the findings container's
+# children and logs promote/label/burn to SY_PROMOTE_LOG.
+synth_env() {
+  GC_CITY="$SY_CITY" \
+  GC_BEAD_ID="${SY_BEAD_ID:-synthesis-bead}" \
+  GC_AGENT="gascity/test.polecat" \
+  BD_ROOT="$SY_ROOT" \
+  BD_REVIEW_INPUTS_DIR="$SY_INPUTS_DIR" \
+  BD_REVIEW_TARGET_KIND="$SY_TARGET_KIND" \
+  BD_REVIEW_ELIGIBLE="$SY_ELIGIBLE" \
+  BD_FINDINGS="$SY_FINDINGS" \
+  BD_CANDIDATES_FILE="$SY_CANDIDATES_FILE" \
+  BD_UPDATE_LOG="$SY_UPDATE_LOG" \
+  BD_META_LOG="$SY_META_LOG" \
+  BD_PROMOTE_LOG="$SY_PROMOTE_LOG" \
+  PATH="$SUITE_DIR/bin:$PATH" \
+  "$@"
+}
+
+# synth_meta_val <key> — last recorded --set-metadata value in SY_META_LOG.
+synth_meta_val() { grep "^$1=" "${SY_META_LOG:-/nonexistent}" 2>/dev/null | tail -1 | sed "s/^$1=//"; }
+# promote_log_has <needle> — true if any promote/label/burn record contains <needle>.
+promote_log_has() { grep -q -- "$1" "${SY_PROMOTE_LOG:-/nonexistent}" 2>/dev/null; }

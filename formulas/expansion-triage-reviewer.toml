@@ -1,0 +1,1061 @@
+description = """
+Canonical Tier-1 TRIAGE reviewer — the bead-native, provider-INDEPENDENT sibling
+of the legacy single-session mol-triage-review. Where mol-triage-review fans out
+internally via claude's in-session Task tool (efficient but CLAUDE-LOCKED — the
+Task fan-out and its model selection exist only on claude), THIS reviewer runs
+each review angle as its OWN separately-dispatched bead with its OWN gc.run_target
+and per-lane opt_model, exactly the standard-reviewer's machinery (gcs-f4j.8.*).
+Separate dispatch is what makes per-lane model right-sizing — and provider
+independence — possible; the trade-off (accepted, gcs-f4j.10.1) is N dispatches
+instead of one session.
+
+Triage's DIFFERENTIATOR vs the standard reviewer is the LENS SET, not the
+mechanism: the standard reviewer is a six-lens BREADTH audit (quality / security /
+performance / architecture / testing / docs); triage is HIGH-PRECISION and
+narrowed to the real-bugs-only angles — it flags ONLY (a) violations of WRITTEN
+project rules and (b) real bugs, never textbook quality opinions, nitpicks, or
+anything a linter / typechecker / CI catches. The five angles, ported from the
+legacy reviewer (Anthropic's /code-review pipeline): rule-adherence, bug-scan,
+git-history, prior-prs (best-effort), in-code-invariants. The high-precision
+confidence gate (re-score 0-100, keep only survivors at/above {threshold}) is
+preserved — it is applied in the synthesis pass on top of the shared severity
+machinery.
+
+This is the ONE canonical triage fragment (gcs-f4j.10.1). A thin standalone host
+(mol-triage-review-independent) EXPANDS it (compose.expand, zero prompt
+duplication), slingable like mol-triage-review / mol-standard-review. EXPANDED,
+not poured: the controller schedules its beads directly as flat graph children, so
+at gascity polecat pool=1 nothing babysits a poured child molecule and there is no
+self-deadlock. Provider becomes a COOK-TIME var in gcs-f4j.10.2 (pre-cooked claude
++ codex versions); this fragment is the one formula they all cook from — never a
+per-provider fork.
+
+Shape (analyze -> five real-bugs lenses -> synthesis), reusing the SHARED,
+reviewer-agnostic libs the standard + quorum reviewers also use:
+  <target>.analyze        — resolve the diff via the SHARED resolve-diff.sh, write
+                            a change summary, discover the project rule files into
+                            DURABLE inputs, and run an eligibility gate. Unlike the
+                            standard reviewer, triage REJECTS a path / whole-tree
+                            target — triage reviews CHANGES, not a whole repo.
+  <target>.<angle>        — the five real-bugs lenses, each a SEPARATELY-DISPATCHED
+                            self-contained lane bead (own run_target -> own session
+                            -> own opt_model). They read the analyze pass's durable
+                            inputs and file category-labelled candidate wisps via
+                            the shared formulas/lib/review-lane.sh. bug-scan and
+                            rule-adherence are fully durable-input-based; git-history,
+                            prior-prs, and in-code-invariants resume the root's
+                            work_dir for repo/remote access and self-skip cleanly
+                            when it is unavailable.
+  <target>.synthesis      — a single deep pass that needs all five lenses: re-score
+                            each candidate's confidence 0-100 against Anthropic's
+                            VERBATIM rubric, BURN anything below {threshold} (the
+                            triage precision gate), dedup-merge the survivors, assign
+                            a severity, promote the survivors to DURABLE finding
+                            beads, and record a synthesis verdict — all via the
+                            shared formulas/lib/review-synthesis.sh (the same output
+                            plumbing the standard + quorum reviewers use, so
+                            apply-fixes stays reviewer-agnostic).
+
+(The step IDs use the `{target}` expansion placeholder — substituted with the
+host's placeholder step id when the fragment is expanded into a host. Above it is
+written <target> to avoid implying it is a variable.)
+
+VAR-NAMING NOTE: the review target var is `review_target`, NOT `target`. In an
+expansion template `{target}` is reserved — it is the expansion placeholder for
+the host's target step id (substituted before vars), so a var literally named
+`target` could never be referenced. The thin host keeps its own `target` var and
+maps it onto `review_target` through `[[compose.expand]]` vars. Expansion templates
+substitute vars with SINGLE braces (`{review_target}`), unlike the double-brace
+`{{var}}` of workflow formulas — this holds in [[template]] metadata values too,
+so each lane's opt_model resolves at expansion.
+"""
+formula = "expansion-triage-reviewer"
+version = 1
+contract = "graph.v2"
+type = "expansion"
+
+[requires]
+formula_compiler = ">=2.0.0"
+
+# --------------------------------------------------------------------------
+# Variables — the fragment's full var contract. Referenced with SINGLE braces
+# ({name}). The analyze pass uses review_target / base_branch / aux_model; each
+# lens carries its OWN per-lane model var rendered into its opt_model step
+# metadata; threshold (the confidence gate) + synthesis_model are consumed by the
+# synthesis pass.
+#
+# Per-lane model right-sizing keeps triage CHEAP + always-on (its design tier):
+# the mechanical angles (rule-adherence quoting rules, prior-prs gh-searching) ride
+# the cheap tier (haiku); the judgment angles that actually find real bugs
+# (bug-scan, git-history, in-code-invariants) ride the standard tier (sonnet); the
+# synthesis pass (confidence re-score + dedup + severity — the precision gate)
+# rides sonnet. Nothing defaults to the deep (opus) tier — triage trades depth for
+# cheapness; the overseer can bump any lane via --var. The values opus/sonnet/haiku
+# are the claude provider's model choices; opt_model validates against the
+# run_target provider's options_schema at spawn (invalid -> skipped + logged,
+# falls back to the agent default), and the live-spawn fold is gated on the gc
+# rebuild (parent gcs-f4j.10; live string/effect test gcs-f4j.8.2.1).
+# --------------------------------------------------------------------------
+
+[vars.review_target]
+description = "What to review — a PR (number, #number, or PR URL), a branch name, a commit range, or base_branch..HEAD. Empty (the default) resolves to base_branch..HEAD (the changes on the current branch). A path / '.' / whole-tree target is REJECTED — triage reviews CHANGES (the standard reviewer is the whole-repo audit). Named review_target, not target: {target} is the reserved expansion placeholder."
+default = ""
+
+[vars.base_branch]
+description = "Base branch the change is measured against. Used for the default target (base_branch..HEAD) and as the merge-base when the target is a bare branch name."
+default = "main"
+
+[vars.aux_model]
+description = "Model for the cheap auxiliary reasoning in the analyze pass — the change summary + the eligibility gate. Anthropic uses Haiku; default haiku."
+default = "haiku"
+
+[vars.rule_adherence_model]
+description = "Model for the rule-adherence lens (changed lines vs WRITTEN project rules). A mechanical angle — quote a rule, check the changed lines — cheap tier; default haiku. Rendered into the rule-adherence step's opt_model metadata."
+default = "haiku"
+
+[vars.bug_scan_model]
+description = "Model for the bug-scan lens (real bugs visible in the changed lines — logic errors, leaks, missing error handling, races). The core real-bug angle; standard tier; default sonnet. Rendered into the bug-scan step's opt_model metadata."
+default = "sonnet"
+
+[vars.git_history_model]
+description = "Model for the git-history lens (blame/log of the modified hunks — resurrected bugs, dropped edge cases, contradicted recent changes). A judgment angle; standard tier; default sonnet. Rendered into the git-history step's opt_model metadata."
+default = "sonnet"
+
+[vars.prior_prs_model]
+description = "Model for the prior-prs lens (best-effort: prior PRs + their review comments on the touched files). A mechanical angle — gh search + compare — cheap tier; default haiku. Rendered into the prior-prs step's opt_model metadata."
+default = "haiku"
+
+[vars.in_code_invariants_model]
+description = "Model for the in-code-invariants lens (changes that violate an explicit in-code invariant / contract / 'callers must' comment). A judgment angle; standard tier; default sonnet. Rendered into the in-code-invariants step's opt_model metadata."
+default = "sonnet"
+
+[vars.synthesis_model]
+description = "Model for the synthesis pass (confidence re-score against Anthropic's rubric + threshold gate + dedup-merge + severity). The precision-critical judgment pass; standard tier; default sonnet. Rendered into the synthesis step's opt_model metadata."
+default = "sonnet"
+
+[vars.threshold]
+description = "Minimum confidence score (0-100) a candidate must reach in the synthesis re-score to survive (be promoted to a durable finding). Candidates below are BURNED. This is triage's high-precision gate (Anthropic's threshold is 80); default 80. Consumed by the synthesis pass."
+default = "80"
+
+# ==========================================================================
+# Analyze pass — resolve diff + change summary + eligibility gate + project
+# rule-file discovery, persisted durably so every downstream lane bead is
+# self-contained. Triage REJECTS a path / whole-tree target.
+# ==========================================================================
+
+[[template]]
+id = "{target}.analyze"
+title = "Analyze: resolve diff + change summary + rule-file discovery + eligibility gate"
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{aux_model}" }
+description = '''
+You are the ANALYZE pass of the Tier-1 triage code review. You run as ONE
+bead-native polecat session. Your job is to turn the review target into DURABLE
+inputs the five real-bugs lenses can each consume independently:
+
+  1. resolve the review target to a unified diff (triage reviews CHANGES — a
+     path / whole-tree target is a hard error),
+  2. discover the project rule files relevant to the change,
+  3. write a short change summary, and
+  4. decide eligibility (skip trivial / generated / empty changes).
+
+Persist them as DURABLE artifacts hung off the molecule ROOT — NOT in this
+session's shell or context. The lenses run as SEPARATE beads in SEPARATE sessions
+and read these durable inputs; they never see your session memory. Lanes
+communicate via beads and these files, never via shared shell state.
+
+Model tiers across the fragment:
+- aux_model = `{aux_model}` — this pass's summary + eligibility gate
+- the five lenses each ride their OWN per-lane model (opt_model metadata) — cheap
+  (haiku) for rule-adherence + prior-prs, standard (sonnet) for bug-scan +
+  git-history + in-code-invariants
+- the synthesis pass re-scores confidence and keeps only survivors at or above
+  the threshold `{threshold}`/100
+
+## 1. Resolve the diff + open the durable input store (run verbatim)
+
+This block is pure transport — no judgment. It resolves the target through the
+SHARED, vendor-neutral resolver (`resolve-diff.sh`, the single source of truth the
+standard + legacy triage reviewers call too), copies the diff + touched-file list
+into a durable store keyed on the molecule root, discovers the project rule files,
+and records the store handle + work_dir on the root so every lane resolves them
+identically — branch-independent, via `$GC_CITY`. Run it exactly, then read what
+it printed:
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+echo "[analyze] GC_AGENT=${GC_AGENT:-} GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
+gc bd heartbeat "$GC_BEAD_ID" || true
+
+# Molecule ROOT — the durable inputs hang off it so every lane finds them.
+ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
+[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"   # single-bead molecule: the bead is its own root
+
+# work_dir under review: an inherited work_dir on the root wins (the standalone
+# host / sling caller records the worktree the reviewer scopes to); otherwise this
+# session's worktree. Record it so the repo-dependent lenses (git-history,
+# prior-prs, in-code-invariants) can resume the same tree.
+WORK_DIR=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | (.metadata["work_dir"] // .metadata["gc.work_dir"] // empty)')
+[ -z "$WORK_DIR" ] && WORK_DIR="$PWD"
+bd update "$ROOT" --set-metadata work_dir="$WORK_DIR" >/dev/null 2>&1 || true
+
+# Durable input store, keyed on the molecule root and referenced via $GC_CITY (set
+# by the runtime) — exactly like the shared resolver — so it resolves no matter
+# which worktree a lane runs in.
+INPUTS_DIR="${GC_CITY:?GC_CITY must be set by the runtime}/.gc/review-inputs/${ROOT}"
+mkdir -p "$INPUTS_DIR"
+
+# The SHARED resolver — referenced via $GC_CITY, never a repo-relative path.
+RESOLVER="${GC_CITY}/formulas/lib/resolve-diff.sh"
+[ -x "$RESOLVER" ] || { echo "ERROR: shared resolver missing or not executable at $RESOLVER" >&2; exit 2; }
+
+# Resolve IN the work_dir under review (the checked-out change). stdout carries the
+# eval-able TARGET_KIND/DIFF_FILE/FILES_FILE (empty on an empty diff); stderr
+# narrates. Exit 2 = path/whole-tree, exit 3 = PR fetch failed. review_target and
+# base_branch are baked in at expansion (single-brace expansion vars).
+RESOLVED="$(cd "$WORK_DIR" && "$RESOLVER" "{review_target}" "{base_branch}")"; RC=$?
+
+if [ "$RC" -eq 3 ]; then
+  echo "ERROR: PR diff fetch failed for the review target; cannot review." >&2
+  exit 3
+elif [ "$RC" -eq 2 ]; then
+  # A path / whole-tree target. Unlike the standard reviewer (which audits the
+  # whole repo), TRIAGE reviews CHANGES only — this is a hard error. Use
+  # mol-standard-review for a scope-free whole-repo audit.
+  echo "ERROR: triage reviews CHANGES, not a path / whole-tree target. Use mol-standard-review for a whole-repo audit." >&2
+  exit 2
+elif [ "$RC" -ne 0 ]; then
+  echo "ERROR: resolver exited $RC for the review target." >&2
+  exit "$RC"
+elif [ -z "$RESOLVED" ]; then
+  # exit 0 + empty stdout = empty diff: nothing to review (deterministically
+  # ineligible — recorded as such below; no judgment needed).
+  TARGET_KIND="empty"
+  : > "$INPUTS_DIR/diff"
+  : > "$INPUTS_DIR/files"
+  echo "[analyze] empty diff — nothing to review."
+else
+  eval "$RESOLVED"   # sets TARGET_KIND, DIFF_FILE, FILES_FILE
+  cp -f "$DIFF_FILE"  "$INPUTS_DIR/diff"
+  cp -f "$FILES_FILE" "$INPUTS_DIR/files"
+  echo "[analyze] resolved kind=$TARGET_KIND -> durable $INPUTS_DIR/{diff,files}"
+fi
+
+# Discover the project rule files relevant to the change, IN the work_dir. Pure
+# transport (a deterministic superset — the rule-adherence lane decides which
+# rules actually apply): the root-level vendor-neutral rule files, plus the same
+# files in every ANCESTOR directory of a touched file. Write the path list to
+# rule-files and a durable, line-numbered concatenation to rules.md so the
+# rule-adherence lane can quote rules verbatim with path:line WITHOUT needing the
+# repo checked out.
+: > "$INPUTS_DIR/rule-files"
+: > "$INPUTS_DIR/rules.md"
+(
+  cd "$WORK_DIR" 2>/dev/null || exit 0
+  {
+    for n in AGENTS.md CLAUDE.md .cursorrules .github/copilot-instructions.md; do
+      [ -f "$n" ] && printf '%s\n' "$n"
+    done
+    [ -d .cursor/rules ] && find .cursor/rules -type f 2>/dev/null
+    if [ -f "$INPUTS_DIR/files" ]; then
+      while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        d="$(dirname "$f")"
+        while :; do
+          for n in AGENTS.md CLAUDE.md .cursorrules; do
+            [ -f "$d/$n" ] && printf '%s\n' "$d/$n"
+          done
+          [ "$d" = "." ] && break
+          d="$(dirname "$d")"
+        done
+      done < "$INPUTS_DIR/files"
+    fi
+  } | sort -u > "$INPUTS_DIR/rule-files"
+
+  while IFS= read -r rf; do
+    [ -z "$rf" ] && continue
+    [ -f "$rf" ] || continue
+    printf '\n===== RULE FILE: %s =====\n' "$rf" >> "$INPUTS_DIR/rules.md"
+    nl -ba -- "$rf" >> "$INPUTS_DIR/rules.md" 2>/dev/null || cat -- "$rf" >> "$INPUTS_DIR/rules.md"
+  done < "$INPUTS_DIR/rule-files"
+)
+echo "[analyze] rule files discovered: $(wc -l < "$INPUTS_DIR/rule-files" | tr -d ' ')"
+
+# Record the durable handle + resolved kind on the ROOT so lanes resolve them
+# bead-natively. (eligibility + summary are recorded in step 3, after the gate.)
+bd update "$ROOT" --set-metadata gc.review.inputs_dir="$INPUTS_DIR"
+bd update "$ROOT" --set-metadata gc.review.target_kind="$TARGET_KIND"
+echo "[analyze] INPUTS_DIR=$INPUTS_DIR  TARGET_KIND=$TARGET_KIND  ROOT=$ROOT  WORK_DIR=$WORK_DIR"
+```
+
+After this block you hold (printed above): `INPUTS_DIR` (the durable store),
+`TARGET_KIND` (one of `pr` / `branch` / `range` / `empty`), and `ROOT`. The
+unified diff is `$INPUTS_DIR/diff`; the touched-file list is `$INPUTS_DIR/files`;
+the discovered rule files are `$INPUTS_DIR/rule-files` (paths) +
+`$INPUTS_DIR/rules.md` (line-numbered contents).
+
+## 2. Change summary + eligibility gate (aux_model reasoning)
+
+This is cheap auxiliary reasoning at the `{aux_model}` tier. Decide two things:
+
+**Eligibility** — should this change be reviewed at all? It is determined by
+`TARGET_KIND`:
+- `empty` → INELIGIBLE. Reason: empty diff, nothing to review. (Deterministic —
+  no judgment.)
+- `pr` / `branch` / `range` → read `$INPUTS_DIR/diff` and judge. Mark INELIGIBLE
+  (skip) if ANY of these hold — mirroring the legacy triage eligibility gate:
+    * the diff is trivial — whitespace / formatting / comment-only, a version
+      bump, or a generated-file-only change;
+    * the change is clearly automated (a dependency-bump or codegen commit) and
+      obviously fine;
+    * this exact change has already been reviewed by this formula (a findings
+      container under `$ROOT` already exists).
+  Otherwise mark ELIGIBLE. (Anthropic's "PR closed/draft" clauses are dropped: a
+  resolved diff has no open/closed state.)
+
+**Change summary** — 2-5 sentences: what the change does and the parts most worth
+reviewing (intent, the touched files, the target kind). For an `empty` target the
+summary is simply "no changes". The five lenses each start from this shared
+summary instead of re-deriving it.
+
+## 3. Persist the summary + eligibility verdict (run verbatim, substituting your values)
+
+Recomputes `ROOT` and `INPUTS_DIR` from scratch (a fresh shell does not inherit
+step 1's variables), writes your summary durably, records the eligibility verdict
+on the root, and closes this pass. Substitute the three values you determined:
+`ELIGIBLE` (`yes` or `no`), `REASON` (one line), and the summary body in the
+here-document:
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+
+ELIGIBLE="yes"                       # <-- set to "no" to skip per the gate above
+REASON="eligible: non-trivial change under review"   # <-- one-line reason
+
+ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
+[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"
+INPUTS_DIR="${GC_CITY:?GC_CITY must be set by the runtime}/.gc/review-inputs/${ROOT}"
+mkdir -p "$INPUTS_DIR"
+
+# Durable change summary — the shared starting context for all five lenses.
+cat > "$INPUTS_DIR/summary.md" <<'SUMMARY'
+<your 2-5 sentence change summary here>
+SUMMARY
+
+# Record the eligibility verdict on the ROOT (the lenses + synthesis read it).
+bd update "$ROOT" --set-metadata gc.review.eligible="$ELIGIBLE"
+bd update "$ROOT" --set-metadata gc.review.eligibility_reason="$REASON"
+
+gc bd heartbeat "$GC_BEAD_ID" || true
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "analyze: eligible=$ELIGIBLE ($REASON); durable inputs in $INPUTS_DIR (diff, files, summary.md, rule-files, rules.md)"
+echo "[analyze] done: eligible=$ELIGIBLE  summary+inputs in $INPUTS_DIR"
+```
+
+Exit criteria: `$INPUTS_DIR/{diff,files,summary.md,rule-files,rules.md}` exist; the
+molecule root carries `gc.review.inputs_dir`, `gc.review.target_kind`,
+`gc.review.eligible`, `gc.review.eligibility_reason`, and `work_dir`; this analyze
+bead is closed `gc.outcome=pass`. The five lenses run next, each reading the
+durable inputs.
+'''
+
+# ==========================================================================
+# Scope discipline + the verbatim Anthropic false-positive list — handed to the
+# rule-adherence + bug-scan + in-code-invariants lenses below VERBATIM. This is
+# the discipline that makes triage HIGH-PRECISION: flag ONLY (a) written-rule
+# violations and (b) real bugs. The list below is the Anthropic code-review
+# command's list and is reproduced verbatim — it must NOT be paraphrased.
+# ==========================================================================
+
+# ==========================================================================
+# The five real-bugs lenses — rule-adherence / bug-scan / git-history /
+# prior-prs / in-code-invariants. Each is a SEPARATELY-DISPATCHED, self-contained
+# lane bead: its own [[template]] -> its own gc.run_target -> its own session ->
+# its own per-lane opt_model. They all `needs = ["{target}.analyze"]`, read the
+# analyze pass's DURABLE inputs (never another lane's session memory), review ONLY
+# the changed surface through their angle, and file each candidate as a
+# category-labelled ephemeral wisp under the run's findings container via the
+# shared formulas/lib/review-lane.sh. A lens that finds nothing self-skips to a
+# clean pass — it is never pruned from the graph. This is triage's NARROW
+# real-bugs lens set; do NOT broaden it to the standard reviewer's six lenses.
+# ==========================================================================
+
+[[template]]
+id = "{target}.rule-adherence"
+title = "Rule-adherence lane — changed lines that violate a WRITTEN project rule"
+needs = ["{target}.analyze"]
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{rule_adherence_model}" }
+description = '''
+You are the RULE-ADHERENCE lane of the Tier-1 triage review — one of five real-bugs
+lenses (rule-adherence / bug-scan / git-history / prior-prs / in-code-invariants),
+each a SEPARATE bead-native polecat session. You read the DURABLE inputs the
+analyze pass recorded and flag ONLY changed lines that directly violate a WRITTEN
+project rule. You never see the other lanes' sessions; you communicate only
+through beads. This lane is fully durable-input-based — it needs no repo checkout.
+
+## 1. Load the durable inputs + eligibility gate (run verbatim)
+
+Pure transport — no judgment. Source the shared lane helper (referenced via
+`$GC_CITY`, branch-independent — the same pattern as the shared diff resolver) and
+load the inputs the analyze pass hung off the molecule root:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
+review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+
+if [ "$REVIEW_ELIGIBLE" = "no" ]; then
+  review_lane_close "rule-adherence: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  exit 0
+fi
+echo "[rule-adherence] kind=$REVIEW_TARGET_KIND diff=$REVIEW_DIFF rules=$REVIEW_INPUTS_DIR/rules.md"
+```
+
+You now hold the change summary (`$REVIEW_SUMMARY`), the unified diff
+(`$REVIEW_DIFF`), the touched-file list (`$REVIEW_FILES`), the discovered rule-file
+paths (`$REVIEW_INPUTS_DIR/rule-files`), and the line-numbered rule contents
+(`$REVIEW_INPUTS_DIR/rules.md`). If `rule-files` is empty, there are no project
+rules to check — file nothing and close pass (step 3).
+
+## 2. Review through the rule-adherence lens (at the {rule_adherence_model} tier)
+
+Read `$REVIEW_SUMMARY` first for intent, then `$REVIEW_DIFF`, then the rules in
+`$REVIEW_INPUTS_DIR/rules.md`. Flag ONLY changed lines that DIRECTLY violate a
+written rule. For each, quote the rule VERBATIM with its file path and line (from
+rules.md). Remember the rule files are guidance for an agent WRITING code, so not
+every instruction applies during review; rules in files outside the touched
+directories, and rules explicitly silenced in the code (e.g. a lint-ignore
+comment), are out of scope.
+
+Apply this scope discipline and the VERBATIM Anthropic false-positive list — do
+NOT paraphrase it:
+
+> Examples of false positives:
+>
+> - Pre-existing issues
+> - Something that looks like a bug but is not actually a bug
+> - Pedantic nitpicks that a senior engineer wouldn't call out
+> - Issues that a linter, typechecker, or compiler would catch (eg. missing or incorrect imports, type errors, broken tests, formatting issues, pedantic style issues like newlines). No need to run these build steps yourself -- it is safe to assume that they will be run separately as part of CI.
+> - General code quality issues (eg. lack of test coverage, general security issues, poor documentation), unless explicitly required in CLAUDE.md
+> - Issues that are called out in CLAUDE.md, but explicitly silenced in the code (eg. due to a lint ignore comment)
+> - Changes in functionality that are likely intentional or are directly related to the broader change
+> - Real issues, but on lines that the user did not modify in their pull request
+
+Read "CLAUDE.md" as any of the discovered rule files, and "pull request" / "lines
+the user did not modify" as "the diff under review". If nothing on the changed
+surface violates a written rule, that is a valid result — file nothing and close
+pass (step 3). Do not pad.
+
+For each genuine candidate, hold: a one-line title; the `file:line` in the changed
+surface; the rule it violates (quoted verbatim with its path:line); an honest
+self-rated confidence 0-100 (the synthesis pass re-scores against Anthropic's
+rubric and gates on the threshold — do not inflate); and a best-guess priority 0-4.
+
+## 3. File each candidate as a category-labelled wisp + close (run verbatim per candidate)
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-lane.sh"
+review_lane_load_inputs
+
+# Repeat per candidate, substituting your values:
+BODY=$(mktemp)
+cat > "$BODY" <<'EOF'
+<file>:<line range> — <the changed line and the rule it violates>
+
+Rule: <the rule quoted VERBATIM> (<rule-file path>:<line>)
+Evidence: <the quoted diff line that violates it>
+Suggested severity: <blocker|major|minor|nit>   # a hint; synthesis decides
+EOF
+review_lane_file_finding rule-adherence <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
+
+# After all candidates — or immediately, if this lens found nothing (clean pass):
+review_lane_close "rule-adherence: filed <N> candidate finding(s) (category:rule-adherence)"
+```
+
+Exit criteria: every written-rule violation on the changed surface is filed as a
+`category:rule-adherence` wisp under `${REVIEW_ROOT}.findings` with a
+`Confidence: X/100` first line; this lane bead is closed `gc.outcome=pass`. Zero
+findings is a clean pass.
+'''
+
+[[template]]
+id = "{target}.bug-scan"
+title = "Bug-scan lane — real bugs visible in the changed lines"
+needs = ["{target}.analyze"]
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{bug_scan_model}" }
+description = '''
+You are the BUG-SCAN lane of the Tier-1 triage review — one of five real-bugs
+lenses (rule-adherence / bug-scan / git-history / prior-prs / in-code-invariants),
+each a SEPARATE bead-native polecat session. You read the DURABLE inputs the
+analyze pass recorded and scan ONLY the changed lines for large, obvious, REAL
+bugs. You never see the other lanes' sessions; you communicate only through beads.
+This is triage's core angle. This lane is fully durable-input-based — it needs no
+repo checkout.
+
+## 1. Load the durable inputs + eligibility gate (run verbatim)
+
+Pure transport — no judgment. Source the shared lane helper (referenced via
+`$GC_CITY`, branch-independent — the same pattern as the shared diff resolver) and
+load the inputs the analyze pass hung off the molecule root:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
+review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+
+if [ "$REVIEW_ELIGIBLE" = "no" ]; then
+  review_lane_close "bug-scan: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  exit 0
+fi
+echo "[bug-scan] kind=$REVIEW_TARGET_KIND diff=$REVIEW_DIFF files=$REVIEW_FILES summary=$REVIEW_SUMMARY"
+```
+
+You now hold the change summary (`$REVIEW_SUMMARY`), the unified diff
+(`$REVIEW_DIFF`), and the touched-file list (`$REVIEW_FILES`).
+
+## 2. Review through the bug-scan lens (at the {bug_scan_model} tier)
+
+Read `$REVIEW_SUMMARY` first for intent, then `$REVIEW_DIFF`. Scan ONLY the changed
+lines for large, obvious bugs visible from the diff alone — logic errors, resource
+leaks, missing error handling on a critical path, races the change introduces, off-by-one
+and nil/null/None-deref bugs, dropped return values on a path that must check them.
+Avoid reading context beyond the changes.
+
+Apply this scope discipline and the VERBATIM Anthropic false-positive list — do
+NOT paraphrase it:
+
+> Examples of false positives:
+>
+> - Pre-existing issues
+> - Something that looks like a bug but is not actually a bug
+> - Pedantic nitpicks that a senior engineer wouldn't call out
+> - Issues that a linter, typechecker, or compiler would catch (eg. missing or incorrect imports, type errors, broken tests, formatting issues, pedantic style issues like newlines). No need to run these build steps yourself -- it is safe to assume that they will be run separately as part of CI.
+> - General code quality issues (eg. lack of test coverage, general security issues, poor documentation), unless explicitly required in CLAUDE.md
+> - Issues that are called out in CLAUDE.md, but explicitly silenced in the code (eg. due to a lint ignore comment)
+> - Changes in functionality that are likely intentional or are directly related to the broader change
+> - Real issues, but on lines that the user did not modify in their pull request
+
+Read "CLAUDE.md" as any project rule file, and "pull request" / "lines the user
+did not modify" as "the diff under review". Flag only REAL bugs in the changed
+lines — not quality opinions, not nitpicks, not anything CI catches. If nothing on
+the changed surface is a real bug, that is a valid result — file nothing and close
+pass (step 3). Do not pad.
+
+For each genuine candidate, hold: a one-line title; the `file:line` in the changed
+surface; what the bug is and how it manifests; the evidence (a quoted diff line);
+an honest self-rated confidence 0-100 (the synthesis pass re-scores against
+Anthropic's rubric and gates on the threshold — do not inflate); and a best-guess
+priority 0-4.
+
+## 3. File each candidate as a category-labelled wisp + close (run verbatim per candidate)
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-lane.sh"
+review_lane_load_inputs
+
+# Repeat per candidate, substituting your values:
+BODY=$(mktemp)
+cat > "$BODY" <<'EOF'
+<file>:<line range> — <the bug and how it manifests>
+
+Evidence: <a quoted diff line / the changed construct>
+Suggested severity: <blocker|major|minor|nit>   # a hint; synthesis decides
+EOF
+review_lane_file_finding bug-scan <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
+
+# After all candidates — or immediately, if this lens found nothing (clean pass):
+review_lane_close "bug-scan: filed <N> candidate finding(s) (category:bug-scan)"
+```
+
+Exit criteria: every real bug on the changed surface is filed as a
+`category:bug-scan` wisp under `${REVIEW_ROOT}.findings` with a `Confidence: X/100`
+first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean pass.
+'''
+
+[[template]]
+id = "{target}.git-history"
+title = "Git-history lane — modified hunks that resurrect a fixed bug or drop a load-bearing edge case"
+needs = ["{target}.analyze"]
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{git_history_model}" }
+description = '''
+You are the GIT-HISTORY lane of the Tier-1 triage review — one of five real-bugs
+lenses (rule-adherence / bug-scan / git-history / prior-prs / in-code-invariants),
+each a SEPARATE bead-native polecat session. You read the DURABLE inputs the
+analyze pass recorded and use the git history of the MODIFIED HUNKS to find real
+bugs the change reintroduces. You never see the other lanes' sessions; you
+communicate only through beads. This lane needs git — it resumes the root's
+work_dir and self-skips cleanly when that is unavailable.
+
+## 1. Load the durable inputs + resume work_dir + eligibility gate (run verbatim)
+
+Pure transport — no judgment. Source the shared lane helper and load the inputs,
+then resume the work_dir the analyze pass recorded so `git blame` / `git log` /
+`git show` run against the tree under review:
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
+review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+
+if [ "$REVIEW_ELIGIBLE" = "no" ]; then
+  review_lane_close "git-history: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  exit 0
+fi
+
+# Resume the work_dir recorded on the root (the tree under review). git history is
+# only available there; if it is missing or not a git repo, self-skip clean.
+WORK_DIR=$(bd show "$REVIEW_ROOT" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | (.metadata["work_dir"] // .metadata["gc.work_dir"] // empty)')
+if [ -z "$WORK_DIR" ] || ! ( cd "$WORK_DIR" 2>/dev/null && git rev-parse --git-dir >/dev/null 2>&1 ); then
+  review_lane_close "git-history: skipped — no git work_dir available (best-effort angle)"
+  exit 0
+fi
+cd "$WORK_DIR"
+echo "[git-history] kind=$REVIEW_TARGET_KIND work_dir=$WORK_DIR diff=$REVIEW_DIFF"
+```
+
+You now hold the change summary (`$REVIEW_SUMMARY`), the unified diff
+(`$REVIEW_DIFF`), the touched-file list (`$REVIEW_FILES`), and a checked-out git
+tree (current directory = work_dir).
+
+## 2. Review through the git-history lens (at the {git_history_model} tier)
+
+Read `$REVIEW_SUMMARY` then `$REVIEW_DIFF` to learn which hunks changed. For the
+MODIFIED HUNKS ONLY, use `git blame` / `git log` / `git show` to find the commits
+that last touched those lines, and flag changes that:
+- resurrect a previously-fixed bug (a prior commit fixed it; this change undoes
+  the fix);
+- drop a load-bearing edge case a prior commit added on purpose;
+- contradict a recent change to the same lines without acknowledging it.
+
+Scope: the modified hunks, not the whole files. This is a real-bug angle — flag
+only history-grounded REAL bugs, never quality opinions. Apply this scope
+discipline and the VERBATIM Anthropic false-positive list — do NOT paraphrase it:
+
+> Examples of false positives:
+>
+> - Pre-existing issues
+> - Something that looks like a bug but is not actually a bug
+> - Pedantic nitpicks that a senior engineer wouldn't call out
+> - Issues that a linter, typechecker, or compiler would catch (eg. missing or incorrect imports, type errors, broken tests, formatting issues, pedantic style issues like newlines). No need to run these build steps yourself -- it is safe to assume that they will be run separately as part of CI.
+> - General code quality issues (eg. lack of test coverage, general security issues, poor documentation), unless explicitly required in CLAUDE.md
+> - Issues that are called out in CLAUDE.md, but explicitly silenced in the code (eg. due to a lint ignore comment)
+> - Changes in functionality that are likely intentional or are directly related to the broader change
+> - Real issues, but on lines that the user did not modify in their pull request
+
+Read "CLAUDE.md" as any project rule file, and "pull request" / "lines the user
+did not modify" as "the diff under review". If the history surfaces no real bug,
+that is a valid result — file nothing and close pass (step 3). Do not pad.
+
+For each genuine candidate, hold: a one-line title; the `file:line` in the changed
+surface; the bug the history reveals; the evidence (the relevant commit SHA + what
+it did, and the quoted diff line that undoes it); an honest self-rated confidence
+0-100 (synthesis re-scores + gates on the threshold — do not inflate); and a
+best-guess priority 0-4.
+
+## 3. File each candidate as a category-labelled wisp + close (run verbatim per candidate)
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-lane.sh"
+review_lane_load_inputs
+
+# Repeat per candidate, substituting your values:
+BODY=$(mktemp)
+cat > "$BODY" <<'EOF'
+<file>:<line range> — <the bug the history reveals>
+
+Evidence: commit <SHA> (<what it did>); the change at <quoted diff line> undoes it
+Suggested severity: <blocker|major|minor|nit>   # a hint; synthesis decides
+EOF
+review_lane_file_finding git-history <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
+
+# After all candidates — or immediately, if this lens found nothing (clean pass):
+review_lane_close "git-history: filed <N> candidate finding(s) (category:git-history)"
+```
+
+Exit criteria: every history-grounded real bug on the changed surface is filed as
+a `category:git-history` wisp under `${REVIEW_ROOT}.findings` with a
+`Confidence: X/100` first line; this lane bead is closed `gc.outcome=pass`. Zero
+findings (or no git access) is a clean pass.
+'''
+
+[[template]]
+id = "{target}.prior-prs"
+title = "Prior-PRs lane (best-effort) — the change repeats a problem a maintainer already called out"
+needs = ["{target}.analyze"]
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{prior_prs_model}" }
+description = '''
+You are the PRIOR-PRS lane of the Tier-1 triage review — one of five real-bugs
+lenses (rule-adherence / bug-scan / git-history / prior-prs / in-code-invariants),
+each a SEPARATE bead-native polecat session. You read the DURABLE inputs the
+analyze pass recorded and, BEST-EFFORT, check whether the change repeats a problem
+a maintainer already flagged on a prior PR touching the same files. You never see
+the other lanes' sessions; you communicate only through beads. This lane needs
+`gh` + a GitHub remote — it resumes the root's work_dir and self-skips cleanly
+when PR context is unavailable.
+
+## 1. Load the durable inputs + resume work_dir + eligibility gate (run verbatim)
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
+review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+
+if [ "$REVIEW_ELIGIBLE" = "no" ]; then
+  review_lane_close "prior-prs: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  exit 0
+fi
+
+# This angle is BEST-EFFORT. Resume work_dir and confirm there is PR context to
+# use: a GitHub remote reachable via gh. If gh is missing, there is no GitHub
+# remote, or gh is not authenticated, self-skip clean — no error.
+WORK_DIR=$(bd show "$REVIEW_ROOT" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | (.metadata["work_dir"] // .metadata["gc.work_dir"] // empty)')
+if [ -z "$WORK_DIR" ] || ! command -v gh >/dev/null 2>&1 \
+   || ! ( cd "$WORK_DIR" 2>/dev/null && gh repo view >/dev/null 2>&1 ); then
+  review_lane_close "prior-prs: skipped — no PR context (gh / GitHub remote unavailable)"
+  exit 0
+fi
+cd "$WORK_DIR"
+echo "[prior-prs] kind=$REVIEW_TARGET_KIND work_dir=$WORK_DIR files=$REVIEW_FILES"
+```
+
+## 2. Review through the prior-PRs lens (at the {prior_prs_model} tier)
+
+Read `$REVIEW_SUMMARY` then `$REVIEW_FILES`. Find prior PRs that touched these
+files and read their review comments (`gh pr list`, `gh search prs`,
+`gh pr view <n> --comments`). Flag where the CURRENT change repeats a problem a
+maintainer already called out on a prior PR; quote the comment. If no prior PR
+touched these files, or none has a relevant comment, self-skip clean — file
+nothing and close pass (step 3).
+
+This is a real-bug / written-feedback angle — flag only where the maintainer's
+prior comment identifies a REAL problem this change repeats, never speculative
+quality opinions. Apply this scope discipline and the VERBATIM Anthropic
+false-positive list — do NOT paraphrase it:
+
+> Examples of false positives:
+>
+> - Pre-existing issues
+> - Something that looks like a bug but is not actually a bug
+> - Pedantic nitpicks that a senior engineer wouldn't call out
+> - Issues that a linter, typechecker, or compiler would catch (eg. missing or incorrect imports, type errors, broken tests, formatting issues, pedantic style issues like newlines). No need to run these build steps yourself -- it is safe to assume that they will be run separately as part of CI.
+> - General code quality issues (eg. lack of test coverage, general security issues, poor documentation), unless explicitly required in CLAUDE.md
+> - Issues that are called out in CLAUDE.md, but explicitly silenced in the code (eg. due to a lint ignore comment)
+> - Changes in functionality that are likely intentional or are directly related to the broader change
+> - Real issues, but on lines that the user did not modify in their pull request
+
+Read "CLAUDE.md" as any project rule file, and "pull request" as "the diff under
+review". Do not pad.
+
+For each genuine candidate, hold: a one-line title; the `file:line` in the changed
+surface; the repeated problem; the evidence (the quoted prior-PR comment + its PR
+number/URL); an honest self-rated confidence 0-100 (synthesis re-scores + gates on
+the threshold — do not inflate); and a best-guess priority 0-4.
+
+## 3. File each candidate as a category-labelled wisp + close (run verbatim per candidate)
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-lane.sh"
+review_lane_load_inputs
+
+# Repeat per candidate, substituting your values:
+BODY=$(mktemp)
+cat > "$BODY" <<'EOF'
+<file>:<line range> — <the problem a maintainer already flagged, now repeated>
+
+Evidence: PR #<n> comment: "<quoted maintainer comment>"
+Suggested severity: <blocker|major|minor|nit>   # a hint; synthesis decides
+EOF
+review_lane_file_finding prior-prs <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
+
+# After all candidates — or immediately, if this lens found nothing (clean pass):
+review_lane_close "prior-prs: filed <N> candidate finding(s) (category:prior-prs)"
+```
+
+Exit criteria: every repeated maintainer-flagged problem on the changed surface is
+filed as a `category:prior-prs` wisp under `${REVIEW_ROOT}.findings` with a
+`Confidence: X/100` first line; this lane bead is closed `gc.outcome=pass`. Zero
+findings (or no PR context) is a clean pass.
+'''
+
+[[template]]
+id = "{target}.in-code-invariants"
+title = "In-code-invariants lane — changes that violate an explicit in-code invariant/contract comment"
+needs = ["{target}.analyze"]
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{in_code_invariants_model}" }
+description = '''
+You are the IN-CODE-INVARIANTS lane of the Tier-1 triage review — one of five
+real-bugs lenses (rule-adherence / bug-scan / git-history / prior-prs /
+in-code-invariants), each a SEPARATE bead-native polecat session. You read the
+DURABLE inputs the analyze pass recorded and flag changes that violate an explicit
+in-code invariant, contract, or "callers must" / "do not" comment. You never see
+the other lanes' sessions; you communicate only through beads. The diff is enough
+for most findings; for fuller file context this lane OPTIONALLY resumes the root's
+work_dir and degrades to diff-only when it is unavailable.
+
+## 1. Load the durable inputs + (optionally) resume work_dir + eligibility gate (run verbatim)
+
+```bash
+set -uo pipefail
+json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
+review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+
+if [ "$REVIEW_ELIGIBLE" = "no" ]; then
+  review_lane_close "in-code-invariants: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  exit 0
+fi
+
+# Best-effort: resume work_dir for fuller file context (invariant comments may sit
+# just outside the diff hunks). Degrade to diff-only if it is unavailable.
+WORK_DIR=$(bd show "$REVIEW_ROOT" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | (.metadata["work_dir"] // .metadata["gc.work_dir"] // empty)')
+if [ -n "$WORK_DIR" ] && cd "$WORK_DIR" 2>/dev/null; then
+  echo "[in-code-invariants] kind=$REVIEW_TARGET_KIND work_dir=$WORK_DIR (full file context)"
+else
+  echo "[in-code-invariants] kind=$REVIEW_TARGET_KIND (diff-only — no work_dir)"
+fi
+```
+
+## 2. Review through the in-code-invariants lens (at the {in_code_invariants_model} tier)
+
+Read `$REVIEW_SUMMARY` then `$REVIEW_DIFF`. For the modified files in
+`$REVIEW_FILES`, find guidance-style comments near the changed lines — explicit
+invariants, contracts, "callers must X" notes, "do not Y" warnings (read the full
+files from work_dir when available; otherwise use the diff context). Flag changes
+that VIOLATE one; quote the comment with its file and line. Ignore trivial
+comments and comments unrelated to the change.
+
+This is a real-bug angle — a violated invariant is a real defect, not a quality
+opinion. Apply this scope discipline and the VERBATIM Anthropic false-positive
+list — do NOT paraphrase it:
+
+> Examples of false positives:
+>
+> - Pre-existing issues
+> - Something that looks like a bug but is not actually a bug
+> - Pedantic nitpicks that a senior engineer wouldn't call out
+> - Issues that a linter, typechecker, or compiler would catch (eg. missing or incorrect imports, type errors, broken tests, formatting issues, pedantic style issues like newlines). No need to run these build steps yourself -- it is safe to assume that they will be run separately as part of CI.
+> - General code quality issues (eg. lack of test coverage, general security issues, poor documentation), unless explicitly required in CLAUDE.md
+> - Issues that are called out in CLAUDE.md, but explicitly silenced in the code (eg. due to a lint ignore comment)
+> - Changes in functionality that are likely intentional or are directly related to the broader change
+> - Real issues, but on lines that the user did not modify in their pull request
+
+Read "CLAUDE.md" as any project rule file, and "pull request" / "lines the user
+did not modify" as "the diff under review". If the change violates no in-code
+invariant, that is a valid result — file nothing and close pass (step 3). Do not pad.
+
+For each genuine candidate, hold: a one-line title; the `file:line` in the changed
+surface; the invariant it violates (quoted with its file:line); the evidence (the
+quoted diff line that violates it); an honest self-rated confidence 0-100 (synthesis
+re-scores + gates on the threshold — do not inflate); and a best-guess priority 0-4.
+
+## 3. File each candidate as a category-labelled wisp + close (run verbatim per candidate)
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-lane.sh"
+review_lane_load_inputs
+
+# Repeat per candidate, substituting your values:
+BODY=$(mktemp)
+cat > "$BODY" <<'EOF'
+<file>:<line range> — <the change and the invariant it violates>
+
+Invariant: "<the in-code comment quoted verbatim>" (<file>:<line>)
+Evidence: <the quoted diff line that violates it>
+Suggested severity: <blocker|major|minor|nit>   # a hint; synthesis decides
+EOF
+review_lane_file_finding in-code-invariants <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
+
+# After all candidates — or immediately, if this lens found nothing (clean pass):
+review_lane_close "in-code-invariants: filed <N> candidate finding(s) (category:in-code-invariants)"
+```
+
+Exit criteria: every violated in-code invariant on the changed surface is filed as
+a `category:in-code-invariants` wisp under `${REVIEW_ROOT}.findings` with a
+`Confidence: X/100` first line; this lane bead is closed `gc.outcome=pass`. Zero
+findings is a clean pass.
+'''
+
+# ==========================================================================
+# Synthesis pass — a SINGLE bead-native session that runs AFTER all five lenses.
+# It applies triage's HIGH-PRECISION confidence gate (re-score each candidate
+# 0-100 against Anthropic's VERBATIM rubric, BURN anything below {threshold}),
+# dedup-merges the survivors, assigns each a severity, promotes the survivors to
+# DURABLE finding beads, and records a synthesis verdict — all through the shared
+# formulas/lib/review-synthesis.sh (the same verdict -> severity -> promote
+# plumbing the standard + quorum reviewers use, so apply-fixes stays
+# reviewer-agnostic). `needs` ALL FIVE lenses so it sees every candidate.
+# ==========================================================================
+
+[[template]]
+id = "{target}.synthesis"
+title = "Synthesis — confidence gate (>= threshold) + dedup-merge + severity + promote durable findings + verdict"
+needs = ["{target}.rule-adherence", "{target}.bug-scan", "{target}.git-history", "{target}.prior-prs", "{target}.in-code-invariants"]
+metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{synthesis_model}" }
+description = '''
+You are the SYNTHESIS pass of the Tier-1 triage review. You run as ONE bead-native
+polecat session AFTER all five real-bugs lenses (rule-adherence / bug-scan /
+git-history / prior-prs / in-code-invariants) have filed their candidate findings.
+Your job is triage's HIGH-PRECISION gate: re-score each candidate's confidence
+0-100, KEEP only survivors at or above the threshold `{threshold}`, dedup-merge
+the survivors, assign a severity, and promote them to DURABLE findings plus one
+verdict. You ran at the `{synthesis_model}` tier because re-scoring, dedup, and
+severity are judgment calls.
+
+You do NOT re-review the diff for new issues — the five lenses already did that.
+You re-score and consolidate what they found.
+
+## 1. Load the run + enumerate the candidates (run verbatim)
+
+Pure transport — no judgment. Source the shared synthesis helper (referenced via
+`$GC_CITY`, branch-independent, exactly like the lane helper) and load the run:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-synthesis.sh"
+review_synthesis_load          # sets REVIEW_ROOT/FINDINGS/INPUTS_DIR/DIFF/SUMMARY/ELIGIBLE + heartbeats
+
+if [ "$REVIEW_ELIGIBLE" = "no" ]; then
+  review_synthesis_record_verdict pass 0 0 0 0 "ineligible change — nothing to synthesize"
+  exit 0
+fi
+
+# Tab-separated candidates: <wisp_id>  <category>  <confidence 0-100>  <title>
+review_synthesis_candidates | tee "$REVIEW_INPUTS_DIR/candidates.tsv"
+```
+
+If `candidates.tsv` is EMPTY, the five lenses found nothing — a clean pass. Record
+it and stop:
+
+```bash
+review_synthesis_record_verdict pass 0 0 0 0 "no candidate findings from any lane"
+exit 0
+```
+
+Otherwise read each candidate's full body for the file:line, evidence, and the
+lane's self-rated `Confidence: X/100` first line:
+
+```bash
+bd show <wisp_id>              # repeat per candidate id from candidates.tsv
+```
+
+## 2. Re-score each candidate's confidence + apply the threshold gate (judgment — triage's precision gate)
+
+For EACH candidate, re-score its confidence 0-100 — do NOT take the lane's
+self-rating at face value — using this rubric, applied VERBATIM (the Anthropic
+code-review command's rubric; do not paraphrase):
+
+> 0: Not confident at all. This is a false positive that doesn't stand up to light scrutiny, or is a pre-existing issue.
+> 25: Somewhat confident. This might be a real issue, but may also be a false positive. The agent wasn't able to verify that it's a real issue. If the issue is stylistic, it is one that was not explicitly called out in the relevant CLAUDE.md.
+> 50: Moderately confident. The agent was able to verify this is a real issue, but it might be a nitpick or not happen very often in practice. Relative to the rest of the PR, it's not very important.
+> 75: Highly confident. The agent double checked the issue, and verified that it is very likely it is a real issue that will be hit in practice. The existing approach in the PR is insufficient. The issue is very important and will directly impact the code's functionality, or it is an issue that is directly mentioned in the relevant CLAUDE.md.
+> 100: Absolutely certain. The agent double checked the issue, and confirmed that it is definitely a real issue, that will happen frequently in practice. The evidence directly confirms this.
+
+For a candidate flagged on a project-rule violation, FIRST verify the cited rule
+file actually calls out that issue specifically before scoring it high; if the rule
+does not actually say it, score it low. (Read "the relevant CLAUDE.md" as any
+discovered rule file, and "PR" as the diff under review.)
+
+Then apply triage's PRECISION GATE: every candidate re-scored BELOW the threshold
+`{threshold}` is BURNED (it is a sub-threshold reject). Only candidates at or
+above the threshold continue to dedup + promotion. This is what makes triage
+high-precision: it flags only (a) written-rule violations and (b) real bugs it is
+confident about.
+
+## 3. Dedup-merge the survivors (judgment — conservative, like the legacy triage step 7)
+
+Operate ONLY on the survivors (re-score at/above the threshold). Cluster survivors
+that describe the SAME underlying issue: the same file, an overlapping line range,
+AND the same root cause — all three must match. Be CONSERVATIVE — when in doubt,
+keep them separate. Different lenses flagging genuinely different problems on
+adjacent lines are NOT duplicates; a finding several lenses raised is STRONGER, not
+redundant.
+
+For each cluster of two or more, pick ONE canonical survivor (the one with the
+highest re-score; break ties by richer evidence, then lexicographically smallest
+wisp id). The canonical keeps the cluster's highest re-score. You may
+`bd label add category:<lens> <survivor>` for each lens that raised it, so the
+durable bead stays traceable to every lane. The other cluster members are
+duplicates to burn in step 5.
+
+## 4. Assign a final severity to each canonical survivor (judgment)
+
+Score each canonical survivor on impact:
+
+- **blocker** — must fix before this change merges: a correctness bug, security
+  hole, data loss, or crash on the changed surface.
+- **major** — should fix: a real defect or significant risk that is not a hard
+  merge gate.
+- **minor** — worth fixing: a smaller defect or a real maintainability problem.
+- **nit** — trivial; optional. (Triage rarely files nits — its lenses already
+  exclude nitpicks — but use it if a real-but-trivial issue cleared the gate.)
+
+Triage does NOT suppress by severity: every confidence-survivor is promoted. The
+severity ranks the durable finding (and drives the verdict below).
+
+## 5. Promote survivors, burn the rest (run verbatim per candidate)
+
+Materialize your step-2/3/4 decisions. Promotion turns the ephemeral wisp into a
+durable finding bead (preserving its id, its category labels, and its place under
+the findings container) and stamps the final severity; burning removes a
+sub-threshold reject or a dedup duplicate. Keep running tallies for the verdict.
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-synthesis.sh"
+review_synthesis_load
+
+# --- promote each canonical survivor at/above the threshold: ---
+#   review_synthesis_promote <wisp_id> <blocker|major|minor|nit> "<one-line rationale>"
+review_synthesis_promote <wisp_id> <severity> "confidence <re-score>/100: <why this severity>"
+
+# --- burn each sub-threshold reject (re-score < threshold) or dedup duplicate: ---
+#   review_synthesis_burn <wisp_id> "<below threshold {threshold} | duplicate of <survivor>>"
+review_synthesis_burn <wisp_id> "<reason>"
+```
+
+## 6. Record the verdict (run verbatim, substituting your tallies + verdict)
+
+The synthesis verdict summarizes the run for apply-fixes and the human gate:
+
+- `fail` — at least one **blocker** survived (must-fix before merge).
+- `pass_with_findings` — findings survived but **none** are blockers.
+- `pass` — no candidate cleared the confidence threshold (clean).
+
+`considered` = total candidates you re-scored; `promoted` = canonical survivors
+made durable; `merged` = dedup duplicates folded into a survivor then burned;
+`burned` = sub-threshold rejects burned. (promoted + merged + burned should equal
+considered.)
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-synthesis.sh"
+review_synthesis_load
+review_synthesis_record_verdict <pass|pass_with_findings|fail> \
+  <considered> <promoted> <merged> <burned> \
+  "<one-line headline: e.g. 2 real bugs (1 blocker) + 1 rule violation; 4 below threshold {threshold}>"
+```
+
+`review_synthesis_record_verdict` writes `gc.review.synthesis_verdict` + counts on
+the molecule root, closes the findings container (its surviving children are the
+durable findings), and closes this synthesis bead `gc.outcome=pass`.
+
+Exit criteria: every candidate is promoted (durable, severity-tagged child of
+`${REVIEW_ROOT}.findings`) or burned; the molecule root carries
+`gc.review.synthesis_verdict` + counts; this synthesis bead is closed
+`gc.outcome=pass`. Zero survivors is a clean `pass`. The durable findings + the
+verdict are what apply-fixes and the human gate consume.
+'''

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Test stub for `gh`, used only by the step-0 PR-resolution branch so it can be
+# exercised offline. Returns a canned one-file diff for `gh pr diff <n>` and a
+# canned file list for `--name-only`. Any other gh call is a hard error so the
+# tests never silently depend on real GitHub.
+set -u
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "diff" ]; then
+  case " $* " in
+    *" --name-only "*)
+      printf 'pkg/widget.go\n'
+      ;;
+    *)
+      cat <<'DIFF'
+diff --git a/pkg/widget.go b/pkg/widget.go
+index 1111111..2222222 100644
+--- a/pkg/widget.go
++++ b/pkg/widget.go
+@@ -1,3 +1,4 @@
+ package pkg
++func Added() int { return 1 }
+DIFF
+      ;;
+  esac
+  exit 0
+fi
+echo "gh stub: unsupported invocation: $*" >&2
+exit 64

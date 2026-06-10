@@ -1,0 +1,134 @@
+# Standalone Tier-1 TRIAGE code review — the directly-slingable host for the
+# canonical, provider-INDEPENDENT triage reviewer fragment
+# (expansion-triage-reviewer, gcs-f4j.10.1). This is the bead-native sibling of
+# the legacy mol-triage-review: where the legacy reviewer fans out internally via
+# one claude session's Task tool (CLAUDE-LOCKED), this host runs the SAME five
+# real-bugs angles — rule-adherence / bug-scan / git-history / prior-prs /
+# in-code-invariants — as separately-dispatched lanes, each its own session with
+# its own per-lane opt_model, preceded by an analyze pass and followed by a
+# synthesis pass that applies triage's high-precision confidence gate. It is the
+# triage-tier sibling of mol-standard-review (the standard 8-pass breadth host).
+#
+# THIN host, ZERO prompt duplication: every reviewer prompt lives in the ONE
+# canonical fragment. This file is just the placeholder slot + the
+# `[[compose.expand]]` that materializes the fragment into it, declaring the
+# fragment's full var contract so the whole reviewer is tunable from the host (and
+# mapping the host's `target` onto the fragment's `review_target`).
+#
+# Why EXPAND, not pour: the controller schedules the fragment's beads directly as
+# flat graph children of this host, so at gascity polecat pool=1 nothing has to
+# babysit a poured child molecule and there is no self-deadlock. The analyze pass
+# resolves the diff via the SHARED, vendor-neutral lib/resolve-diff.sh (the same
+# resolver the standard + legacy triage reviewers call), persists DURABLE inputs
+# hung off the molecule root, and the five lens beads each read those inputs in
+# their own session — never this host's memory.
+#
+# Scope (via `target`, same contract as resolve-diff.sh, MINUS the whole-repo
+# mode): a diff-shaped target (PR | branch | range | base..HEAD) scopes the lenses
+# to the changed surface. Unlike mol-standard-review, triage REJECTS a path / '.'
+# target — triage reviews CHANGES; use mol-standard-review for a whole-repo audit.
+#
+# Provider independence: each lane's per-lane opt_model is the right-sizing +
+# provider-robustness seam (validated against the run_target provider's
+# options_schema at spawn). Provider becomes a COOK-TIME var, with pre-cooked
+# claude + codex versions, in gcs-f4j.10.2 — cooked from this same host, never a
+# per-provider fork. Keep the legacy claude mol-triage-review in place until this
+# independent reviewer is proven, then decide retirement.
+#
+# Sling — review the changes on the current branch (default target {{base_branch}}..HEAD):
+#   gc sling gascity/gasvillage.polecat <bead> --on mol-triage-review-independent --nudge
+# Review a specific PR / branch / range:
+#   gc sling gascity/gasvillage.polecat <bead> --on mol-triage-review-independent \
+#     --var target=#123 --nudge
+formula = "mol-triage-review-independent"
+contract = "graph.v2"
+
+[requires]
+formula_compiler = ">=2.0.0"
+
+# --------------------------------------------------------------------------
+# Variables — the host re-declares the fragment's full var contract so the whole
+# reviewer is tunable from one `--var` surface. Each is propagated into the
+# fragment by the `[[compose.expand]]` vars block below (single-brace {name},
+# resolved against these host vars at compile time). The host's `target` maps onto
+# the fragment's reserved-name-avoiding `review_target`; every other var is 1:1.
+# Defaults mirror the fragment's defaults so an un-tuned sling behaves exactly like
+# the fragment's documented model tiering.
+# --------------------------------------------------------------------------
+
+[vars]
+
+[vars.target]
+description = "What to review — a PR (number, #number, or PR URL), a branch name, a commit range, or base_ref..HEAD. Empty (the default) resolves to {{base_branch}}..HEAD — the changes on the current branch. A path / '.' / whole-tree target is REJECTED (triage reviews CHANGES; use mol-standard-review for a whole-repo audit). Mapped onto the fragment's review_target."
+default = ""
+
+[vars.base_branch]
+description = "Base branch the change is measured against — the default target ({{base_branch}}..HEAD) and the merge-base when target is a bare branch name."
+default = "main"
+
+[vars.aux_model]
+description = "Model for the analyze pass's cheap auxiliary reasoning (change summary + eligibility gate). Default haiku."
+default = "haiku"
+
+[vars.rule_adherence_model]
+description = "Model for the rule-adherence lens (changed lines vs WRITTEN project rules). A mechanical angle — cheap tier; default haiku."
+default = "haiku"
+
+[vars.bug_scan_model]
+description = "Model for the bug-scan lens (real bugs in the changed lines). Triage's core angle; standard tier; default sonnet."
+default = "sonnet"
+
+[vars.git_history_model]
+description = "Model for the git-history lens (modified hunks resurrecting fixed bugs / dropping edge cases). A judgment angle; standard tier; default sonnet."
+default = "sonnet"
+
+[vars.prior_prs_model]
+description = "Model for the prior-prs lens (best-effort: the change repeats a problem a maintainer already flagged). A mechanical angle — cheap tier; default haiku."
+default = "haiku"
+
+[vars.in_code_invariants_model]
+description = "Model for the in-code-invariants lens (changes that violate an explicit in-code invariant/contract comment). A judgment angle; standard tier; default sonnet."
+default = "sonnet"
+
+[vars.synthesis_model]
+description = "Model for the synthesis pass (confidence re-score against Anthropic's rubric + threshold gate + dedup-merge + severity). The precision-critical pass; standard tier; default sonnet."
+default = "sonnet"
+
+[vars.threshold]
+description = "Minimum confidence score (0-100) a candidate must reach in the synthesis re-score to be promoted to a durable finding; below is burned. Triage's high-precision gate (Anthropic's threshold is 80); default 80."
+default = "80"
+
+# --------------------------------------------------------------------------
+# The single placeholder step. `[[compose.expand]]` replaces it with the
+# fragment's seven templates ({target}.analyze + the five lenses +
+# {target}.synthesis), where {target} is substituted with THIS step's id
+# (review-pipeline). The expanded analyze becomes the graph entry and synthesis the
+# graph exit; the clean graph.v2 workflow-finalize terminal is appended by the
+# compiler.
+# --------------------------------------------------------------------------
+
+[[steps]]
+id = "review-pipeline"
+title = "Tier-1 triage code review of {{target}}"
+metadata = { "gc.run_target" = "gasvillage.polecat" }
+description = '''
+PLACEHOLDER reviewer slot — never runs as written. It is replaced at compile time
+by `[[compose.expand]]` with the canonical expansion-triage-reviewer fragment
+(analyze -> five real-bugs lenses -> synthesis). If you are reading this in a live
+bead, the expansion did not apply; that is a wiring bug in this host.
+'''
+
+# --------------------------------------------------------------------------
+# Compose the canonical reviewer into the slot. The vars block maps every host var
+# into the fragment: the host's `target` -> the fragment's `review_target` (the
+# fragment reserves the bare name `target` for the expansion placeholder), and
+# every other var 1:1. Values use SINGLE braces because expansion override vars are
+# resolved against the host's vars at compile time (substituteVars), not at render
+# time.
+# --------------------------------------------------------------------------
+
+[compose]
+[[compose.expand]]
+target = "review-pipeline"
+with = "expansion-triage-reviewer"
+vars = { review_target = "{target}", base_branch = "{base_branch}", aux_model = "{aux_model}", rule_adherence_model = "{rule_adherence_model}", bug_scan_model = "{bug_scan_model}", git_history_model = "{git_history_model}", prior_prs_model = "{prior_prs_model}", in_code_invariants_model = "{in_code_invariants_model}", synthesis_model = "{synthesis_model}", threshold = "{threshold}" }

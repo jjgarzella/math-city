@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# Recording stub for `bd`, used by the analyze-lifecycle (test_03) and the
+# review-lane lib (test_05) transport tests. It NEVER touches a real Dolt store:
+# it returns the minimum canned bead JSON the verbatim bash consumes, and records
+# what the blocks wrote so the tests can assert it. It is a strict SUPERSET of the
+# original analyze-only stub — the test_03 knobs are unchanged, and the test_05
+# knobs only activate when their env vars are set.
+#
+# Environment knobs (set by the tests):
+#   BD_ROOT          gc.root_bead_id returned for `bd show $GC_BEAD_ID --json`
+#   BD_WORKDIR       work_dir returned for `bd show $BD_ROOT --json`
+#   BD_META_LOG      file: one `key=value` line per `--set-metadata` (required by readers)
+#   BD_REVIEW_INPUTS_DIR / BD_REVIEW_TARGET_KIND / BD_REVIEW_ELIGIBLE / BD_REVIEW_ELIGIBILITY_REASON
+#                    when set, added to `bd show $BD_ROOT --json` metadata (the analyze
+#                    pass's durable-input handles the review lenses read)
+#   BD_CREATE_LOG    file: one tab-separated record per `bd create` (id/parent/labels/ephemeral/title/body1)
+#   BD_UPDATE_LOG    file: one tab-separated record per `bd update` (id/status/notes)
+set -u
+
+sub="${1:-}"
+
+# has_flag <flag> <args...> — true if <flag> appears among <args...>.
+has_flag() { local want="$1"; shift; local a; for a in "$@"; do [ "$a" = "$want" ] && return 0; done; return 1; }
+# arg_val <--key> <args...> — value of a `--key=value` argument (empty if absent).
+arg_val() { local key="$1"; shift; local a; for a in "$@"; do case "$a" in "$key="*) printf '%s' "${a#*=}"; return 0 ;; esac; done; return 1; }
+
+case "$sub" in
+  show)
+    target="${2:-}"
+    if has_flag --json "$@"; then
+      if [ "$target" = "${GC_BEAD_ID:-}" ]; then
+        printf '[{"id":"%s","metadata":{"gc.root_bead_id":"%s"}}]\n' "$target" "${BD_ROOT:-}"
+      elif [ "$target" = "${BD_ROOT:-}" ]; then
+        # Root bead: work_dir, plus the analyze pass's durable-input handles when
+        # the test populated them. Built with jq so optional fields stay valid JSON.
+        jq -nc \
+          --arg id "$target" \
+          --arg work_dir "${BD_WORKDIR:-}" \
+          --arg inputs_dir "${BD_REVIEW_INPUTS_DIR:-}" \
+          --arg target_kind "${BD_REVIEW_TARGET_KIND:-}" \
+          --arg eligible "${BD_REVIEW_ELIGIBLE:-}" \
+          --arg reason "${BD_REVIEW_ELIGIBILITY_REASON:-}" \
+          '{id:$id, metadata: ({"work_dir":$work_dir}
+             + (if $inputs_dir  != "" then {"gc.review.inputs_dir":$inputs_dir} else {} end)
+             + (if $target_kind != "" then {"gc.review.target_kind":$target_kind} else {} end)
+             + (if $eligible    != "" then {"gc.review.eligible":$eligible} else {} end)
+             + (if $reason      != "" then {"gc.review.eligibility_reason":$reason} else {} end))}
+           | [.]'
+      elif [ -n "${BD_FINDINGS:-}" ] && [ "$target" = "${BD_FINDINGS:-}" ] && [ -n "${BD_CANDIDATES_FILE:-}" ] && [ -f "${BD_CANDIDATES_FILE}" ]; then
+        # Findings container: return the candidate wisps the lanes filed as its
+        # .children (the synthesis lib enumerates them). The test writes the
+        # children JSON to BD_CANDIDATES_FILE.
+        jq -c '[{id: $id, children: .}]' --arg id "$target" "$BD_CANDIDATES_FILE"
+      else
+        printf '[]\n'
+      fi
+      exit 0
+    fi
+    # No --json: an existence check (the findings-container guard uses this). The
+    # known beads "exist"; the findings container exists only once populated.
+    { [ "$target" = "${GC_BEAD_ID:-}" ] || [ "$target" = "${BD_ROOT:-}" ]; } && exit 0
+    { [ -n "${BD_FINDINGS:-}" ] && [ "$target" = "${BD_FINDINGS:-}" ] && [ -n "${BD_CANDIDATES_FILE:-}" ]; } && exit 0
+    exit 1 ;;
+  create)
+    shift
+    if [ -n "${BD_CREATE_LOG:-}" ]; then
+      id="$(arg_val --id "$@" || true)"
+      parent="$(arg_val --parent "$@" || true)"
+      labels="$(arg_val --labels "$@" || true)"
+      title="$(arg_val --title "$@" || true)"
+      bodyfile="$(arg_val --body-file "$@" || true)"
+      ephemeral=no; has_flag --ephemeral "$@" && ephemeral=yes
+      body1=""
+      [ -n "$bodyfile" ] && [ -f "$bodyfile" ] && body1="$(head -n1 "$bodyfile")"
+      printf 'id=%s\tparent=%s\tlabels=%s\tephemeral=%s\ttitle=%s\tbody1=%s\n' \
+        "$id" "$parent" "$labels" "$ephemeral" "$title" "$body1" >> "$BD_CREATE_LOG"
+    fi
+    # Echo the bead id the caller captures: the explicit --id, else a stub wisp id.
+    id="$(arg_val --id "$@" || true)"
+    [ -z "$id" ] && id="wisp-stub-$$"
+    printf '%s\n' "$id"
+    exit 0 ;;
+  update)
+    shift
+    bid="${1:-}"
+    prev=""; status=""; notes=""
+    for a in "$@"; do
+      if [ "$prev" = "--set-metadata" ]; then
+        printf '%s\n' "$a" >> "${BD_META_LOG:?BD_META_LOG must be set}"
+      elif [ "$prev" = "--notes" ]; then
+        notes="$a"
+      fi
+      case "$a" in
+        --status=*)   status="${a#*=}" ;;
+        --notes=*)    notes="${a#*=}" ;;
+        --priority=*) priority="${a#*=}" ;;
+      esac
+      prev="$a"
+    done
+    if [ -n "${BD_UPDATE_LOG:-}" ]; then
+      printf 'id=%s\tstatus=%s\tpriority=%s\tnotes=%s\n' "$bid" "$status" "${priority:-}" "$notes" >> "$BD_UPDATE_LOG"
+    fi
+    exit 0 ;;
+  promote)
+    # `bd promote <wisp> --reason=<r>` — record the survivor promotion so the
+    # synthesis-lib test (test_06) can assert which candidates became durable.
+    shift
+    wisp="${1:-}"
+    reason="$(arg_val --reason "$@" || true)"
+    [ -n "${BD_PROMOTE_LOG:-}" ] && printf 'promote\tid=%s\treason=%s\n' "$wisp" "$reason" >> "$BD_PROMOTE_LOG"
+    exit 0 ;;
+  label)
+    # `bd label add <label> <id...>` — record severity-label stamping.
+    if [ "${2:-}" = "add" ] && [ -n "${BD_PROMOTE_LOG:-}" ]; then
+      lbl="${3:-}"; shift 3 || shift $#
+      for id in "$@"; do printf 'label\t%s\t%s\n' "$lbl" "$id" >> "$BD_PROMOTE_LOG"; done
+    fi
+    exit 0 ;;
+  mol)
+    # `bd mol burn --force <wisp>` — record the burn of a duplicate/sub-threshold.
+    if [ "${2:-}" = "burn" ] && [ -n "${BD_PROMOTE_LOG:-}" ]; then
+      shift 2
+      for a in "$@"; do case "$a" in --*) ;; *) printf 'burn\t%s\n' "$a" >> "$BD_PROMOTE_LOG" ;; esac; done
+    fi
+    exit 0 ;;
+  heartbeat|close)
+    exit 0 ;;
+  *)
+    exit 0 ;;
+esac

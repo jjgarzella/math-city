@@ -14,8 +14,10 @@ mol-review-loop (gcs-f4j.3) where the verdict glue lives in apply-fixes.
 """
 formula = "expansion-smoke-reviewer"
 version = 2
-contract = "graph.v2"
 type = "expansion"
+
+[requires]
+formula_compiler = ">=2.0.0"
 
 [[template]]
 id = "{target}.review"

@@ -43,7 +43,6 @@
 #   gc sling gascity/gasvillage.polecat <bead> --on mol-standard-review \
 #     --var target=. --nudge
 formula = "mol-standard-review"
-contract = "graph.v2"
 
 [requires]
 formula_compiler = ">=2.0.0"

@@ -61,7 +61,6 @@ double-brace `{{var}}` of workflow formulas.
 """
 formula = "expansion-standard-reviewer"
 version = 2
-contract = "graph.v2"
 type = "expansion"
 
 [requires]

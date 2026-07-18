@@ -45,7 +45,6 @@ Sling (base loop, single no-op reviewer):
   gc sling gascity/gasvillage.polecat <bead> --on mol-review-loop --nudge
 """
 formula = "mol-review-loop"
-contract = "graph.v2"
 
 [requires]
 formula_compiler = ">=2.0.0"

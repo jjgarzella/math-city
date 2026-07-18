@@ -81,7 +81,6 @@ Tune the reviewer (any fragment var flows through, e.g. a deeper synthesis tier)
     --var severity_threshold=major --var synthesis_model=opus --nudge
 """
 formula = "mol-review-loop-standard"
-contract = "graph.v2"
 
 [requires]
 formula_compiler = ">=2.0.0"

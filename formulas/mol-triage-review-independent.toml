@@ -41,7 +41,6 @@
 #   gc sling gascity/gasvillage.polecat <bead> --on mol-triage-review-independent \
 #     --var target=#123 --nudge
 formula = "mol-triage-review-independent"
-contract = "graph.v2"
 
 [requires]
 formula_compiler = ">=2.0.0"

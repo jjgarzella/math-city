@@ -49,7 +49,6 @@ or, since it is the polecat default_sling_formula, simply:
   gc sling gascity/gasvillage.polecat <bead> --nudge
 """
 formula = "mol-polecat-implement"
-contract = "graph.v2"
 
 [requires]
 formula_compiler = ">=2.0.0"

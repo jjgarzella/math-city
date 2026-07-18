@@ -5,20 +5,27 @@
 # fragment to inject "Mayor Leonhard" identity into the mayor.
 
 [pack]
-name = "math-city"
-schema = 2
+  name = "math-city"
+  version = ""
+  schema = 2
 
-[imports.gasvillage]
-source = "packs/gasvillage"
-
-# Argos — generic rate-limit-recovery watchdog. Composed at city scope
-# (the same way the gastown example city imports it). Its city-scoped,
-# always-resident named session comes up as a city agent. Imported from the
-# city root pack so the relative `source` resolves against the city root.
-[imports.argos]
-source = "packs/argos"
-
-# julia-tools — reusable Julia CI + repo-hygiene FORMULAS (new-julia-repo + julia-harden).
-# Formula-only pack (no agents/sessions). Citywide registration per the gcs-4os epic design.
-[imports.julia-tools]
-source = "packs/julia-tools"
+[imports]
+  # Argos — generic rate-limit-recovery watchdog. Composed at city scope
+  # (the same way the gastown example city imports it). Its city-scoped,
+  # always-resident named session comes up as a city agent. Imported from the
+  # city root pack so the relative `source` resolves against the city root.
+  [imports.argos]
+    source = "packs/argos"
+  # bd + core — required builtin packs (added by gc doctor --fix for gc 1.3.5).
+  [imports.bd]
+    source = "https://github.com/gastownhall/gascity.git//examples/bd"
+    version = "sha:f895c0ff47d6ee9334ed282a416387eb5b084d24"
+  [imports.core]
+    source = "https://github.com/gastownhall/gascity.git//internal/bootstrap/packs/core"
+    version = "sha:f895c0ff47d6ee9334ed282a416387eb5b084d24"
+  [imports.gasvillage]
+    source = "packs/gasvillage"
+  # julia-tools — reusable Julia CI + repo-hygiene FORMULAS (new-julia-repo + julia-harden).
+  # Formula-only pack (no agents/sessions). Citywide registration per the gcs-4os epic design.
+  [imports.julia-tools]
+    source = "packs/julia-tools"

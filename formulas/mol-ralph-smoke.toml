@@ -19,7 +19,6 @@ Flow:
 Slung via:  gc sling gascity/gasvillage.polecat <bead> --on mol-ralph-smoke --nudge
 """
 formula = "mol-ralph-smoke"
-contract = "graph.v2"
 
 [requires]
 formula_compiler = ">=2.0.0"

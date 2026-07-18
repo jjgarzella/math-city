@@ -35,7 +35,6 @@ external worktree at setup and referenced by a RELATIVE path so it resolves
 under work_dir (gastownhall/gascity#3029 / #2320).
 """
 formula = "mol-review-loop-smoke"
-contract = "graph.v2"
 
 [requires]
 formula_compiler = ">=2.0.0"

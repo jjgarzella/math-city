@@ -71,7 +71,6 @@ so each lane's opt_model resolves at expansion.
 """
 formula = "expansion-triage-reviewer"
 version = 1
-contract = "graph.v2"
 type = "expansion"
 
 [requires]

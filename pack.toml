@@ -29,3 +29,7 @@
   # Formula-only pack (no agents/sessions). Citywide registration per the gcs-4os epic design.
   [imports.julia-tools]
     source = "packs/julia-tools"
+  # latex-utils — reusable LaTeX/arXiv FORMULAS (math-dep-graph, litsearch-process-paper, etc.).
+  # Formula-only pack (no agents/sessions).
+  [imports.latex-utils]
+    source = "packs/latex-utils"

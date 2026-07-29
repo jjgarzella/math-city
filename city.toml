@@ -41,6 +41,12 @@ mode = "on_demand"
 name = "math-experiments"
 prefix = "mx"
 default_branch = "main"
+# Lab Tech's rig-specific wiring. The labtech pack ships NO defaults for these three
+# (they name one rig's filesystem and one rig's lab-book bead), so they live here.
+[rigs.formula_vars]
+labtech_home = "/home/jjgarzella/Developer/ai/city/math-experiments/labtech"
+labtech_pack = "/home/jjgarzella/Developer/ai/city/math-city/packs/labtech"
+lab_book = "mx-p03"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"

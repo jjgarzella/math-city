@@ -1,8 +1,10 @@
 # Root `formulas/` — what lives here, and how general it has to be
 
 City-root formulas. `gc` discovers every `*.toml` here automatically (they show
-up in `gc formula list` alongside pack-supplied ones); `lib/` and `test/` are
-skipped by discovery, which only matches `.toml`.
+up in `gc formula list` alongside pack-supplied ones). Discovery matches `.toml`
+and nothing else, and neither `lib/` nor `test/` contains one — that is why the
+shared shell libs and the test harnesses can sit here without being mistaken for
+formulas.
 
 This directory is **not a pack**. It has no `pack.toml`, it is not listed in the
 root `pack.toml` `[imports]`, and it is not a submodule — unlike every reusable
@@ -11,8 +13,9 @@ pack in this city (`gasvillage`, `latex-utils`, `julia-tools`, `labtech`,
 here ships to exactly one city: this one.
 
 That makes root `formulas/` the **staging ground for gascity framework work**:
-every formula here was built under a `gcs-*` build epic in the `gascity` rig and
-lives here so it can be dogfooded against a live city before it graduates. The
+all eleven formulas here were added in commits carrying a `gcs-*` build epic
+from the `gascity` rig, and they live here so they can be dogfooded against a
+live city before graduating. The
 family it belongs to already has an upstream home —
 `gascity/internal/bootstrap/packs/core/formulas/` ships `mol-polecat-base`,
 `mol-polecat-commit`, `mol-polecat-report`, and `mol-review-quorum`.
@@ -53,9 +56,9 @@ These are written to be reusable and are already close. Runtime config is fully
 portable today: **no absolute paths anywhere**, all 24 `gc.run_target` values in
 this directory are the import-relative `gasvillage.polecat` (never a
 rig-qualified `gascity/gasvillage.polecat`), and `lib/` is resolved through
-`$GC_CITY`. The
-`gastownhall/gascity#NNNN` references are upstream framework traceability, which
-is the same convention the vendored `core` and `bd` packs use — leave them.
+`$GC_CITY`. The `gastownhall/gascity#NNNN` references are upstream framework
+traceability, which is the same convention the vendored `core` and `bd` packs
+use — leave them.
 
 What is *not* general yet is prose: sling examples in `description` blocks that
 name the `gascity` rig, and `gcs-*` build-epic IDs in runtime step descriptions.

@@ -33,3 +33,6 @@
   # Formula-only pack (no agents/sessions).
   [imports.latex-utils]
     source = "packs/latex-utils"
+  # mathcats — reusable mathematical semantic-reasoning worker + lifecycle formula.
+  [imports.mathcats]
+    source = "packs/mathcats"

@@ -13,3 +13,6 @@
 [submodule "packs/julia-tools"]
 	path = packs/julia-tools
 	url = https://github.com/jjgarzella/julia-tools-pack.git
+[submodule "packs/mathcats"]
+	path = packs/mathcats
+	url = https://github.com/jjgarzella/mathcats-pack.git

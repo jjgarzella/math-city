@@ -6,7 +6,8 @@ provider = "claude"
 base = "builtin:claude"
 ready_delay_ms = 0
 [providers.claude.option_defaults]
-effort = "xhigh"
+model = "opus"
+effort = "high"
 [providers.codex]
 base = "builtin:codex"
 ready_delay_ms = 0
@@ -35,6 +36,18 @@ mode = "on_demand"
 template = "bryan"
 scope = "rig"
 dir = "MMPSingularities.jl"
+mode = "on_demand"
+
+[[named_session]]
+template = "bertrand"
+scope = "rig"
+dir = "lean-projects"
+mode = "on_demand"
+
+[[named_session]]
+template = "david"
+scope = "rig"
+dir = "latex-projects"
 mode = "on_demand"
 
 [[rigs]]
@@ -84,6 +97,15 @@ source = "packs/gasvillage"
 [[rigs]]
 name = "phd-thesis"
 default_branch = "main"
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "packs/gasvillage"
+[rigs.imports.latex-utils]
+source = "packs/latex-utils"
+
+[[rigs]]
+name = "latex-projects"
+prefix = "lp"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"
@@ -144,5 +166,25 @@ suspended = false
 effort = "high"
 model = "sonnet"
 
+[[patches.agent]]
+dir = "DeRham.jl"
+name = "gasvillage.polecat"
+[patches.agent.option_defaults]
+model = "sonnet"
+
+[[patches.agent]]
+name = "gasvillage.mayor"
+provider = "claude"
+[patches.agent.option_defaults]
+model = "opus"
+effort = "high"
+
 [daemon]
 formula_v2 = true
+
+[[rigs]]
+name = "lean-projects"
+prefix = "lean"
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "./packs/gasvillage"

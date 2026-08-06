@@ -16,3 +16,6 @@
 [submodule "packs/mathcats"]
 	path = packs/mathcats
 	url = https://github.com/jjgarzella/mathcats-pack.git
+[submodule "packs/basic-code-tools"]
+	path = packs/basic-code-tools
+	url = https://github.com/jjgarzella/basic-code-tools-pack.git

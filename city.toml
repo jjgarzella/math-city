@@ -79,6 +79,9 @@ test_command = "make test"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"
+# basic-code-tools — code+proof translation formulas (translate v2). Epic gcs-1gq8.
+[rigs.imports.basic-code-tools]
+source = "packs/basic-code-tools"
 
 [[rigs]]
 name = "GPUFiniteFieldMatrices.jl"
@@ -188,3 +191,6 @@ prefix = "lean"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "./packs/gasvillage"
+# basic-code-tools — 2nd import target for proof (Lean) translation jobs. Epic gcs-1gq8.
+[rigs.imports.basic-code-tools]
+source = "./packs/basic-code-tools"

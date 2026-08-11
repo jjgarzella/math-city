@@ -50,6 +50,12 @@ scope = "rig"
 dir = "latex-projects"
 mode = "on_demand"
 
+[[named_session]]
+template = "walter"
+scope = "rig"
+dir = "reporter"
+mode = "on_demand"
+
 [[rigs]]
 name = "math-experiments"
 prefix = "mx"
@@ -194,3 +200,10 @@ source = "./packs/gasvillage"
 # basic-code-tools — 2nd import target for proof (Lean) translation jobs. Epic gcs-1gq8.
 [rigs.imports.basic-code-tools]
 source = "./packs/basic-code-tools"
+
+[[rigs]]
+name = "reporter"
+prefix = "re"
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "packs/gasvillage"

@@ -1,0 +1,7 @@
+scope = "rig"
+dir = "latex-projects"
+provider = "codex"
+wake_mode = "fresh"
+idle_timeout = "4h"
+max_active_sessions = 1
+nudge = "Check your hook and mail, then act accordingly."

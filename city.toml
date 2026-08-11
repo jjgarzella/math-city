@@ -183,9 +183,8 @@ model = "sonnet"
 
 [[patches.agent]]
 name = "gasvillage.mayor"
-provider = "claude"
+provider = "codex"
 [patches.agent.option_defaults]
-model = "opus"
 effort = "high"
 
 [daemon]

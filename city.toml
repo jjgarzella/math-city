@@ -17,13 +17,13 @@ effort = "high"
 [[named_session]]
 template = "anatoly"
 scope = "rig"
-dir = "DeRham.jl"
+dir = "math-code-projects"
 mode = "on_demand"
 
 [[named_session]]
 template = "kurt"
 scope = "rig"
-dir = "GPUFiniteFieldMatrices.jl"
+dir = "math-code-projects"
 mode = "on_demand"
 
 [[named_session]]
@@ -35,7 +35,7 @@ mode = "on_demand"
 [[named_session]]
 template = "bryan"
 scope = "rig"
-dir = "MMPSingularities.jl"
+dir = "math-code-projects"
 mode = "on_demand"
 
 [[named_session]]
@@ -66,6 +66,7 @@ default_branch = "main"
 labtech_home = "/home/jjgarzella/Developer/ai/city/math-experiments/labtech"
 labtech_pack = "/home/jjgarzella/Developer/ai/city/math-city/packs/labtech"
 lab_book = "mx-p03"
+review_worker_target = "gasvillage.polecat"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"
@@ -82,6 +83,7 @@ default_branch = "main"
 lint_command = "go vet ./..."
 build_command = "go build ./..."
 test_command = "make test"
+review_worker_target = "gasvillage.polecat"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"
@@ -90,31 +92,26 @@ source = "packs/gasvillage"
 source = "packs/basic-code-tools"
 
 [[rigs]]
-name = "GPUFiniteFieldMatrices.jl"
+name = "math-code-projects"
+prefix = "mcp"
 default_branch = "main"
+[rigs.formula_vars]
+review_worker_target = "gasvillage.polecat"
+typecheck_command = "/home/jjgarzella/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); using EdgeIdeals'"
+test_command = "/home/jjgarzella/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'"
+lint_command = "PATH=/home/jjgarzella/.juliaup/bin:$PATH /home/jjgarzella/Developer/ai/city/math-city/packs/julia-tools/lib/no-code-comments.sh"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"
-
-[[rigs]]
-name = "DeRham.jl"
-default_branch = "main"
-[rigs.imports]
-[rigs.imports.gasvillage]
-source = "packs/gasvillage"
-
-[[rigs]]
-name = "phd-thesis"
-default_branch = "main"
-[rigs.imports]
-[rigs.imports.gasvillage]
-source = "packs/gasvillage"
-[rigs.imports.latex-utils]
-source = "packs/latex-utils"
+# basic-code-tools — code translation formulas (translate v2) for m2->Julia etc. Epic gcs-1gq8.
+[rigs.imports.basic-code-tools]
+source = "packs/basic-code-tools"
 
 [[rigs]]
 name = "latex-projects"
 prefix = "lp"
+[rigs.formula_vars]
+review_worker_target = "gasvillage.polecat"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"
@@ -125,6 +122,8 @@ source = "packs/latex-utils"
 name = "beads"
 prefix = "beads"
 default_branch = "main"
+[rigs.formula_vars]
+review_worker_target = "gasvillage.polecat"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"
@@ -132,38 +131,6 @@ source = "packs/gasvillage"
 [[rigs]]
 name = "gascity-packs"
 default_branch = "main"
-
-[[rigs]]
-name = "NewtonExperiments"
-prefix = "ne"
-default_branch = "main"
-[rigs.imports]
-[rigs.imports.gasvillage]
-source = "./packs/gasvillage"
-
-[[rigs]]
-name = "Nemo.jl"
-prefix = "nm"
-default_branch = "master"
-[rigs.imports]
-[rigs.imports.gasvillage]
-source = "./packs/gasvillage"
-
-[[rigs]]
-name = "MMPSingularities.jl"
-prefix = "mmp"
-default_branch = "main"
-[rigs.imports]
-[rigs.imports.gasvillage]
-source = "./packs/gasvillage"
-
-[[rigs]]
-name = "GPUPolynomials.jl"
-prefix = "gpp"
-default_branch = "main"
-[rigs.imports]
-[rigs.imports.gasvillage]
-source = "./packs/gasvillage"
 
 [patches]
 
@@ -176,7 +143,7 @@ effort = "high"
 model = "sonnet"
 
 [[patches.agent]]
-dir = "DeRham.jl"
+dir = "math-code-projects"
 name = "gasvillage.polecat"
 [patches.agent.option_defaults]
 model = "sonnet"
@@ -193,6 +160,8 @@ formula_v2 = true
 [[rigs]]
 name = "lean-projects"
 prefix = "lean"
+[rigs.formula_vars]
+review_worker_target = "gasvillage.polecat"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "./packs/gasvillage"
@@ -203,6 +172,8 @@ source = "./packs/basic-code-tools"
 [[rigs]]
 name = "reporter"
 prefix = "re"
+[rigs.formula_vars]
+review_worker_target = "gasvillage.polecat"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"

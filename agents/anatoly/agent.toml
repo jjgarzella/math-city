@@ -1,5 +1,5 @@
 scope = "rig"
-dir = "DeRham.jl"
+dir = "math-code-projects"
 provider = "claude"
 wake_mode = "fresh"
 work_dir = ".gc/worktrees/{{.Rig}}/{{.AgentBase}}"

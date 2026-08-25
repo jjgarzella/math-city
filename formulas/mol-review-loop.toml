@@ -15,7 +15,7 @@ Each ralph iteration:
      findings. It is a PLACEHOLDER here — the base loop runs it as a no-op
      reviewer slot; the quorum variant (gcs-f4j.5) replaces it via
      `[[compose.expand]]` with a real two-lane reviewer + synthesis.
-  2. apply-fixes (pool-dispatched, gc.run_target=gasvillage.polecat, a fresh
+  2. apply-fixes (pool-dispatched, gc.run_target={{review_worker_target}}, a fresh
      polecat context per iteration) resumes the branch, applies this attempt's
      findings, and writes review.verdict onto its own bead. Its fix-mode
      behavior — resume branch + apply findings + set review.verdict — is the
@@ -70,6 +70,10 @@ verdict-glue check sends a best-effort `gc session nudge` on the terminal
 transition (converged or capped). Empty (the default) disables notify.
 """
 default = ""
+
+[vars.review_worker_target]
+description = "Pool target for reviewer/apply-fixes steps. Defaults to the city-scope claude pool; rigs override this via formula_vars to gasvillage.polecat."
+default = "claude"
 
 [[steps]]
 id = "workspace-setup"
@@ -154,7 +158,7 @@ timeout = "120s"
 [[steps.children]]
 id = "review-pipeline"
 title = "Review pipeline (placeholder; replaced via compose.expand in the quorum variant)"
-metadata = { "gc.run_target" = "gasvillage.polecat" }
+metadata = { "gc.run_target" = "{{review_worker_target}}" }
 description = '''
 PLACEHOLDER reviewer slot. In the base loop this runs as a no-op reviewer that
 surfaces no findings — it exists so the loop is a runnable, reviewer-agnostic
@@ -179,9 +183,9 @@ Exit criteria: this reviewer-slot bead is closed pass. apply-fixes runs next.
 id = "apply-fixes"
 title = "Apply fixes + set review.verdict (fix-mode interface owned by gcs-6r2)"
 needs = ["review-pipeline"]
-metadata = { "gc.run_target" = "gasvillage.polecat" }
+metadata = { "gc.run_target" = "{{review_worker_target}}" }
 description = '''
-Pool-dispatched to a FRESH polecat each iteration (gc.run_target=gasvillage.polecat),
+Pool-dispatched to a FRESH polecat each iteration (gc.run_target={{review_worker_target}}),
 so every attempt starts with clean context. You resume the branch under review,
 apply this attempt's review findings, and write the review.verdict the loop's
 check reads.

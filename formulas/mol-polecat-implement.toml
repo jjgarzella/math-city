@@ -34,6 +34,8 @@ cleanly: the branch and worktree are recorded on the bead the moment they exist.
 |----------|--------|-------------|
 | base_branch | caller | Base branch to branch from / measure against (default: main). |
 | review_formula | caller | Review-loop formula the terminal triggers (default: mol-review-loop). Swap for a triage/quorum variant via --var; keeps review reviewer-agnostic. |
+| review_worker_target | caller / rig `formula_vars` | Pool target for the review loop workers. Defaults to city-scope claude; rigs override to gasvillage.polecat. |
+| target_repo | caller | Repo the change lands in (path or URL). Empty (default) = the rig repo. Set it to work a DIFFERENT repo — e.g. a standalone package nested in an umbrella rig, absent from the rig checkout. |
 | setup_command | rig `formula_vars` | Setup/install command. Empty = skip. |
 | typecheck_command | rig `formula_vars` | Type check command. Empty = skip. |
 | lint_command | rig `formula_vars` | Lint command. Empty = skip. |
@@ -65,6 +67,14 @@ triage/quorum loop variant via --var review_formula=<name> — dispatch policy
 (which reviewer/tier) lives in the caller, never here.
 """
 default = "mol-review-loop"
+
+[vars.review_worker_target]
+description = "Pool target used to trigger the review loop and route its worker steps. Defaults to the city-scope claude pool; rigs override this via formula_vars to gasvillage.polecat."
+default = "claude"
+
+[vars.target_repo]
+description = "Repository the change lands in — a local path or URL. Empty (default) = the rig repo the polecat is slung into (classic behavior). Set it to cut the worktree from a DIFFERENT repo instead — e.g. a standalone package nested inside an umbrella rig, whose files are absent from the rig checkout. A URL is bare-cloned into a worktrees/.cache; a local path is used in place. The base ref is resolved against origin when the source repo has one, else the local base branch (so an origin-less umbrella/target still works). The pushed branch + review loop target that repo."
+default = ""
 
 [vars.setup_command]
 description = "Setup/install command (e.g., go mod download). From rig `formula_vars` or empty to skip."
@@ -166,18 +176,56 @@ ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
 meta() { bd show "$ROOT" --json 2>/dev/null | json_payload \
   | jq -r "if type==\"array\" then .[0] else . end | (.metadata[\"$1\"] // empty)"; }
 
-git fetch --prune origin
+# --- Source repo: target_repo (a local path or URL) overrides the rig checkout;
+#     empty = the rig repo (this worktree's toplevel). A URL is bare-cloned into
+#     a sibling cache; a local path is used in place. ---
+TARGET_REPO="{{target_repo}}"
+if [ -z "$TARGET_REPO" ]; then
+    SRC_REPO="$(git rev-parse --show-toplevel)"
+    WT_BASE="$(pwd)/worktrees"
+else
+    if printf '%s' "$TARGET_REPO" | grep -Eq '^(https?|git|ssh)://|^[^/]+@[^/:]+:'; then
+        CACHE="$(pwd)/worktrees/.cache/$(printf '%s' "$TARGET_REPO" | tr -c 'A-Za-z0-9._-' '-').git"
+        [ -d "$CACHE" ] || { mkdir -p "$(dirname "$CACHE")"; git clone --bare "$TARGET_REPO" "$CACHE" \
+          || { echo "STOP: bare clone of target_repo failed: $TARGET_REPO" >&2; gc runtime drain-ack; exit 1; }; }
+        SRC_REPO="$CACHE"
+    else
+        SRC_REPO="$TARGET_REPO"
+    fi
+    WT_BASE="$(pwd)/worktrees/target"
+    git -C "$SRC_REPO" rev-parse --git-dir >/dev/null 2>&1 \
+      || { echo "STOP: target_repo is not a git repository: $SRC_REPO" >&2; gc runtime drain-ack; exit 1; }
+fi
 
-# --- Worktree: reuse the one recorded on the work bead, else create one. ---
+# --- Base ref: fetch origin only if the source repo has one; resolve the base
+#     against origin when present, else the LOCAL base branch. An origin-less
+#     umbrella/target must not silently proceed on a missing ref. ---
+if git -C "$SRC_REPO" remote | grep -qx origin; then
+    git -C "$SRC_REPO" fetch --prune origin || true
+fi
+if git -C "$SRC_REPO" show-ref --verify --quiet "refs/remotes/origin/{{base_branch}}"; then
+    BASE_REF="origin/{{base_branch}}"
+elif git -C "$SRC_REPO" show-ref --verify --quiet "refs/heads/{{base_branch}}"; then
+    BASE_REF="{{base_branch}}"
+else
+    echo "STOP: base branch {{base_branch}} not found in $SRC_REPO (neither origin/ nor local ref)" >&2
+    gc runtime drain-ack; exit 1
+fi
+
+# --- Worktree: reuse the one recorded on the work bead, else create one from
+#     SRC_REPO at BASE_REF. Record the resolved source repo + base ref on ROOT
+#     so self-review and trigger-review reuse the exact same context. ---
 WORKTREE=$(meta work_dir)
 if [ -n "$WORKTREE" ] && [ -d "$WORKTREE" ]; then
     cd "$WORKTREE"
 else
-    WORKTREE_PATH="$(pwd)/worktrees/$ROOT"
-    git worktree add "$WORKTREE_PATH" --detach "origin/{{base_branch}}"
+    WORKTREE_PATH="$WT_BASE/$ROOT"
+    git -C "$SRC_REPO" worktree add "$WORKTREE_PATH" --detach "$BASE_REF" \
+      || { echo "STOP: worktree add from $SRC_REPO at $BASE_REF failed" >&2; gc runtime drain-ack; exit 1; }
     cd "$WORKTREE_PATH"
     WORKTREE="$WORKTREE_PATH"
 fi
+bd update "$ROOT" --set-metadata target_src_repo="$SRC_REPO" --set-metadata base_ref="$BASE_REF" || true
 # Record on the work bead (ROOT) so a restart, the witness, AND the review loop
 # can find/resume this exact worktree. work_dir on ROOT is what mol-review-loop
 # reads to resume the branch under review.
@@ -208,7 +256,7 @@ if [ -n "$BRANCH" ]; then
     # Fix-mode resume: rebase onto latest base, clear the rejection marker.
     REJECTION=$(meta rejection_reason)
     if [ -n "$REJECTION" ]; then
-        git rebase "origin/{{base_branch}}" || {
+        git rebase "$BASE_REF" || {
             echo "Rebase conflict (likely the rejection reason) — resolve, then: git rebase --continue" >&2; }
         bd update "$ROOT" --unset-metadata rejection_reason || true
     fi
@@ -218,7 +266,7 @@ else
     # commits with stale hashes).
     BRANCH="polecat/$ROOT"
     git branch -D "$BRANCH" 2>/dev/null || true
-    git checkout -B "$BRANCH" "origin/{{base_branch}}"
+    git checkout -B "$BRANCH" "$BASE_REF"
     bd update "$ROOT" --set-metadata branch="$BRANCH"
 fi
 
@@ -367,10 +415,16 @@ WORK_DIR=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
 [ -n "$WORK_DIR" ] && cd "$WORK_DIR"
 gc bd heartbeat "$GC_BEAD_ID" || true
 
+# Base ref workspace-setup resolved (origin/base when the repo has an origin,
+# else the local base). Fall back to origin/base for legacy runs.
+BASE_REF=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
+  | jq -r 'if type=="array" then .[0] else . end | .metadata["base_ref"] // empty')
+[ -z "$BASE_REF" ] && BASE_REF="origin/{{base_branch}}"
+
 # 1. Review the diff.
-git diff "origin/{{base_branch}}...HEAD"
-git log --oneline "origin/{{base_branch}}..HEAD"
-git diff --stat "origin/{{base_branch}}...HEAD"
+git diff "$BASE_REF...HEAD"
+git log --oneline "$BASE_REF..HEAD"
+git diff --stat "$BASE_REF...HEAD"
 ```
 
 Check for: bugs, security issues, style violations, missing error handling,
@@ -413,6 +467,7 @@ draining releases the pool slot so a fresh polecat runs the queued review loop
 (the gascity polecat pool is max=1; holding the slot would deadlock the loop).
 
 **Config: review_formula = {{review_formula}}**
+**Config: review_worker_target = {{review_worker_target}}**
 **Config: base_branch = {{base_branch}}**
 
 Run exactly this block:
@@ -439,20 +494,31 @@ fi
 BRANCH=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
   | jq -r 'if type=="array" then .[0] else . end | .metadata["branch"] // empty')
 [ -z "$BRANCH" ] && BRANCH=$(git branch --show-current)
-git push -u origin "HEAD:$BRANCH"
+if git remote | grep -qx origin; then
+    git push -u origin "HEAD:$BRANCH"
+else
+    echo "note: no origin remote on this repo; leaving $BRANCH local (the review loop resumes work_dir directly)"
+fi
 bd update "$ROOT" --set-metadata branch="$BRANCH"
 
 # 3. Trigger the review→fix loop ON the work bead. It resumes work_dir (this
 #    branch) and reviews {{base_branch}}..HEAD. review_formula is swappable so
 #    the implement side stays reviewer-agnostic. Routed to the polecat pool;
 #    --nudge wakes it once this session drains the slot.
-gc sling "${GC_RIG:+$GC_RIG/}gasvillage.polecat" "$ROOT" \
-  --on "{{review_formula}}" --var "base_branch={{base_branch}}" --nudge
+REVIEW_WORKER_TARGET="{{review_worker_target}}"
+case "$REVIEW_WORKER_TARGET" in
+  */*) REVIEW_ROUTE="$REVIEW_WORKER_TARGET" ;;
+  claude|codex|bd.dog|core.*|gasvillage.mayor) REVIEW_ROUTE="$REVIEW_WORKER_TARGET" ;;
+  *) REVIEW_ROUTE="${GC_RIG:+$GC_RIG/}$REVIEW_WORKER_TARGET" ;;
+esac
+gc sling "$REVIEW_ROUTE" "$ROOT" \
+  --on "{{review_formula}}" --var "base_branch={{base_branch}}" \
+  --var "review_worker_target=$REVIEW_ROUTE" --nudge
 
 # 4. Close THIS step (the implement lifecycle is done; the work bead stays OPEN
 #    for review + the human gate — do NOT close ROOT).
 bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
-  --notes "trigger-review: pushed $BRANCH, slung {{review_formula}} on $ROOT; draining"
+  --notes "trigger-review: pushed $BRANCH, slung {{review_formula}} on $ROOT via $REVIEW_ROUTE; draining"
 
 # 5. Drain and exit — you are gone. The review loop runs in a fresh polecat.
 gc runtime drain-ack

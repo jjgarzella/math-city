@@ -19,10 +19,14 @@ type = "expansion"
 [requires]
 formula_compiler = ">=2.0.0"
 
+[vars.review_worker_target]
+description = "Pool target for expanded smoke reviewer steps."
+default = "claude"
+
 [[template]]
 id = "{target}.review"
 title = "Smoke reviewer lane (canned, no-op)"
-metadata = { "gc.run_target" = "gasvillage.polecat" }
+metadata = { "gc.run_target" = "{review_worker_target}" }
 description = '''
 Trivial smoke reviewer lane — there is NO real diff to review. The point is to
 exercise compose.expand inside the ralph iteration body. Run exactly this block,
@@ -43,7 +47,7 @@ Exit criteria: this reviewer-lane bead is closed pass.
 id = "{target}.synthesize"
 title = "Smoke synthesize (canned, no-op)"
 needs = ["{target}.review"]
-metadata = { "gc.run_target" = "gasvillage.polecat" }
+metadata = { "gc.run_target" = "{review_worker_target}" }
 description = '''
 Trivial smoke synthesis — there are no findings to merge. Run exactly this
 block, then stop:

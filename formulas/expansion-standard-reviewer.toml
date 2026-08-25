@@ -129,6 +129,10 @@ default = "minor"
 description = "Model for the synthesis pass (dedup-merge across the six lanes + final severity assignment). A judgment pass — deep tier; default opus. Rendered into the synthesis step's opt_model metadata."
 default = "opus"
 
+[vars.review_worker_target]
+description = "Pool target for expanded standard-review steps."
+default = "claude"
+
 # --------------------------------------------------------------------------
 # Analyze pass — resolve diff + change summary + eligibility gate, persisted
 # durably so every downstream lane bead is self-contained.
@@ -137,7 +141,7 @@ default = "opus"
 [[template]]
 id = "{target}.analyze"
 title = "Analyze: resolve diff + change summary + eligibility gate"
-metadata = { "gc.run_target" = "gasvillage.polecat" }
+metadata = { "gc.run_target" = "{review_worker_target}" }
 description = '''
 You are the ANALYZE pass of the standard (8-pass) code review. You run as ONE
 bead-native polecat session. Your job is to turn the review target into DURABLE
@@ -333,7 +337,7 @@ six review lenses (gcs-f4j.8.2) run next, each reading the durable inputs.
 id = "{target}.quality"
 title = "Quality lane — code smells / anti-patterns / dead code / error handling on the changed surface"
 needs = ["{target}.analyze"]
-metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{quality_model}" }
+metadata = { "gc.run_target" = "{review_worker_target}", "opt_model" = "{quality_model}" }
 description = '''
 You are the QUALITY review lane of the standard (8-pass) code review — one of six
 sibling lanes (quality / security / performance / architecture / testing / docs),
@@ -417,7 +421,7 @@ first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean
 id = "{target}.security"
 title = "Security lane — vulnerabilities / secrets / authz / input validation on the changed surface"
 needs = ["{target}.analyze"]
-metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{security_model}" }
+metadata = { "gc.run_target" = "{review_worker_target}", "opt_model" = "{security_model}" }
 description = '''
 You are the SECURITY review lane of the standard (8-pass) code review — one of six
 sibling lanes (quality / security / performance / architecture / testing / docs),
@@ -504,7 +508,7 @@ first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean
 id = "{target}.performance"
 title = "Performance lane — bottlenecks / inefficient algorithms or queries / leaks on the changed surface"
 needs = ["{target}.analyze"]
-metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{performance_model}" }
+metadata = { "gc.run_target" = "{review_worker_target}", "opt_model" = "{performance_model}" }
 description = '''
 You are the PERFORMANCE review lane of the standard (8-pass) code review — one of
 six sibling lanes (quality / security / performance / architecture / testing /
@@ -591,7 +595,7 @@ first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean
 id = "{target}.architecture"
 title = "Architecture lane — organization / abstraction / coupling / scalability of the change"
 needs = ["{target}.analyze"]
-metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{architecture_model}" }
+metadata = { "gc.run_target" = "{review_worker_target}", "opt_model" = "{architecture_model}" }
 description = '''
 You are the ARCHITECTURE review lane of the standard (8-pass) code review — one of
 six sibling lanes (quality / security / performance / architecture / testing /
@@ -680,7 +684,7 @@ first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean
 id = "{target}.testing"
 title = "Testing lane — coverage / structure / missing scenarios for the changed surface"
 needs = ["{target}.analyze"]
-metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{testing_model}" }
+metadata = { "gc.run_target" = "{review_worker_target}", "opt_model" = "{testing_model}" }
 description = '''
 You are the TESTING review lane of the standard (8-pass) code review — one of six
 sibling lanes (quality / security / performance / architecture / testing / docs),
@@ -768,7 +772,7 @@ first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean
 id = "{target}.docs"
 title = "Docs lane — comments / API docs / README / invariants touched by the change"
 needs = ["{target}.analyze"]
-metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{docs_model}" }
+metadata = { "gc.run_target" = "{review_worker_target}", "opt_model" = "{docs_model}" }
 description = '''
 You are the DOCS review lane of the standard (8-pass) code review — one of six
 sibling lanes (quality / security / performance / architecture / testing / docs),
@@ -866,7 +870,7 @@ first line; this lane bead is closed `gc.outcome=pass`. Zero findings is a clean
 id = "{target}.synthesis"
 title = "Synthesis — dedup-merge + severity + promote durable findings + verdict"
 needs = ["{target}.quality", "{target}.security", "{target}.performance", "{target}.architecture", "{target}.testing", "{target}.docs"]
-metadata = { "gc.run_target" = "gasvillage.polecat", "opt_model" = "{synthesis_model}" }
+metadata = { "gc.run_target" = "{review_worker_target}", "opt_model" = "{synthesis_model}" }
 description = '''
 You are the SYNTHESIS pass of the standard (8-pass) code review — the 8th pass,
 qdhenry's "recommendations". You run as ONE bead-native polecat session AFTER all

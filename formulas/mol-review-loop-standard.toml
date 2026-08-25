@@ -26,7 +26,7 @@ Each ralph iteration:
      severity, promotes the survivors to DURABLE findings under <root>.findings,
      and records gc.review.synthesis_verdict (pass / pass_with_findings / fail /
      blocked) + counts on the molecule root.
-  2. apply-fixes (pool-dispatched, gc.run_target=gasvillage.polecat — a fresh
+  2. apply-fixes (pool-dispatched, gc.run_target={{review_worker_target}} — a fresh
      polecat context per iteration) resumes the branch under review, reads the
      synthesis verdict + the durable findings, applies the fixes per the
      severity-threshold fix policy, and maps the synthesis verdict onto the loop's
@@ -161,6 +161,10 @@ transition (converged or capped). Empty (the default) disables notify.
 """
 default = ""
 
+[vars.review_worker_target]
+description = "Pool target for reviewer/apply-fixes steps. Defaults to the city-scope claude pool; rigs override this via formula_vars to gasvillage.polecat."
+default = "claude"
+
 [[steps]]
 id = "workspace-setup"
 title = "Install the verdict-glue check into work_dir + record loop metadata"
@@ -246,7 +250,7 @@ timeout = "120s"
 [[steps.children]]
 id = "review-pipeline"
 title = "Standard (8-pass) reviewer (placeholder; expanded via compose.expand)"
-metadata = { "gc.run_target" = "gasvillage.polecat" }
+metadata = { "gc.run_target" = "{{review_worker_target}}" }
 description = '''
 PLACEHOLDER reviewer slot — never runs as written. It is replaced at compile time
 by `[[compose.expand]]` with the canonical expansion-standard-reviewer fragment
@@ -260,9 +264,9 @@ molecule root, which apply-fixes (next) consumes.
 id = "apply-fixes"
 title = "Apply fixes + map synthesis verdict -> review.verdict"
 needs = ["review-pipeline"]
-metadata = { "gc.run_target" = "gasvillage.polecat" }
+metadata = { "gc.run_target" = "{{review_worker_target}}" }
 description = '''
-Pool-dispatched to a FRESH polecat each iteration (gc.run_target=gasvillage.polecat),
+Pool-dispatched to a FRESH polecat each iteration (gc.run_target={{review_worker_target}}),
 so every attempt starts with clean context. You resume the branch under review,
 consume the standard reviewer's synthesis output (the verdict + the durable
 findings it just promoted), apply the fixes per the severity-threshold fix policy,
@@ -372,4 +376,4 @@ iterate -> exit 1 (next attempt or cap).
 [[compose.expand]]
 target = "review-pipeline"
 with = "expansion-standard-reviewer"
-vars = { review_target = "{target}", base_branch = "{base_branch}", aux_model = "{aux_model}", quality_model = "{quality_model}", security_model = "{security_model}", performance_model = "{performance_model}", architecture_model = "{architecture_model}", testing_model = "{testing_model}", docs_model = "{docs_model}", synthesis_model = "{synthesis_model}", severity_threshold = "{severity_threshold}" }
+vars = { review_target = "{target}", base_branch = "{base_branch}", review_worker_target = "{review_worker_target}", aux_model = "{aux_model}", quality_model = "{quality_model}", security_model = "{security_model}", performance_model = "{performance_model}", architecture_model = "{architecture_model}", testing_model = "{testing_model}", docs_model = "{docs_model}", synthesis_model = "{synthesis_model}", severity_threshold = "{severity_threshold}" }

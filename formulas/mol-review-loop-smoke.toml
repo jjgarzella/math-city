@@ -48,6 +48,10 @@ iterates to max_attempts and terminates with gc.outcome=fail and no spin.
 """
 default = "2"
 
+[vars.review_worker_target]
+description = "Pool target for reviewer/apply-fixes steps. Defaults to the city-scope claude pool; rigs override this via formula_vars to gasvillage.polecat."
+default = "claude"
+
 [[steps]]
 id = "workspace-setup"
 title = "Smoke setup: external worktree + verdict check + work_dir on root"
@@ -209,7 +213,7 @@ description = "Expanded via compose.expand into the expansion-smoke-reviewer fra
 id = "apply-fixes"
 title = "Apply fixes (canned verdict keyed on attempt)"
 needs = ["review-pipeline"]
-metadata = { "gc.run_target" = "gasvillage.polecat" }
+metadata = { "gc.run_target" = "{{review_worker_target}}" }
 description = '''
 Write the CANNED review.verdict for this attempt — the verdict glue the loop's
 check reads. There is nothing to actually fix; this stands in for the real
@@ -248,3 +252,4 @@ controller then runs smoke-review-verdict.sh: review.verdict=iterate -> exit 1
 [[compose.expand]]
 target = "review-pipeline"
 with = "expansion-smoke-reviewer"
+vars = { review_worker_target = "{review_worker_target}" }

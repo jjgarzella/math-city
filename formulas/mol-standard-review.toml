@@ -103,6 +103,10 @@ default = "opus"
 description = "Lowest severity a finding must reach to be surfaced/promoted by synthesis. Ordering blocker > major > minor > nit; severity-gated (rank, do not suppress whole categories). Default minor surfaces blocker/major/minor and demotes nits."
 default = "minor"
 
+[vars.review_worker_target]
+description = "Pool target for reviewer steps. Defaults to the city-scope claude pool; rigs override this via formula_vars to gasvillage.polecat."
+default = "claude"
+
 # --------------------------------------------------------------------------
 # The single placeholder step. `[[compose.expand]]` replaces it with the
 # fragment's eight templates ({target}.analyze + the six lenses + {target}.synthesis),
@@ -114,7 +118,7 @@ default = "minor"
 [[steps]]
 id = "review-pipeline"
 title = "Standard (8-pass) code review of {{target}}"
-metadata = { "gc.run_target" = "gasvillage.polecat" }
+metadata = { "gc.run_target" = "{{review_worker_target}}" }
 description = '''
 PLACEHOLDER reviewer slot — never runs as written. It is replaced at compile
 time by `[[compose.expand]]` with the canonical expansion-standard-reviewer
@@ -135,4 +139,4 @@ bead, the expansion did not apply; that is a wiring bug in this host.
 [[compose.expand]]
 target = "review-pipeline"
 with = "expansion-standard-reviewer"
-vars = { review_target = "{target}", base_branch = "{base_branch}", aux_model = "{aux_model}", quality_model = "{quality_model}", security_model = "{security_model}", performance_model = "{performance_model}", architecture_model = "{architecture_model}", testing_model = "{testing_model}", docs_model = "{docs_model}", synthesis_model = "{synthesis_model}", severity_threshold = "{severity_threshold}" }
+vars = { review_target = "{target}", base_branch = "{base_branch}", review_worker_target = "{review_worker_target}", aux_model = "{aux_model}", quality_model = "{quality_model}", security_model = "{security_model}", performance_model = "{performance_model}", architecture_model = "{architecture_model}", testing_model = "{testing_model}", docs_model = "{docs_model}", synthesis_model = "{synthesis_model}", severity_threshold = "{severity_threshold}" }

@@ -4,7 +4,8 @@ dolt.auto-start: false
 export.auto: false
 gc.endpoint_origin: managed_city
 gc.endpoint_status: verified
-types.custom: molecule,convoy,message,event,gate,merge-request,agent,role,rig,session,spec,convergence,step
+types.custom: molecule,convoy,message,event,gate,merge-request,agent,role,rig,session,spec,convergence,step,startup-health-episode
 dolt:
   disable-event-flush: true
 backup.enabled: false
+dolt.mode: server

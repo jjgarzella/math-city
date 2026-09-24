@@ -10,12 +10,10 @@
   schema = 2
 
 [imports]
-  # Argos — generic rate-limit-recovery watchdog. Composed at city scope
-  # (the same way the gastown example city imports it). Its city-scoped,
-  # always-resident named session comes up as a city agent. Imported from the
-  # city root pack so the relative `source` resolves against the city root.
-  [imports.argos]
-    source = "packs/argos"
+  # Argos is temporarily disabled. Restore this import to re-enable its
+  # recurring watchdog order and on-demand session.
+  # [imports.argos]
+  #   source = "packs/argos"
   # bd + core — required builtin packs (added by gc doctor --fix for gc 1.3.5).
   [imports.bd]
     source = "https://github.com/gastownhall/gascity.git//examples/bd"

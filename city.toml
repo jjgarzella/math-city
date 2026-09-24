@@ -6,7 +6,7 @@ provider = "claude"
 base = "builtin:claude"
 ready_delay_ms = 0
 [providers.claude.option_defaults]
-model = "opus"
+model = "claude-opus-5-5"
 effort = "high"
 [providers.codex]
 base = "builtin:codex"
@@ -70,8 +70,10 @@ review_worker_target = "gasvillage.polecat"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"
-[rigs.imports.labtech]
-source = "packs/labtech"
+# Lab Tech is temporarily disabled. Restore this import to re-enable its
+# recurring experiment order and dedicated tick worker.
+# [rigs.imports.labtech]
+# source = "packs/labtech"
 
 [[rigs]]
 name = "gascity"
@@ -135,18 +137,29 @@ default_branch = "main"
 [patches]
 
 [[patches.agent]]
-dir = "math-experiments"
-name = "labtech.tick"
-suspended = false
-[patches.agent.option_defaults]
-effort = "high"
-model = "sonnet"
-
-[[patches.agent]]
 dir = "math-code-projects"
 name = "gasvillage.polecat"
 [patches.agent.option_defaults]
 model = "sonnet"
+
+# Codex-backed crew defaults. Existing sessions pick these up on next start/reset.
+[[patches.agent]]
+dir = "lean-projects"
+name = "bertrand"
+[patches.agent.option_defaults]
+model = "gpt-5.6-sol"
+
+[[patches.agent]]
+dir = "math-code-projects"
+name = "bryan"
+[patches.agent.option_defaults]
+model = "gpt-5.6-sol"
+
+[[patches.agent]]
+dir = "latex-projects"
+name = "david"
+[patches.agent.option_defaults]
+model = "gpt-5.6-sol"
 
 [[patches.agent]]
 name = "gasvillage.mayor"

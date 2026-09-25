@@ -16,6 +16,7 @@ worktrees/
 .julia/
 .gap_hist
 .beads.gate.lock
+mcp/*-canary.toml
 # Local Dolt backup staging
 .dolt-backup/
 

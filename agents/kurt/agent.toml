@@ -1,8 +1,5 @@
-scope = "rig"
-dir = "math-code-projects"
-wake_mode = "fresh"
-work_dir = ".gc/worktrees/{{.Rig}}/{{.AgentBase}}"
-idle_timeout = "4h"
+scope = "city"
+wake_mode = "resume"
+work_dir = ".gc/agents/{{.AgentBase}}"
 max_active_sessions = 1
 nudge = "Check your hook and mail, then act accordingly."
-pre_start = ["{{.CityRoot}}/packs/gasvillage/assets/scripts/worktree-setup.sh {{.RigRoot}} {{.WorkDir}} {{.AgentBase}} --sync"]

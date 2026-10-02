@@ -1,7 +1,6 @@
-scope = "rig"
-dir = "lean-projects"
+scope = "city"
 provider = "codex"
-wake_mode = "fresh"
-idle_timeout = "4h"
+wake_mode = "resume"
+work_dir = ".gc/agents/{{.AgentBase}}"
 max_active_sessions = 1
 nudge = "Check your hook and mail, then act accordingly."

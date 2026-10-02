@@ -11,6 +11,7 @@ effort = "high"
 [providers.codex]
 base = "builtin:codex"
 ready_delay_ms = 0
+args_append = ["--no-alt-screen", "-c", "tui.fullscreen_transcript=false"]
 [providers.codex.option_defaults]
 model = "gpt-6.1-sol"
 effort = "high"

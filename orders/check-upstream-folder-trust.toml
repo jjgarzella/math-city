@@ -1,0 +1,9 @@
+[order]
+description = "Check upstream Codex folder-trust fixes every five days and remind the Mayor"
+scope = "city"
+trigger = "cooldown"
+interval = "120h"
+exec = "python3 /home/jjgarzella/Developer/ai/city/math-city/commands/check-upstream-folder-trust.py"
+timeout = "3m"
+idempotent = true
+no_work_gate = true

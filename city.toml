@@ -178,3 +178,33 @@ review_worker_target = "gasvillage.polecat"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"
+
+[[rigs]]
+name = "GPUFiniteFieldMatrices.jl"
+prefix = "gfm"
+default_branch = "main"
+[rigs.formula_vars]
+review_worker_target = "gasvillage.polecat"
+typecheck_command = "/home/jjgarzella/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); using GPUFiniteFieldMatrices'"
+test_command = "/home/jjgarzella/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'"
+lint_command = "PATH=/home/jjgarzella/.juliaup/bin:$PATH /home/jjgarzella/Developer/ai/city/math-city/packs/julia-tools/lib/no-code-comments.sh"
+[rigs.imports]
+[rigs.imports.basic-code-tools]
+source = "./packs/basic-code-tools"
+[rigs.imports.gasvillage]
+source = "./packs/gasvillage"
+
+[[rigs]]
+name = "DeRham.jl"
+prefix = "dr"
+default_branch = "main"
+[rigs.formula_vars]
+review_worker_target = "gasvillage.polecat"
+typecheck_command = "/home/jjgarzella/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); using DeRham'"
+test_command = "/home/jjgarzella/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'"
+lint_command = "PATH=/home/jjgarzella/.juliaup/bin:$PATH /home/jjgarzella/Developer/ai/city/math-city/packs/julia-tools/lib/no-code-comments.sh"
+[rigs.imports]
+[rigs.imports.basic-code-tools]
+source = "./packs/basic-code-tools"
+[rigs.imports.gasvillage]
+source = "./packs/gasvillage"

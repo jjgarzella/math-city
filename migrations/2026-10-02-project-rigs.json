@@ -1,0 +1,771 @@
+{
+  "source_rig": "math-code-projects",
+  "source_path": "/home/jjgarzella/Developer/ai/city/math-code-projects",
+  "targets": {
+    "gfm": {
+      "rig": "GPUFiniteFieldMatrices.jl",
+      "path": "/home/jjgarzella/Developer/ai/city/math-code-projects/GPUFiniteFieldMatrices.jl"
+    },
+    "dr": {
+      "rig": "DeRham.jl",
+      "path": "/home/jjgarzella/Developer/ai/city/math-code-projects/DeRham.jl"
+    }
+  },
+  "beads": [
+    {
+      "source": "mcp-3kv",
+      "destination": "dr-mcp-3kv",
+      "target": "dr",
+      "status": "open",
+      "title": "PR1 DeRham.jl: implement epic mcp-d9d (conventional test cleanup)"
+    },
+    {
+      "source": "mcp-4807",
+      "destination": "dr-mcp-4807",
+      "target": "dr",
+      "status": "open",
+      "title": "input convoy for mcp-h4pw"
+    },
+    {
+      "source": "mcp-4x18",
+      "destination": "gfm-mcp-4x18",
+      "target": "gfm",
+      "status": "closed",
+      "title": "Resolve merge conflicts for GPUFiniteFieldMatrices.jl PR #22"
+    },
+    {
+      "source": "mcp-6h02",
+      "destination": "dr-mcp-6h02",
+      "target": "dr",
+      "status": "open",
+      "title": "PLAN: DeRham.jl cleanup of non-exported internal symbols (follow-up to the #55 grill)"
+    },
+    {
+      "source": "mcp-79vm",
+      "destination": "gfm-mcp-79vm",
+      "target": "gfm",
+      "status": "closed",
+      "title": "input convoy for mcp-4x18"
+    },
+    {
+      "source": "mcp-87yl",
+      "destination": "gfm-mcp-87yl",
+      "target": "gfm",
+      "status": "closed",
+      "title": "Resolve merge conflicts for GPUFiniteFieldMatrices.jl PR #24"
+    },
+    {
+      "source": "mcp-8ehh",
+      "destination": "dr-mcp-8ehh",
+      "target": "dr",
+      "status": "open",
+      "title": "Found: my_mul!(::ZZModMatrix,::ZZModMatrix,::ZZRingElem) references undefined uppercase C in @ccall"
+    },
+    {
+      "source": "mcp-9zni",
+      "destination": "gfm-mcp-9zni",
+      "target": "gfm",
+      "status": "closed",
+      "title": "input convoy for mcp-87yl"
+    },
+    {
+      "source": "mcp-a0u0",
+      "destination": "dr-mcp-a0u0",
+      "target": "dr",
+      "status": "closed",
+      "title": "Diagnose CI failure on DeRham PRs #57-#60: GPUFiniteFieldMatrices depends on ReLint whose UUID is StaticLint"
+    },
+    {
+      "source": "mcp-aqlh",
+      "destination": "gfm-mcp-aqlh",
+      "target": "gfm",
+      "status": "closed",
+      "title": "sling-mcp-syx0"
+    },
+    {
+      "source": "mcp-aua1",
+      "destination": "dr-mcp-aua1",
+      "target": "dr",
+      "status": "open",
+      "title": "input convoy for mcp-3kv"
+    },
+    {
+      "source": "mcp-b3sn",
+      "destination": "dr-mcp-b3sn",
+      "target": "dr",
+      "status": "open",
+      "title": "DeRham.jl #47: cyclotomic-factor Picard rank invariants"
+    },
+    {
+      "source": "mcp-b3sn.1",
+      "destination": "dr-mcp-b3sn.1",
+      "target": "dr",
+      "status": "open",
+      "title": "A: PicardRank.jl internal helpers (_cyclotomic_orders, _is_boat_shape)"
+    },
+    {
+      "source": "mcp-b3sn.2",
+      "destination": "dr-mcp-b3sn.2",
+      "target": "dr",
+      "status": "open",
+      "title": "B: coefficient API: picard_rank_bound + k3_* Picard functions with unit tests"
+    },
+    {
+      "source": "mcp-b3sn.3",
+      "destination": "dr-mcp-b3sn.3",
+      "target": "dr",
+      "status": "open",
+      "title": "C: polynomial-input wrappers for the Picard functions"
+    },
+    {
+      "source": "mcp-b3sn.4",
+      "destination": "dr-mcp-b3sn.4",
+      "target": "dr",
+      "status": "open",
+      "title": "D: fix artin_mazur_height boat-shape detection for leading coefficient -q"
+    },
+    {
+      "source": "mcp-b3sn.5",
+      "destination": "dr-mcp-b3sn.5",
+      "target": "dr",
+      "status": "open",
+      "title": "E: final gate: full Pkg.test, pre-commit, no-comments check"
+    },
+    {
+      "source": "mcp-b44r",
+      "destination": "dr-mcp-b44r",
+      "target": "dr",
+      "status": "closed",
+      "title": "input convoy for mcp-a0u0"
+    },
+    {
+      "source": "mcp-cl3",
+      "destination": "dr-mcp-cl3",
+      "target": "dr",
+      "status": "open",
+      "title": "PR2 DeRham.jl: implement epic mcp-ttb (declarative E2E catalogue), stacked on PR1"
+    },
+    {
+      "source": "mcp-d9d",
+      "destination": "dr-mcp-d9d",
+      "target": "dr",
+      "status": "open",
+      "title": "Clean up DeRham.jl conventional tests"
+    },
+    {
+      "source": "mcp-d9d.1",
+      "destination": "dr-mcp-d9d.1",
+      "target": "dr",
+      "status": "open",
+      "title": "Remove obsolete conventional test files and dormant elliptic blocks"
+    },
+    {
+      "source": "mcp-d9d.2",
+      "destination": "dr-mcp-d9d.2",
+      "target": "dr",
+      "status": "open",
+      "title": "Trim Precision.jl to active hodge-polygon test coverage"
+    },
+    {
+      "source": "mcp-d9d.3",
+      "destination": "dr-mcp-d9d.3",
+      "target": "dr",
+      "status": "open",
+      "title": "Extract unique old_tests examples and delete the legacy directory"
+    },
+    {
+      "source": "mcp-d9d.4",
+      "destination": "dr-mcp-d9d.4",
+      "target": "dr",
+      "status": "open",
+      "title": "Finalize the conventional test entrypoint and verify cleanup"
+    },
+    {
+      "source": "mcp-fej2",
+      "destination": "dr-mcp-fej2",
+      "target": "dr",
+      "status": "open",
+      "title": "input convoy for mcp-gmal.4"
+    },
+    {
+      "source": "mcp-fll6",
+      "destination": "dr-mcp-fll6",
+      "target": "dr",
+      "status": "open",
+      "title": "input convoy for mcp-cl3"
+    },
+    {
+      "source": "mcp-fof2",
+      "destination": "dr-mcp-fof2",
+      "target": "dr",
+      "status": "closed",
+      "title": "input convoy for mcp-upu4.2"
+    },
+    {
+      "source": "mcp-g0wy",
+      "destination": "dr-mcp-g0wy",
+      "target": "dr",
+      "status": "closed",
+      "title": "input convoy for mcp-upu4.3"
+    },
+    {
+      "source": "mcp-gfm-0kb",
+      "destination": "gfm-0kb",
+      "target": "gfm",
+      "status": "open",
+      "title": "Move benchmark/IO deps to test dependencies"
+    },
+    {
+      "source": "mcp-gfm-35j",
+      "destination": "gfm-35j",
+      "target": "gfm",
+      "status": "open",
+      "title": "Inconsistent keyword argument naming in mul! matrix-vector"
+    },
+    {
+      "source": "mcp-gfm-41c",
+      "destination": "gfm-41c",
+      "target": "gfm",
+      "status": "open",
+      "title": "karatsuba_negate_helper uses hardcoded 0.0 instead of 0"
+    },
+    {
+      "source": "mcp-gfm-5bt",
+      "destination": "gfm-5bt",
+      "target": "gfm",
+      "status": "open",
+      "title": "Replace string-based type dispatch in KaratsubaMatrix"
+    },
+    {
+      "source": "mcp-gfm-a6t",
+      "destination": "gfm-a6t",
+      "target": "gfm",
+      "status": "open",
+      "title": "GPUFiniteFieldMatrices: remove duplicate 'inverse' export"
+    },
+    {
+      "source": "mcp-gfm-acm",
+      "destination": "gfm-acm",
+      "target": "gfm",
+      "status": "open",
+      "title": "Deduplicate get_bits function"
+    },
+    {
+      "source": "mcp-gfm-c07",
+      "destination": "gfm-c07",
+      "target": "gfm",
+      "status": "open",
+      "title": "GPUFiniteFieldMatrices: migrate deprecated CUDA.CUBLAS -> cuBLAS"
+    },
+    {
+      "source": "mcp-gfm-crw",
+      "destination": "gfm-crw",
+      "target": "gfm",
+      "status": "open",
+      "title": "Clean up dead/commented-out code in KaratsubaMatrix"
+    },
+    {
+      "source": "mcp-gfm-dcx",
+      "destination": "gfm-dcx",
+      "target": "gfm",
+      "status": "open",
+      "title": "Narrow copyto! src type from AbstractArray to Array"
+    },
+    {
+      "source": "mcp-gfm-e60",
+      "destination": "gfm-e60",
+      "target": "gfm",
+      "status": "open",
+      "title": "Add Julia and CUDA compat entries to Project.toml"
+    },
+    {
+      "source": "mcp-gfm-klk",
+      "destination": "gfm-klk",
+      "target": "gfm",
+      "status": "open",
+      "title": "Make 14 sibling-internal names public for DeRham.jl's ExplicitImports gate"
+    },
+    {
+      "source": "mcp-gfm-kvf",
+      "destination": "gfm-kvf",
+      "target": "gfm",
+      "status": "open",
+      "title": "julia-harden: GPUFiniteFieldMatrices.jl"
+    },
+    {
+      "source": "mcp-gfm-kvf.1",
+      "destination": "gfm-kvf.1",
+      "target": "gfm",
+      "status": "open",
+      "title": "julia-harden: add CompatHelper.yml workflow"
+    },
+    {
+      "source": "mcp-gfm-kvf.2",
+      "destination": "gfm-kvf.2",
+      "target": "gfm",
+      "status": "open",
+      "title": "julia-harden: add TagBot.yml workflow"
+    },
+    {
+      "source": "mcp-gfm-kvf.3",
+      "destination": "gfm-kvf.3",
+      "target": "gfm",
+      "status": "open",
+      "title": "julia-harden: formatter gate (default style) — reformat in own PR"
+    },
+    {
+      "source": "mcp-gfm-kvf.3.1",
+      "destination": "gfm-kvf.3.1",
+      "target": "gfm",
+      "status": "open",
+      "title": "formatter PR 1: one-time reformat sweep (default style + whitespace)"
+    },
+    {
+      "source": "mcp-gfm-kvf.3.2",
+      "destination": "gfm-kvf.3.2",
+      "target": "gfm",
+      "status": "open",
+      "title": "formatter PR 2: enable pre-commit gate (depends on reformat PR)"
+    },
+    {
+      "source": "mcp-gfm-kvf.4",
+      "destination": "gfm-kvf.4",
+      "target": "gfm",
+      "status": "open",
+      "title": "julia-harden: test-tooling (quality gates, enabled one at a time)"
+    },
+    {
+      "source": "mcp-gfm-kvf.4.1",
+      "destination": "gfm-kvf.4.1",
+      "target": "gfm",
+      "status": "closed",
+      "title": "test-tooling gate: enable Aqua.test_all"
+    },
+    {
+      "source": "mcp-gfm-kvf.4.1.1",
+      "destination": "gfm-kvf.4.1.1",
+      "target": "gfm",
+      "status": "open",
+      "title": "test-tooling gate: enable full Aqua (deps_compat + stale_deps)"
+    },
+    {
+      "source": "mcp-gfm-kvf.4.2",
+      "destination": "gfm-kvf.4.2",
+      "target": "gfm",
+      "status": "open",
+      "title": "test-tooling gate: enable JET (error analysis; @test_opt later)"
+    },
+    {
+      "source": "mcp-gfm-kvf.4.4",
+      "destination": "gfm-kvf.4.4",
+      "target": "gfm",
+      "status": "open",
+      "title": "test-tooling gate: enable undocumented_names"
+    },
+    {
+      "source": "mcp-gfm-kvf.4.6",
+      "destination": "gfm-kvf.4.6",
+      "target": "gfm",
+      "status": "open",
+      "title": "test-tooling gate: enable AllocCheck (targeted)"
+    },
+    {
+      "source": "mcp-gfm-rfk",
+      "destination": "gfm-rfk",
+      "target": "gfm",
+      "status": "open",
+      "title": "perm_array_to_matrix exported twice"
+    },
+    {
+      "source": "mcp-gfm-y80",
+      "destination": "gfm-y80",
+      "target": "gfm",
+      "status": "open",
+      "title": "change_modulus_no_alloc! actually allocates"
+    },
+    {
+      "source": "mcp-gmal",
+      "destination": "dr-mcp-gmal",
+      "target": "dr",
+      "status": "open",
+      "title": "DeRham.jl #54: Jacobian invariants (zeta function, point counts, zeta coefficients)"
+    },
+    {
+      "source": "mcp-gmal.1",
+      "destination": "dr-mcp-gmal.1",
+      "target": "dr",
+      "status": "open",
+      "title": "A: jacobian_zeta_coefficients and jacobian_point_counts"
+    },
+    {
+      "source": "mcp-gmal.2",
+      "destination": "dr-mcp-gmal.2",
+      "target": "dr",
+      "status": "open",
+      "title": "B: jacobian_zeta_function over wedge powers of H^1"
+    },
+    {
+      "source": "mcp-gmal.3",
+      "destination": "dr-mcp-gmal.3",
+      "target": "dr",
+      "status": "open",
+      "title": "C: final gate: docstrings, no comments, Pkg.test, pre-commit"
+    },
+    {
+      "source": "mcp-gmal.4",
+      "destination": "dr-mcp-gmal.4",
+      "target": "dr",
+      "status": "open",
+      "title": "PR6 DeRham.jl: implement epic mcp-gmal (#54 Jacobian invariants)"
+    },
+    {
+      "source": "mcp-gpuffm-open",
+      "destination": "gfm-mcp-gpuffm-open",
+      "target": "gfm",
+      "status": "open",
+      "title": "GPUFiniteFieldMatrices.jl: migrated open work from legacy gfm store"
+    },
+    {
+      "source": "mcp-h4pw",
+      "destination": "dr-mcp-h4pw",
+      "target": "dr",
+      "status": "open",
+      "title": "DeRham.jl #49: add r7-r10 cubic-surface cases to the E2E catalogue (stack on #52)"
+    },
+    {
+      "source": "mcp-inkk",
+      "destination": "dr-mcp-inkk",
+      "target": "dr",
+      "status": "open",
+      "title": "DeRham.jl #50 + #51: add plane quintic and two cubic threefolds to the E2E catalogue (stack on #52)"
+    },
+    {
+      "source": "mcp-ip9f",
+      "destination": "dr-mcp-ip9f",
+      "target": "dr",
+      "status": "open",
+      "title": "zeta_coefficients(use_threads=true): ConcurrencyViolationError race in LazyPEP cache (PEP.jl:117-118)"
+    },
+    {
+      "source": "mcp-k8wn",
+      "destination": "dr-mcp-k8wn",
+      "target": "dr",
+      "status": "open",
+      "title": "DeRham.jl #56: dual-license MIT OR GPL-3.0-or-later; split GPL and BSD derived code"
+    },
+    {
+      "source": "mcp-k8wn.1",
+      "destination": "dr-mcp-k8wn.1",
+      "target": "dr",
+      "status": "open",
+      "title": "A: move controlledreduction precision table to src/SeriesPrecisionDefaults.jl (GPL-2.0-only OR GPL-3.0-only)"
+    },
+    {
+      "source": "mcp-k8wn.2",
+      "destination": "dr-mcp-k8wn.2",
+      "target": "dr",
+      "status": "open",
+      "title": "B: move Nemo.jl-derived wrappers to src/NemoDerivedWrappers.jl (BSD-2-Clause), drop the wrong GPL comment"
+    },
+    {
+      "source": "mcp-k8wn.3",
+      "destination": "dr-mcp-k8wn.3",
+      "target": "dr",
+      "status": "open",
+      "title": "C: LICENSE (MIT OR GPL-3.0-or-later) + LICENSES/ texts and change notice"
+    },
+    {
+      "source": "mcp-k8wn.4",
+      "destination": "dr-mcp-k8wn.4",
+      "target": "dr",
+      "status": "open",
+      "title": "D: final gate: file scope, license-header-only comments, Pkg.test, pre-commit"
+    },
+    {
+      "source": "mcp-k8wn.5",
+      "destination": "dr-mcp-k8wn.5",
+      "target": "dr",
+      "status": "open",
+      "title": "PR4 DeRham.jl: implement epic mcp-k8wn (#56 dual license)"
+    },
+    {
+      "source": "mcp-kc56",
+      "destination": "dr-mcp-kc56",
+      "target": "dr",
+      "status": "closed",
+      "title": "anatoly autonomous run 2026-10-01: two-slot polecat queue (#49 tests, #51 triage | #47 -> #55 -> #54, #56)"
+    },
+    {
+      "source": "mcp-kqde",
+      "destination": "dr-mcp-kqde",
+      "target": "dr",
+      "status": "open",
+      "title": "input convoy for mcp-k8wn.5"
+    },
+    {
+      "source": "mcp-l03t",
+      "destination": "gfm-mcp-l03t",
+      "target": "gfm",
+      "status": "closed",
+      "title": "input convoy for mcp-87yl"
+    },
+    {
+      "source": "mcp-n7wg",
+      "destination": "gfm-mcp-n7wg",
+      "target": "gfm",
+      "status": "closed",
+      "title": "input convoy for mcp-yg4u"
+    },
+    {
+      "source": "mcp-ouov",
+      "destination": "gfm-mcp-ouov",
+      "target": "gfm",
+      "status": "closed",
+      "title": "sling-mcp-unrp"
+    },
+    {
+      "source": "mcp-p358",
+      "destination": "dr-mcp-p358",
+      "target": "dr",
+      "status": "closed",
+      "title": "input convoy for mcp-upu4.1"
+    },
+    {
+      "source": "mcp-pac0",
+      "destination": "dr-mcp-pac0",
+      "target": "dr",
+      "status": "open",
+      "title": "DeRham.jl #55: standardize the invariant API (two forms, L_polynomial, Tate twists, zeta_function, point_counts)"
+    },
+    {
+      "source": "mcp-pac0.1",
+      "destination": "dr-mcp-pac0.1",
+      "target": "dr",
+      "status": "open",
+      "title": "A: L_polynomial, tate_twist/tate_untwist/normalized_tate_twist, twisted-input detection helper"
+    },
+    {
+      "source": "mcp-pac0.2",
+      "destination": "dr-mcp-pac0.2",
+      "target": "dr",
+      "status": "open",
+      "title": "B: zeta_function and unified point_counts (replace 5 special-case functions)"
+    },
+    {
+      "source": "mcp-pac0.3",
+      "destination": "dr-mcp-pac0.3",
+      "target": "dr",
+      "status": "open",
+      "title": "C: two-form sweep: newton_polygon, hodge_polygon, hasse_witt_matrix, a_number, artin_mazur_height"
+    },
+    {
+      "source": "mcp-pac0.4",
+      "destination": "dr-mcp-pac0.4",
+      "target": "dr",
+      "status": "open",
+      "title": "D: final gate: old names gone, docstrings, no comments, Pkg.test, pre-commit"
+    },
+    {
+      "source": "mcp-pac0.5",
+      "destination": "dr-mcp-pac0.5",
+      "target": "dr",
+      "status": "open",
+      "title": "PR5 DeRham.jl: implement epic mcp-pac0 (#55 invariant API)"
+    },
+    {
+      "source": "mcp-ph6i",
+      "destination": "dr-mcp-ph6i",
+      "target": "dr",
+      "status": "open",
+      "title": "DeRham.jl: algorithm=:pchunk crashes with 'Not an exact division' on n=4,d=3 case"
+    },
+    {
+      "source": "mcp-piw",
+      "destination": "dr-mcp-piw",
+      "target": "dr",
+      "status": "open",
+      "title": "input convoy for mcp-3kv"
+    },
+    {
+      "source": "mcp-q2ts",
+      "destination": "dr-mcp-q2ts",
+      "target": "dr",
+      "status": "open",
+      "title": "PR3 DeRham.jl: implement epic mcp-b3sn (#47 Picard rank invariants)"
+    },
+    {
+      "source": "mcp-rp1g",
+      "destination": "dr-mcp-rp1g",
+      "target": "dr",
+      "status": "open",
+      "title": "DeRham.zeta_coefficients(algorithm=:varbyvar) crashes: Impossible inverse in Integers modulo p^7"
+    },
+    {
+      "source": "mcp-rpqg",
+      "destination": "dr-mcp-rpqg",
+      "target": "dr",
+      "status": "open",
+      "title": "input convoy for mcp-inkk"
+    },
+    {
+      "source": "mcp-si3y",
+      "destination": "dr-mcp-si3y",
+      "target": "dr",
+      "status": "open",
+      "title": "input convoy for mcp-pac0.5"
+    },
+    {
+      "source": "mcp-sue9",
+      "destination": "dr-mcp-sue9",
+      "target": "dr",
+      "status": "open",
+      "title": "input convoy for mcp-q2ts"
+    },
+    {
+      "source": "mcp-syx0",
+      "destination": "gfm-mcp-syx0",
+      "target": "gfm",
+      "status": "closed",
+      "title": "Address review comment on GPUFiniteFieldMatrices.jl PR #22"
+    },
+    {
+      "source": "mcp-ttb",
+      "destination": "dr-mcp-ttb",
+      "target": "dr",
+      "status": "open",
+      "title": "Revamp DeRham.jl E2E tests with a declarative JSON/TOML catalogue"
+    },
+    {
+      "source": "mcp-ttb.1",
+      "destination": "dr-mcp-ttb.1",
+      "target": "dr",
+      "status": "open",
+      "title": "Define the E2E catalogue model, schemas, and configuration"
+    },
+    {
+      "source": "mcp-ttb.2",
+      "destination": "dr-mcp-ttb.2",
+      "target": "dr",
+      "status": "open",
+      "title": "Load pinned artifact and local JSON examples into one catalogue"
+    },
+    {
+      "source": "mcp-ttb.3",
+      "destination": "dr-mcp-ttb.3",
+      "target": "dr",
+      "status": "open",
+      "title": "Implement full-catalogue validation and the zeta-coefficients executor registry"
+    },
+    {
+      "source": "mcp-ttb.4",
+      "destination": "dr-mcp-ttb.4",
+      "target": "dr",
+      "status": "open",
+      "title": "Implement E2E selection, capability handling, and runtime reporting"
+    },
+    {
+      "source": "mcp-ttb.5",
+      "destination": "dr-mcp-ttb.5",
+      "target": "dr",
+      "status": "open",
+      "title": "Triage unresolved legacy fixtures and file three GitHub issues"
+    },
+    {
+      "source": "mcp-ttb.6",
+      "destination": "dr-mcp-ttb.6",
+      "target": "dr",
+      "status": "open",
+      "title": "Migrate valid legacy CSV data and execution combinations"
+    },
+    {
+      "source": "mcp-ttb.7",
+      "destination": "dr-mcp-ttb.7",
+      "target": "dr",
+      "status": "open",
+      "title": "Document the minimal E2E contribution workflow and add AGENTS.md guidance"
+    },
+    {
+      "source": "mcp-ttb.8",
+      "destination": "dr-mcp-ttb.8",
+      "target": "dr",
+      "status": "open",
+      "title": "Integrate the declarative harness into Pkg.test and remove the CSV system"
+    },
+    {
+      "source": "mcp-u6xr",
+      "destination": "gfm-mcp-u6xr",
+      "target": "gfm",
+      "status": "open",
+      "title": "TRIAGE with overseer: GPUFiniteFieldMatrices ReLint/StaticLint dep regression breaking DeRham CI (cross-repo)"
+    },
+    {
+      "source": "mcp-uffw",
+      "destination": "dr-mcp-uffw",
+      "target": "dr",
+      "status": "open",
+      "title": "input convoy for mcp-pac0.5"
+    },
+    {
+      "source": "mcp-unrp",
+      "destination": "gfm-mcp-unrp",
+      "target": "gfm",
+      "status": "closed",
+      "title": "Address review comment and refresh GPUFiniteFieldMatrices.jl PR #24"
+    },
+    {
+      "source": "mcp-upu4",
+      "destination": "dr-mcp-upu4",
+      "target": "dr",
+      "status": "closed",
+      "title": "DeRham.jl test-data triage: #49, #50, #51 (report-only)"
+    },
+    {
+      "source": "mcp-upu4.1",
+      "destination": "dr-mcp-upu4.1",
+      "target": "dr",
+      "status": "closed",
+      "title": "Triage DeRham.jl #49: five cubic-surface cases (report + issue comment)"
+    },
+    {
+      "source": "mcp-upu4.2",
+      "destination": "dr-mcp-upu4.2",
+      "target": "dr",
+      "status": "closed",
+      "title": "Triage DeRham.jl #50: p=19 plane quintic (report + issue comment)"
+    },
+    {
+      "source": "mcp-upu4.3",
+      "destination": "dr-mcp-upu4.3",
+      "target": "dr",
+      "status": "closed",
+      "title": "Triage DeRham.jl #51: two cubic threefolds (report + issue comment)"
+    },
+    {
+      "source": "mcp-v3k1",
+      "destination": "dr-mcp-v3k1",
+      "target": "dr",
+      "status": "open",
+      "title": "input convoy for mcp-cl3"
+    },
+    {
+      "source": "mcp-xk62",
+      "destination": "gfm-mcp-xk62",
+      "target": "gfm",
+      "status": "open",
+      "title": "Pre-existing failure: no-code-comments lint finds 1554 violations repo-wide in GPUFiniteFieldMatrices.jl"
+    },
+    {
+      "source": "mcp-yg4u",
+      "destination": "gfm-mcp-yg4u",
+      "target": "gfm",
+      "status": "closed",
+      "title": "Resolve merge conflicts for GPUFiniteFieldMatrices.jl PR #23"
+    }
+  ],
+  "created_at": "2026-10-02T14:22:34.646209Z",
+  "policy": "Restore legacy IDs where available; prefix new beads with their destination store; preserve source history with closed migration redirects; preserve project status, content, labels, comments, and graph edges. Formula execution scaffolding and general coordination remain in the umbrella store.",
+  "counts": {
+    "dr": 68,
+    "gfm": 39
+  }
+}

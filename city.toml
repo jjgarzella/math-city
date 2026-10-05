@@ -19,6 +19,14 @@ args_append = ["--no-alt-screen", "-c", "tui.fullscreen_transcript=false"]
 model = "gpt-6.1-sol"
 effort = "high"
 
+[[service]]
+name = "kaimon"
+kind = "proxy_process"
+state_root = ".gc/services/kaimon-canary"
+
+[service.process]
+command = ["commands/kaimon-canary-service"]
+
 [[named_session]]
 template = "anatoly"
 scope = "city"

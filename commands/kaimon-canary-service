@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Gas City proxy_process launcher for the localhost production Kaimon service.
+
+Historical canary paths remain stable to preserve the repaired Julia environment."""
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import suppress
+import os
+import signal
+from pathlib import Path
+
+
+CITY = Path(os.environ.get("GC_CITY", "/home/jjgarzella/Developer/ai/city/math-city"))
+KAIMON_ROOT = CITY / ".gc" / "kaimon-canary"
+JULIA = Path(os.environ.get("JULIA", "/home/jjgarzella/.juliaup/bin/julia"))
+PROJECT = KAIMON_ROOT / "project"
+DEPOT = KAIMON_ROOT / "julia_depot"
+KAIMON_HOME = KAIMON_ROOT / "home"
+CONFIG_HOME = KAIMON_ROOT / "xdg-config"
+CACHE_HOME = Path(os.environ.get("KAIMON_CANARY_CACHE_HOME", "/tmp/math-city-kaimon"))
+PORT = int(os.environ.get("KAIMON_CANARY_PORT", "42828"))
+HOST = "127.0.0.1"
+
+
+def require(name: str) -> str:
+    value = os.environ.get(name, "")
+    if not value:
+        raise SystemExit(f"{name} is required")
+    return value
+
+
+async def copy_stream(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    try:
+        while True:
+            chunk = await reader.read(65536)
+            if not chunk:
+                break
+            writer.write(chunk)
+            await writer.drain()
+    finally:
+        try:
+            writer.write_eof()
+        except (OSError, RuntimeError):
+            pass
+
+
+async def bridge_client(
+    unix_reader: asyncio.StreamReader,
+    unix_writer: asyncio.StreamWriter,
+) -> None:
+    tcp_writer: asyncio.StreamWriter | None = None
+    try:
+        deadline = asyncio.get_running_loop().time() + 120
+        last_error: OSError | None = None
+        while True:
+            try:
+                tcp_reader, tcp_writer = await asyncio.open_connection(HOST, PORT)
+                break
+            except OSError as err:
+                last_error = err
+                if asyncio.get_running_loop().time() >= deadline:
+                    body = f"Kaimon is not ready on {HOST}:{PORT}: {last_error}\n"
+                    unix_writer.write(
+                        b"HTTP/1.1 503 Service Unavailable\r\n"
+                        + f"Content-Length: {len(body)}\r\n".encode()
+                        + b"Content-Type: text/plain\r\n"
+                        + b"Connection: close\r\n\r\n"
+                        + body.encode()
+                    )
+                    await unix_writer.drain()
+                    return
+                await asyncio.sleep(0.25)
+        pumps = [
+            asyncio.create_task(copy_stream(unix_reader, tcp_writer)),
+            asyncio.create_task(copy_stream(tcp_reader, unix_writer)),
+        ]
+        try:
+            await asyncio.gather(*pumps)
+        finally:
+            for pump in pumps:
+                pump.cancel()
+            await asyncio.gather(*pumps, return_exceptions=True)
+    except (ConnectionError, OSError):
+        pass
+    finally:
+        unix_writer.close()
+        with suppress(ConnectionError, OSError):
+            await unix_writer.wait_closed()
+        if tcp_writer is not None:
+            tcp_writer.close()
+            with suppress(ConnectionError, OSError):
+                await tcp_writer.wait_closed()
+
+
+async def main() -> int:
+    socket_path = Path(require("GC_SERVICE_SOCKET"))
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        socket_path.unlink()
+    except FileNotFoundError:
+        pass
+
+    for path in (KAIMON_HOME, CONFIG_HOME, CACHE_HOME):
+        path.mkdir(parents=True, exist_ok=True)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "HOME": str(KAIMON_HOME),
+            "JULIA_DEPOT_PATH": str(DEPOT),
+            "XDG_CONFIG_HOME": str(CONFIG_HOME),
+            "XDG_CACHE_HOME": str(CACHE_HOME),
+            "KAIMON_EMBEDDED": "1",
+            "KAIMON_QDRANT_PREFIX": "kaimon_canary",
+        }
+    )
+
+    kaimon = await asyncio.create_subprocess_exec(
+        str(JULIA),
+        "--startup-file=no",
+        f"--project={PROJECT}",
+        "-e",
+        f'using Kaimon; Kaimon.main(["--headless", "--port", "{PORT}"])',
+        cwd=str(CITY),
+        env=env,
+    )
+
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop_event.set)
+
+    try:
+        server = await asyncio.start_unix_server(bridge_client, path=str(socket_path))
+        async with server:
+            service_task = asyncio.create_task(server.serve_forever())
+            kaimon_task = asyncio.create_task(kaimon.wait())
+            stop_task = asyncio.create_task(stop_event.wait())
+            done, pending = await asyncio.wait(
+                {service_task, kaimon_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            if kaimon_task in done:
+                return kaimon.returncode or 1
+            if service_task in done:
+                return 1
+            return 0
+    finally:
+        if kaimon.returncode is None:
+            kaimon.terminate()
+            try:
+                await asyncio.wait_for(kaimon.wait(), timeout=10)
+            except asyncio.TimeoutError:
+                kaimon.kill()
+                await kaimon.wait()
+        try:
+            socket_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(asyncio.run(main()))
+    except KeyboardInterrupt:
+        raise SystemExit(130)

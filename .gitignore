@@ -24,3 +24,14 @@ mcp/*-canary.toml
 .dolt/
 *.db
 .beads-credential-key
+
+# Gas City
+.mcp.json
+.gemini/settings.json
+.codex/config.toml
+.cursor/mcp.json
+opencode.json
+mimocode.json
+
+# Private production Kaimon bearer catalog
+mcp/kaimon.toml

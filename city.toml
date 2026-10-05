@@ -2,7 +2,7 @@
 provider = "claude"
 
 [agent_defaults]
-append_fragments = ["pr-guidance"]
+append_fragments = ["pr-guidance", "kaimon-guidance"]
 
 [providers]
 [providers.claude]

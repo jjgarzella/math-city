@@ -69,6 +69,24 @@
 # Strip any non-JSON prefix (bd can emit "warning: ..." on stdout) so jq parses.
 review_apply_fixes__json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
 
+# Query the parent-child edges rather than bd show .children (absent in bd 1.3).
+# dep list includes both durable issues and wisps, without a list pagination cap.
+# Check the root's edges first: an absent lazy container is a valid empty run;
+# a failed database read must never masquerade as a clean review.
+review_apply_fixes__children() {
+  local parents children present
+  parents="$(bd dep list "$REVIEW_ROOT" --direction up --type parent-child --json)" || return 2
+  present="$(printf '%s\n' "$parents" | review_apply_fixes__json_payload | jq -er --arg id "$REVIEW_FINDINGS" \
+    'if type != "array" then error("expected dependency array") else any(.[]; .id == $id) | tostring end')" || return 2
+  if [ "$present" = false ]; then
+    printf '[]\n'
+    return 0
+  fi
+  children="$(bd dep list "$REVIEW_FINDINGS" --direction up --type parent-child --json)" || return 2
+  printf '%s\n' "$children" | review_apply_fixes__json_payload | jq -e \
+    'if type == "array" then . else error("expected dependency array") end'
+}
+
 review_apply_fixes__meta() {
   bd show "$1" --json 2>/dev/null | review_apply_fixes__json_payload \
     | jq -r --arg k "$2" 'if type=="array" then .[0] else . end | .metadata[$k] // empty'
@@ -122,12 +140,11 @@ review_apply_fixes_load() {
 # synthesis promoted nothing (a clean pass). No container yet also means zero.
 review_apply_fixes_findings() {
   : "${REVIEW_FINDINGS:?call review_apply_fixes_load first}"
-  bd show "$REVIEW_FINDINGS" >/dev/null 2>&1 || return 0
-  bd show "$REVIEW_FINDINGS" --json 2>/dev/null | review_apply_fixes__json_payload \
-    | jq -r '
-        (if type=="array" then .[0] else . end).children // []
-        | .[]
-        | select((.status // "") != "closed")
+  local children
+  children="$(review_apply_fixes__children)" || return 2
+  printf '%s\n' "$children" | jq -r '
+        [ .[]
+        | select((.status // "") != "closed" and (.ephemeral // false) == false)
         | ( (.labels // []) | map(select(startswith("severity:")))
             | (.[0] // "") | sub("^severity:"; "") ) as $sev
         | select($sev != "")
@@ -136,9 +153,8 @@ review_apply_fixes_findings() {
             rank: ( {"blocker":0,"major":1,"minor":2,"nit":3}[$sev] // 2 ),
             cat: ( (.labels // []) | map(select(startswith("category:")))
                    | (.[0] // "category:?") | sub("^category:"; "") ),
-            title: (.title // "") }
-      ' \
-    | jq -rs 'sort_by(.rank, .id) | .[] | [.id, .sev, .cat, .title] | @tsv'
+            title: (.title // "") } ]
+        | sort_by(.rank, .id) | .[] | [.id, .sev, .cat, .title] | @tsv'
 }
 
 # review_apply_fixes_map_verdict <synthesis_verdict> <applied yes|no> — map the
@@ -174,10 +190,10 @@ review_apply_fixes_set_verdict() {
     done|iterate) : ;;
     *) echo "ERROR: review_apply_fixes_set_verdict: invalid verdict '$verdict' (want done|iterate)" >&2; return 2 ;;
   esac
-  bd update "$GC_BEAD_ID" --set-metadata review.verdict="$verdict" >/dev/null 2>&1 || true
+  bd update "$GC_BEAD_ID" --set-metadata review.verdict="$verdict" >/dev/null || return 2
   gc bd heartbeat "$GC_BEAD_ID" >/dev/null 2>&1 || true
   bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
-    --notes "apply-fixes: review.verdict=$verdict. $note"
+    --notes "apply-fixes: review.verdict=$verdict. $note" || return 2
   echo "[review-apply-fixes] review.verdict=$verdict"
 }
 
@@ -194,8 +210,8 @@ review_apply_fixes_escalate() {
   local reason="${1:-synthesis blocked}"
   : "${GC_BEAD_ID:?GC_BEAD_ID must be set by the runtime}"
   : "${REVIEW_ROOT:?call review_apply_fixes_load first}"
-  bd update "$REVIEW_ROOT" --set-metadata gc.review.loop_outcome="blocked-needs-human" >/dev/null 2>&1 || true
-  bd update "$REVIEW_ROOT" --set-metadata gc.review.loop_blocked_reason="$reason"       >/dev/null 2>&1 || true
+  bd update "$REVIEW_ROOT" --set-metadata gc.review.loop_outcome="blocked-needs-human" >/dev/null || return 2
+  bd update "$REVIEW_ROOT" --set-metadata gc.review.loop_blocked_reason="$reason"       >/dev/null || return 2
   echo "[review-apply-fixes] TERMINATE-TO-HUMAN: $reason" >&2
   review_apply_fixes_set_verdict done "TERMINATE-TO-HUMAN: $reason (gc.review.loop_outcome=blocked-needs-human on $REVIEW_ROOT)"
 }

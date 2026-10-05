@@ -82,7 +82,7 @@ gc_show_json() { gc formula show "$(formula_py formula-name)" "$@" --json 2>/dev
 # --- apply-fixes lib runner (the new verdict->severity->fix machinery) --------
 # afx_sandbox — create (once per scenario) a sandbox GC_CITY carrying the real
 # review-apply-fixes.sh, and write the durable findings (AFX_FINDINGS_JSON, a JSON
-# array) to a file the stub bd returns as the findings container's .children.
+# array) to a file the stub bd returns for dependency enumeration.
 # Caller may pre-set AFX_ROOT / AFX_VERDICT / AFX_PROMOTED / AFX_BURNED /
 # AFX_WORKDIR / AFX_FINDINGS_JSON / FIX_THRESHOLD before the first call. Sets
 # AFX_CITY, AFX_FINDINGS, AFX_FINDINGS_FILE, AFX_META_LOG, AFX_UPDATE_LOG,
@@ -104,8 +104,8 @@ afx_sandbox() {
 }
 
 # afx_env <args...> — run a command with the apply-fixes sandbox env + the stub
-# bd/gc on PATH. The stub returns AFX_FINDINGS_FILE as the findings container's
-# children and logs every metadata/status write.
+# bd/gc on PATH. The stub returns AFX_FINDINGS_FILE for dependency enumeration
+# and logs every metadata/status write.
 afx_env() {
   GC_CITY="$AFX_CITY" \
   GC_BEAD_ID="${AFX_BEAD_ID:-apply-fixes-bead}" \

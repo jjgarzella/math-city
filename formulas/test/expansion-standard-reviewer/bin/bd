@@ -18,6 +18,7 @@
 set -u
 
 sub="${1:-}"
+state_dir="${BD_CREATE_LOG:-/nonexistent}.state"
 
 # has_flag <flag> <args...> — true if <flag> appears among <args...>.
 has_flag() { local want="$1"; shift; local a; for a in "$@"; do [ "$a" = "$want" ] && return 0; done; return 1; }
@@ -27,6 +28,18 @@ arg_val() { local key="$1"; shift; local a; for a in "$@"; do case "$a" in "$key
 case "$sub" in
   show)
     target="${2:-}"
+    if [ -f "$state_dir/$target.json" ]; then
+      has_flag --json "$@" && jq -c '[.]' "$state_dir/$target.json"
+      exit 0
+    fi
+    if [ -n "${BD_CANDIDATES_FILE:-}" ] && [ "$target" != "${BD_FINDINGS:-}" ]; then
+      candidate="$(jq -c --arg id "$target" --arg parent "${BD_FINDINGS:-}" \
+        '.[] | select(.id == $id) | . + {parent:$parent, ephemeral:(.ephemeral // true)}' "$BD_CANDIDATES_FILE")"
+      if [ -n "$candidate" ]; then
+        has_flag --json "$@" && printf '[%s]\n' "$candidate"
+        exit 0
+      fi
+    fi
     if has_flag --json "$@"; then
       if [ "$target" = "${GC_BEAD_ID:-}" ]; then
         printf '[{"id":"%s","metadata":{"gc.root_bead_id":"%s"}}]\n' "$target" "${BD_ROOT:-}"
@@ -47,12 +60,10 @@ case "$sub" in
              + (if $reason      != "" then {"gc.review.eligibility_reason":$reason} else {} end))}
            | [.]'
       elif [ -n "${BD_FINDINGS:-}" ] && [ "$target" = "${BD_FINDINGS:-}" ] && [ -n "${BD_CANDIDATES_FILE:-}" ] && [ -f "${BD_CANDIDATES_FILE}" ]; then
-        # Findings container: return the candidate wisps the lanes filed as its
-        # .children (the synthesis lib enumerates them). The test writes the
-        # children JSON to BD_CANDIDATES_FILE.
-        jq -c '[{id: $id, children: .}]' --arg id "$target" "$BD_CANDIDATES_FILE"
+        # Show omits .children in bd 1.3; dep list returns the fixture below.
+        jq -nc --arg id "$target" '[{id:$id}]'
       else
-        printf '[]\n'
+        exit 1
       fi
       exit 0
     fi
@@ -61,12 +72,27 @@ case "$sub" in
     { [ "$target" = "${GC_BEAD_ID:-}" ] || [ "$target" = "${BD_ROOT:-}" ]; } && exit 0
     { [ -n "${BD_FINDINGS:-}" ] && [ "$target" = "${BD_FINDINGS:-}" ] && [ -n "${BD_CANDIDATES_FILE:-}" ]; } && exit 0
     exit 1 ;;
+  dep)
+    [ "${2:-}" = list ] && has_flag --json "$@" && has_flag --direction "$@" && has_flag --type "$@" || exit 2
+    if [ "${3:-}" = "${BD_ROOT:-}" ]; then
+      if [ -n "${BD_CANDIDATES_FILE:-}" ] || [ -f "$state_dir/${BD_ROOT}.findings.json" ]; then
+        jq -nc --arg id "${BD_ROOT}.findings" '[{id:$id}]'
+      else
+        printf '[]\n'
+      fi
+    elif [ "${3:-}" = "${BD_FINDINGS:-}" ]; then
+      jq 'map(. + {ephemeral:(.ephemeral // true)})' "$BD_CANDIDATES_FILE"
+    else
+      exit 2
+    fi
+    exit 0 ;;
   create)
     shift
     if [ -n "${BD_CREATE_LOG:-}" ]; then
       id="$(arg_val --id "$@" || true)"
       parent="$(arg_val --parent "$@" || true)"
       labels="$(arg_val --labels "$@" || true)"
+      priority="$(arg_val --priority "$@" || true)"
       title="$(arg_val --title "$@" || true)"
       bodyfile="$(arg_val --body-file "$@" || true)"
       ephemeral=no; has_flag --ephemeral "$@" && ephemeral=yes
@@ -75,14 +101,33 @@ case "$sub" in
       printf 'id=%s\tparent=%s\tlabels=%s\tephemeral=%s\ttitle=%s\tbody1=%s\n' \
         "$id" "$parent" "$labels" "$ephemeral" "$title" "$body1" >> "$BD_CREATE_LOG"
     fi
+    # Match bd 1.3: explicit ids and --parent cannot be combined.
+    [ -n "$(arg_val --id "$@" || true)" ] && [ -n "$(arg_val --parent "$@" || true)" ] && exit 2
     # Echo the bead id the caller captures: the explicit --id, else a stub wisp id.
     id="$(arg_val --id "$@" || true)"
     [ -z "$id" ] && id="wisp-stub-$$"
+    if [ -n "${BD_CREATE_LOG:-}" ]; then
+      mkdir -p "$state_dir"
+      [ -n "$bodyfile" ] || bodyfile=/dev/null
+      jq -nc --arg id "$id" --arg parent "$parent" --arg label "$labels" \
+        --rawfile body "$bodyfile" --arg title "$title" --argjson priority "${priority:-2}" --argjson eph "$([ "$ephemeral" = yes ] && echo true || echo false)" \
+        '{id:$id,parent:$parent,labels:([$label]|map(select(.!=""))),description:$body,title:$title,ephemeral:$eph,priority:$priority}' > "$state_dir/$id.json"
+    fi
     printf '%s\n' "$id"
     exit 0 ;;
   update)
     shift
     bid="${1:-}"
+    parent="$(arg_val --parent "$@" || true)"
+    if [ -f "$state_dir/$bid.json" ] && [ -n "$parent" ]; then
+      jq --arg parent "$parent" '.parent=$parent' "$state_dir/$bid.json" > "$state_dir/update.json"
+      mv "$state_dir/update.json" "$state_dir/$bid.json"
+    fi
+    priority="$(arg_val --priority "$@" || true)"
+    if [ -n "${BD_CANDIDATES_FILE:-}" ] && [ -n "$priority" ]; then
+      jq --arg id "$bid" --argjson p "$priority" 'map(if .id==$id then .priority=$p else . end)' "$BD_CANDIDATES_FILE" > "$BD_CANDIDATES_FILE.tmp"
+      mv "$BD_CANDIDATES_FILE.tmp" "$BD_CANDIDATES_FILE"
+    fi
     prev=""; status=""; notes=""
     for a in "$@"; do
       if [ "$prev" = "--set-metadata" ]; then
@@ -98,7 +143,7 @@ case "$sub" in
       prev="$a"
     done
     if [ -n "${BD_UPDATE_LOG:-}" ]; then
-      printf 'id=%s\tstatus=%s\tpriority=%s\tnotes=%s\n' "$bid" "$status" "${priority:-}" "$notes" >> "$BD_UPDATE_LOG"
+      printf 'id=%s\tstatus=%s\tpriority=%s\tnotes=%s\n' "$bid" "$status" "${priority:-}" "$notes parent=$parent" >> "$BD_UPDATE_LOG"
     fi
     exit 0 ;;
   promote)
@@ -107,14 +152,19 @@ case "$sub" in
     shift
     wisp="${1:-}"
     reason="$(arg_val --reason "$@" || true)"
+    jq --arg id "$wisp" 'map(if .id==$id then .ephemeral=false else . end)' "$BD_CANDIDATES_FILE" > "$BD_CANDIDATES_FILE.tmp"
+    mv "$BD_CANDIDATES_FILE.tmp" "$BD_CANDIDATES_FILE"
     [ -n "${BD_PROMOTE_LOG:-}" ] && printf 'promote\tid=%s\treason=%s\n' "$wisp" "$reason" >> "$BD_PROMOTE_LOG"
     exit 0 ;;
   label)
-    # `bd label add <label> <id...>` — record severity-label stamping.
-    if [ "${2:-}" = "add" ] && [ -n "${BD_PROMOTE_LOG:-}" ]; then
-      lbl="${3:-}"; shift 3 || shift $#
-      for id in "$@"; do printf 'label\t%s\t%s\n' "$lbl" "$id" >> "$BD_PROMOTE_LOG"; done
-    fi
+    # Installed syntax: issue IDs first, label last.
+    [ "${2:-}" = add ] && [ "$#" -eq 4 ] || exit 2
+    id="$3"; lbl="$4"
+    [ -n "${BD_PROMOTE_LOG:-}" ] && printf 'label\t%s\t%s\n' "$lbl" "$id" >> "$BD_PROMOTE_LOG"
+    jq --arg id "$id" --arg label "$lbl" \
+      'map(if .id==$id then .labels=((.labels // []) + [$label] | unique) else . end)' \
+      "$BD_CANDIDATES_FILE" > "$BD_CANDIDATES_FILE.tmp"
+    mv "$BD_CANDIDATES_FILE.tmp" "$BD_CANDIDATES_FILE"
     exit 0 ;;
   mol)
     # `bd mol burn --force <wisp>` — record the burn of a duplicate/sub-threshold.

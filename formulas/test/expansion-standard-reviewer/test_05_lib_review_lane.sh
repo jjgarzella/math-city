@@ -58,7 +58,7 @@ filed="$(lane_env bash -c '
 # The findings container is created once under the root (idempotent, ephemeral=no).
 container_line="$(grep 'ephemeral=no' "$LB_CREATE_LOG" | head -1)"
 assert_contains "$container_line" "id=$LB_ROOT.findings" "file_finding creates the findings container <root>.findings"
-assert_contains "$container_line" "parent=$LB_ROOT"      "the findings container is parented to the molecule root"
+assert_contains "$(cat "$LB_UPDATE_LOG")" "parent=$LB_ROOT"      "the findings container is parented to the molecule root"
 # The candidate is an ephemeral wisp: category label + Confidence self-rating first line.
 wisp_line="$(grep 'ephemeral=yes' "$LB_CREATE_LOG" | head -1)"
 assert_contains "$wisp_line" "labels=category:quality"   "the candidate wisp carries a category:<lens> label"

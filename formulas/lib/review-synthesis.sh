@@ -49,6 +49,24 @@
 # Strip any non-JSON prefix (bd can emit "warning: ..." on stdout) so jq parses.
 review_synthesis__json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
 
+# Query the parent-child edges rather than bd show .children (absent in bd 1.3).
+# dep list includes both durable issues and wisps, without a list pagination cap.
+# Check the root's edges first: an absent lazy container is a valid empty run;
+# a failed database read must never masquerade as a clean review.
+review_synthesis__children() {
+  local parents children present
+  parents="$(bd dep list "$REVIEW_ROOT" --direction up --type parent-child --json)" || return 2
+  present="$(printf '%s\n' "$parents" | review_synthesis__json_payload | jq -er --arg id "$REVIEW_FINDINGS" \
+    'if type != "array" then error("expected dependency array") else any(.[]; .id == $id) | tostring end')" || return 2
+  if [ "$present" = false ]; then
+    printf '[]\n'
+    return 0
+  fi
+  children="$(bd dep list "$REVIEW_FINDINGS" --direction up --type parent-child --json)" || return 2
+  printf '%s\n' "$children" | review_synthesis__json_payload | jq -e \
+    'if type == "array" then . else error("expected dependency array") end'
+}
+
 review_synthesis__meta() {
   bd show "$1" --json 2>/dev/null | review_synthesis__json_payload \
     | jq -r --arg k "$2" 'if type=="array" then .[0] else . end | .metadata[$k] // empty'
@@ -86,11 +104,10 @@ review_synthesis_load() {
 # also means zero candidates (the lanes create it lazily on first finding).
 review_synthesis_candidates() {
   : "${REVIEW_FINDINGS:?call review_synthesis_load first}"
-  bd show "$REVIEW_FINDINGS" >/dev/null 2>&1 || return 0
-  bd show "$REVIEW_FINDINGS" --json 2>/dev/null | review_synthesis__json_payload \
-    | jq -r '
-        (if type=="array" then .[0] else . end).children // []
-        | .[]
+  local children
+  children="$(review_synthesis__children)" || return 2
+  printf '%s\n' "$children" | jq -r '
+        .[]
         | select((.status // "") != "closed")
         | [ .id,
             ( (.labels // []) | map(select(startswith("category:")))
@@ -124,10 +141,37 @@ review_synthesis_promote() {
     blocker|major|minor|nit) : ;;
     *) echo "ERROR: review_synthesis_promote: invalid severity '$severity' (want blocker|major|minor|nit)" >&2; return 2 ;;
   esac
-  bd label add "severity:${severity}" "$wisp" >/dev/null 2>&1 || true
-  bd update "$wisp" --priority="$(review_synthesis__priority_for "$severity")" >/dev/null 2>&1 || true
-  bd promote "$wisp" --reason="severity=${severity}: ${reason}" >/dev/null 2>&1 \
-    || { echo "ERROR: review_synthesis_promote: bd promote failed for $wisp" >&2; return 2; }
+  local before stamped after priority ephemeral
+  priority="$(review_synthesis__priority_for "$severity")"
+  before="$(bd show "$wisp" --json)" || return 2
+  before="$(printf '%s\n' "$before" | review_synthesis__json_payload | jq -ec \
+    'if type=="array" then .[0] else . end | select(.id != null)')" || return 2
+  printf '%s\n' "$before" | jq -e --arg parent "$REVIEW_FINDINGS" --arg id "$wisp" \
+    '.id == $id and .parent == $parent' >/dev/null || return 2
+  bd label add "$wisp" "severity:${severity}" >/dev/null || return 2
+  bd update "$wisp" --priority="$priority" >/dev/null || return 2
+  stamped="$(bd show "$wisp" --json)" || return 2
+  printf '%s\n' "$stamped" | review_synthesis__json_payload | jq -e \
+    --arg label "severity:$severity" --argjson priority "$priority" '
+      if type=="array" then .[0] else . end |
+      .priority == $priority and
+      ((.labels // []) | map(select(startswith("severity:"))) == [$label])
+    ' >/dev/null || { echo "ERROR: severity/priority readback failed for $wisp" >&2; return 2; }
+  ephemeral="$(printf '%s\n' "$before" | jq -r '.ephemeral // false')" || return 2
+  # A retry after promotion can finish validation without promoting twice.
+  if [ "$ephemeral" = true ]; then
+    bd promote "$wisp" --reason="severity=${severity}: ${reason}" >/dev/null || return 2
+  fi
+  after="$(bd show "$wisp" --json)" || return 2
+  printf '%s\n' "$after" | review_synthesis__json_payload | jq -e \
+    --argjson before "$before" --arg severity "severity:$severity" --argjson priority "$priority" '
+      if type=="array" then .[0] else . end |
+      .id == $before.id and .parent == $before.parent and
+      .description == $before.description and (.ephemeral // false) == false and
+      .priority == $priority and
+      ((.labels // []) | map(select(startswith("severity:"))) == [$severity]) and
+      (($before.labels // []) - (.labels // []) | length == 0)
+    ' >/dev/null || { echo "ERROR: promotion readback failed for $wisp" >&2; return 2; }
   printf '%s\n' "$wisp"
 }
 
@@ -157,18 +201,25 @@ review_synthesis_record_verdict() {
     *) echo "ERROR: review_synthesis_record_verdict: invalid verdict '$verdict'" >&2; return 2 ;;
   esac
 
-  bd update "$REVIEW_ROOT" --set-metadata gc.review.synthesis_verdict="$verdict"     >/dev/null 2>&1 || true
-  bd update "$REVIEW_ROOT" --set-metadata gc.review.synthesis_considered="$considered" >/dev/null 2>&1 || true
-  bd update "$REVIEW_ROOT" --set-metadata gc.review.synthesis_promoted="$promoted"   >/dev/null 2>&1 || true
-  bd update "$REVIEW_ROOT" --set-metadata gc.review.synthesis_merged="$merged"       >/dev/null 2>&1 || true
-  bd update "$REVIEW_ROOT" --set-metadata gc.review.synthesis_burned="$burned"       >/dev/null 2>&1 || true
+  local parents present
+  parents="$(bd dep list "$REVIEW_ROOT" --direction up --type parent-child --json)" || return 2
+  present="$(printf '%s\n' "$parents" | review_synthesis__json_payload | jq -er --arg id "$REVIEW_FINDINGS" \
+    'if type != "array" then error("expected dependency array") else any(.[]; .id == $id) | tostring end')" || return 2
+  bd update "$REVIEW_ROOT" \
+    --set-metadata gc.review.synthesis_considered="$considered" \
+    --set-metadata gc.review.synthesis_promoted="$promoted" \
+    --set-metadata gc.review.synthesis_merged="$merged" \
+    --set-metadata gc.review.synthesis_burned="$burned" \
+    --set-metadata gc.review.synthesis_verdict="$verdict" >/dev/null || return 2
 
-  # Close the container if it exists (survivors remain as its durable children).
-  bd show "$REVIEW_FINDINGS" >/dev/null 2>&1 \
-    && bd close "$REVIEW_FINDINGS" --reason="synthesis complete: verdict=$verdict, promoted=$promoted" >/dev/null 2>&1 || true
+  # The container is complete while promoted findings remain open for apply-fixes.
+  # bd 1.3 requires --force for that intentional parent/child lifecycle.
+  if [ "$present" = true ]; then
+    bd close "$REVIEW_FINDINGS" --force --reason="synthesis complete: verdict=$verdict, promoted=$promoted" >/dev/null || return 2
+  fi
 
   gc bd heartbeat "$GC_BEAD_ID" >/dev/null 2>&1 || true
   bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
-    --notes "synthesis: verdict=$verdict; considered=$considered promoted=$promoted merged=$merged burned=$burned. $note"
+    --notes "synthesis: verdict=$verdict; considered=$considered promoted=$promoted merged=$merged burned=$burned. $note" || return 2
   echo "[review-synthesis] verdict=$verdict considered=$considered promoted=$promoted merged=$merged burned=$burned"
 }

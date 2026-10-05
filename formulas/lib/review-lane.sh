@@ -93,16 +93,39 @@ review_lane_load_inputs() {
   echo "[review-lane] root=$REVIEW_ROOT kind=$REVIEW_TARGET_KIND eligible=$REVIEW_ELIGIBLE inputs=$REVIEW_INPUTS_DIR"
 }
 
-# review_lane__ensure_container — create the per-run findings container ONCE under
-# the molecule root. Idempotent: the fixed --id makes a repeat create a harmless
-# no-op, so parallel lanes converge on the same container (NDI).
+# Create with the fixed id, then attach the parent separately: bd 1.3 rejects
+# --id together with --parent. Read back after a failed create to tolerate a
+# parallel lane winning the create race; never suppress a missing container.
 review_lane__ensure_container() {
   : "${REVIEW_FINDINGS:?call review_lane_load_inputs first}"
-  bd show "$REVIEW_FINDINGS" >/dev/null 2>&1 || \
-    bd create --id="$REVIEW_FINDINGS" --parent="$REVIEW_ROOT" \
+  local container parent
+  if ! container="$(bd show "$REVIEW_FINDINGS" --json)"; then
+    bd create --id="$REVIEW_FINDINGS" \
       --title="Findings — standard code review (${REVIEW_ROOT})" \
       --description="Container for candidate findings from this standard (8-pass) review run. Each of the six lenses files its candidates here as ephemeral, category-labelled wisps; the synthesis pass dedup-merges them, assigns severity, and promotes the survivors to durable finding beads." \
-      >/dev/null 2>&1 || true
+      >/dev/null || {
+        bd show "$REVIEW_FINDINGS" --json >/dev/null || return 2
+      }
+    container="$(bd show "$REVIEW_FINDINGS" --json)" || return 2
+  fi
+  parent="$(printf '%s\n' "$container" | review_lane__json_payload | jq -er \
+    'if type=="array" then .[0] else . end | select(.id != null) | .parent // ""')" || return 2
+  if [ -n "$parent" ] && [ "$parent" != "$REVIEW_ROOT" ]; then
+    echo "ERROR: findings container $REVIEW_FINDINGS belongs to $parent" >&2
+    return 2
+  fi
+  if [ -z "$parent" ]; then
+    bd update "$REVIEW_FINDINGS" --parent="$REVIEW_ROOT" >/dev/null || return 2
+  fi
+  container="$(bd show "$REVIEW_FINDINGS" --json)" || return 2
+  printf '%s\n' "$container" | review_lane__json_payload | jq -e --arg root "$REVIEW_ROOT" \
+    'if type=="array" then .[0] else . end | .parent == $root' >/dev/null || return 2
+}
+
+# A write-ahead marker survives command substitutions and worker restarts. A
+# failed/incomplete finding write must be reconciled before this lane can pass.
+review_lane__write_marker() {
+  printf '%s/finding-write-failed-%s\n' "${REVIEW_INPUTS_DIR:?call review_lane_load_inputs first}" "${GC_BEAD_ID:?}"
 }
 
 # review_lane_file_finding <category> <confidence 0-100> <priority 0-4> <title> <body_file>
@@ -114,30 +137,55 @@ review_lane__ensure_container() {
 review_lane_file_finding() {
   local category="$1" confidence="$2" priority="$3" title="$4" body_file="$5"
   : "${REVIEW_FINDINGS:?call review_lane_load_inputs first}"
+  local marker composed wisp finding
+  marker="$(review_lane__write_marker)" || return 2
+  if [ -e "$marker" ]; then
+    echo "ERROR: unresolved finding write failure: $marker" >&2
+    return 2
+  fi
+  printf 'Pending finding: %s (%s)\nBody file: %s\n' "$title" "$category" "$body_file" > "$marker" || return 2
   if [ ! -f "$body_file" ]; then
     echo "ERROR: review_lane_file_finding: body file not found: $body_file" >&2
     return 2
   fi
-  review_lane__ensure_container
+  review_lane__ensure_container || return 2
 
-  # Compose the wisp body with the mandatory self-rating first line, then the
-  # caller's finding detail. Centralising it here keeps every lane's wisps on the
-  # one format the synthesis pass parses.
-  local composed
-  composed="$(mktemp)"
-  {
-    printf 'Confidence: %s/100\n\n' "$confidence"
-    cat "$body_file"
-  } > "$composed"
-
-  local wisp
-  wisp="$(bd create --ephemeral --silent \
+  composed="$(mktemp)" || return 2
+  if ! { printf 'Confidence: %s/100\n\n' "$confidence" && cat "$body_file"; } > "$composed"; then
+    rm -f "$composed"
+    return 2
+  fi
+  if ! wisp="$(bd create --ephemeral --silent \
     --parent="$REVIEW_FINDINGS" \
     --labels="category:${category}" \
     --priority="$priority" \
     --title="$title" \
-    --body-file="$composed")"
+    --body-file="$composed")"; then
+    rm -f "$composed"
+    echo "ERROR: candidate finding was not persisted" >&2
+    return 2
+  fi
+  if ! printf 'Candidate: %s\n' "$wisp" >> "$marker"; then
+    rm -f "$composed"
+    return 2
+  fi
+  if [ -z "$wisp" ] || ! finding="$(bd show "$wisp" --json)"; then
+    rm -f "$composed"
+    return 2
+  fi
+  if ! printf '%s\n' "$finding" | review_lane__json_payload | jq -e \
+    --arg id "$wisp" --arg parent "$REVIEW_FINDINGS" --arg label "category:$category" \
+    --arg title "$title" --argjson priority "$priority" --rawfile body "$composed" \
+    'if type=="array" then .[0] else . end |
+     .id == $id and .parent == $parent and .ephemeral == true and
+     .title == $title and .priority == $priority and .description == $body and
+     ((.labels // []) | index($label) != null)' >/dev/null; then
+    rm -f "$composed"
+    echo "ERROR: candidate finding readback failed for $wisp" >&2
+    return 2
+  fi
   rm -f "$composed"
+  rm -f "$marker" || return 2
   printf '%s\n' "$wisp"
 }
 
@@ -146,6 +194,13 @@ review_lane_file_finding() {
 # ineligible no-op, and a zero-findings pass all close the same way.
 review_lane_close() {
   : "${GC_BEAD_ID:?GC_BEAD_ID must be set by the runtime}"
+  local marker
+  marker="$(review_lane__write_marker)" || return 2
+  [ -d "$REVIEW_INPUTS_DIR" ] && [ -w "$REVIEW_INPUTS_DIR" ] || return 2
+  if [ -e "$marker" ]; then
+    echo "ERROR: refusing lane success after an incomplete finding write" >&2
+    return 2
+  fi
   gc bd heartbeat "$GC_BEAD_ID" >/dev/null 2>&1 || true
   bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed --notes "$1"
 }

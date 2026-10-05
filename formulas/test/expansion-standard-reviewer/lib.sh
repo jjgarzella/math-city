@@ -228,7 +228,7 @@ SYNTH_LIB="$SUITE_DIR/../../lib/review-synthesis.sh"
 # synth_sandbox — create (once per scenario) a sandbox GC_CITY carrying the real
 # review-synthesis.sh + a populated durable-input store for SY_ROOT, and write the
 # candidate wisps (SY_CANDIDATES_JSON, a JSON array) to a file the stub bd returns
-# as the findings container's .children. Caller may pre-set SY_ROOT / SY_ELIGIBLE /
+# for dependency enumeration. Caller may pre-set SY_ROOT / SY_ELIGIBLE /
 # SY_TARGET_KIND / SY_CANDIDATES_JSON before the first call. Sets SY_CITY,
 # SY_INPUTS_DIR, SY_FINDINGS, SY_CANDIDATES_FILE, SY_UPDATE_LOG, SY_META_LOG,
 # SY_PROMOTE_LOG.
@@ -255,8 +255,8 @@ synth_sandbox() {
 }
 
 # synth_env <args...> — run a command with the synthesis sandbox env + the stub
-# bd/gc on PATH. The stub returns SY_CANDIDATES_FILE as the findings container's
-# children and logs promote/label/burn to SY_PROMOTE_LOG.
+# bd/gc on PATH. The stub returns SY_CANDIDATES_FILE for dependency enumeration
+# and logs promote/label/burn to SY_PROMOTE_LOG.
 synth_env() {
   GC_CITY="$SY_CITY" \
   GC_BEAD_ID="${SY_BEAD_ID:-synthesis-bead}" \

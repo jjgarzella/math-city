@@ -15,20 +15,36 @@ Workflow/formula migration is separate work (`mc-1xkm.2` and `.3`).
 - Persistent runtime: `.gc/kaimon-canary/`. Historical canary path names remain
   intentional so the repaired environment and socket identities stay stable.
 - Runtime security config: `.gc/kaimon-canary/xdg-config/kaimon/config.json`,
-  mode 0600 inside a 0700 `kaimon` directory. Production rotation replaced the
-  temporary canary key; the old key is rejected.
-- Managed project allow-list: the same directory's `projects.json`, mode 0600.
-  Only `/home/jjgarzella/Developer/ai/city/math-code-projects/DeRham.jl` is
-  initially enabled. Do not enable arbitrary projects during verification.
-- Julia 1.13.0: `/home/jjgarzella/.juliaup/bin/julia`; isolated environment
-  `.gc/kaimon-canary/project/`, isolated depot `.gc/kaimon-canary/julia_depot/`.
+  mode 0600 inside a 0700 `kaimon` directory. The exposed production bearer was
+  replaced during the general-access rollout; only the new bearer is accepted.
+- Project registry: the same directory's `projects.json`, mode 0600.
+  Top-level `allow_any_project=true` permits arbitrary exact project/worktree
+  paths without per-project approval. Existing registry recipes and other keys
+  remain intact. Installed Kaimon reads this flag on each request; changing it
+  requires no restart. This general-use authorization supersedes the initial
+  original-DeRham-only rollout restriction.
+- Julia 1.13.0: the installed `julia-1.13.0+0.aarch64.linux.gnu/bin/julia`
+  under `/home/jjgarzella/.julia/juliaup/`, launched directly to avoid shim
+  auto-installation/depot ambiguity; isolated environment
+  `.gc/kaimon-canary/project/`, primary runtime depot `.gc/kaimon-canary/julia_depot/`.
   The runtime Manifest records Kaimon 2.9.0 and KaimonGate 1.4.0.
   Preserve this repaired depot rather than re-resolving packages during rollout.
+  The launcher appends `/home/jjgarzella/.julia` as a fallback depot, preserving
+  the runtime depot first. `KAIMON_USER_DEPOT` can override the fallback path.
+  It sets `JULIAUP_DEPOT_PATH` explicitly to the fallback depot's `juliaup`
+  directory so private HOME does not hide installed versions, and disables
+  automatic package precompilation. These values are inherited by managed gates.
 - Socket-safe XDG cache: `/tmp/math-city-kaimon`. Override only with a similarly
   short `KAIMON_CANARY_CACHE_HOME`; long ZMQ Unix socket paths fail.
-- The managed-session launcher `commands/kaimon-canary-julia-session` injects
-  the installed KaimonGate and server project into Julia's LOAD_PATH and leaves
-  the selected mathematical project's activation intact.
+- Kaimon's built-in managed launcher uses `--project=<exact-path>` and appends
+  the installed KaimonGate environment to `JULIA_LOAD_PATH`. The distributed
+  KaimonGate directory lacks a Manifest; service startup supplies the repaired
+  server Manifest there so ZMQ resolves without a package update/resolve.
+  This modifies only the private installed runtime cache, not upstream source
+  or mathematical projects. Recheck this repair after upgrading KaimonGate.
+  The original DeRham registry recipe still uses
+  `commands/kaimon-canary-julia-session`; its default also launches the installed
+  Julia 1.13.0 binary directly. It is not imposed on other projects.
 - Service state: `.gc/services/kaimon-canary`, retained during the rename.
   The launcher bridges the supervisor's `GC_SERVICE_SOCKET` Unix socket to
   localhost TCP; `/svc/kaimon` is a private service mount. If either child or
@@ -74,25 +90,112 @@ gc internal project-mcp --agent <qualified-template> \
 
 This reconciles provider-native config from the neutral catalog and preserves
 unrelated settings. Generated `.mcp.json` and `.codex/config.toml` contain
-credentials: keep them private and ignored. A catalog listing does not prove
+credentials: keep them private and ignored. The Gas City rig and its existing
+`peter` worktree track an Excalidraw `.mcp.json`; ignore patterns cannot untrack
+those files. Their private projected copies are 0600 and have local
+`skip-worktree` flags, preserving credential-free index contents. This is a local
+staging protection, not Git untracking. Upstream tracked-target projection needs
+follow-up `mc-1xkm.12`; do not clear those flags while credentials remain in the
+tracked worktree files. New tracked native targets need the same explicit audit. A catalog listing does not prove
 that the provider loaded it. The initial production gates found missing
 worktree targets and stale ancestor canary configs; retain those failure records.
 Refresh projection before starting a fresh verification conversation. Existing
 conversations may retain the old MCP connection until they drain naturally.
 
-In each actual fresh provider, discover native `kaimon` tools, then:
+## Native Julia use
 
-1. Call `ping(extended=true)` and record daemon PID.
-2. Call `start_session` for the explicitly allowed DeRham project, with an
-   ownership-specific test name. Target that returned key in every subsequent
-   call; other agents share this service.
-3. Evaluate `6*7` with `ex(e="6*7", ses=<key>, q=false)`; require 42.
-4. Load `DeRham`; collect background work with `check_eval` if necessary.
-   Verify Julia version, active project, package source and isolated depot.
-5. Perform the exact CPU quadratic test: in QQ[x,y,z], convert
-   `x^2+2*x*y+3*x*z+4*y^2+5*y*z+6*z^2` to `[6,5,4,3,2,1]` and reconstruct it
-   exactly with `polynomial_to_vector` / `vector_to_polynomial`.
-6. Shut down only the owned test key using `manage_repl`; preserve other gates.
+Discover native `kaimon` tools and their installed schemas, then call
+`ping(extended=true)`. Launch an existing package environment with
+`start_session(project_path="/absolute/exact/worktree", name="<task-owner>")`.
+The directory must exist and contain `Project.toml`. Kaimon automatically calls
+`Pkg.instantiate` during startup; this can download missing dependencies and
+write an absent/stale Manifest. Keep prescribed clean-depot/cold-start gates
+separate, and avoid launching an unrelated repository just for scratch work.
+
+Every eval must target the returned key:
+
+```text
+ex(e="owned_state = 41", ses="<key>")
+ex(e="(owned_state + 1, VERSION, Base.active_project(), getpid())",
+   ses="<key>", q=false)
+```
+
+The second call reads the first call's state in the same warm Julia process.
+`q=true` is the default and suppresses the value; use `q=false` for results.
+If evaluation returns a background ID, collect it using
+`check_eval(eval_id="<id>")`; continue useful work rather than sleeping.
+For changed package code, load the package and verify `pathof(Package)` points
+into the required exact worktree. File edits do not automatically replace every
+loaded definition. Revise can track supported edits when loaded; module/layout
+changes can require a new owned process. Never use a different checkout as
+validation for modified code.
+
+### Ownership and scratch projects
+
+Kaimon deduplicates live gates by normalized project path, even if a caller asks
+for a different name. A returned existing key is not evidence of ownership.
+Inspect the inventory and reuse only your task's exact project/version session.
+For independent work, use an owned separate worktree or unique scratch path.
+Do not activate another project, redefine state, or shut down another actor's
+gate. Retire only disposable owned keys with
+`manage_repl(command="shutdown", session="<key>")`.
+
+For Julia calculations with no package project:
+
+```sh
+mkdir -p "$GC_CITY/.gc/kaimon-scratch"
+scratch=$(mktemp -d "$GC_CITY/.gc/kaimon-scratch/${GC_SESSION_ID:-task}-XXXXXX")
+touch "$scratch/Project.toml"
+printf '%s\n' "$scratch"
+```
+
+Call `start_session(project_path=<printed-directory>, name=<task-owner>)`.
+Kaimon does not create this environment automatically. Keep it outside repository
+source; do not add `Project.toml` to an unrelated repo. Retain the directory while
+the owned gate is in use, close the gate when done, and remove only your scratch
+files when they are no longer needed.
+
+### Installed Julia version selection
+
+Without a recipe, gates use the daemon's Julia 1.13.0. Julia 1.12.7 is also
+installed. Before launching, merge the following into the owned project's
+`kaimon.toml`, preserving existing settings:
+
+```toml
+[launch]
+julia_version = "1.12"
+```
+
+A series selects an installed patch; an exact patch string requires that patch.
+Kaimon reads juliaup's registry through the explicit `JULIAUP_DEPOT_PATH`.
+Per-path `projects.json` launch settings override project `kaimon.toml` fields;
+`julia_bin` has higher priority than `julia_version` and can name a wrapper.
+Do not apply the original DeRham wrapper/version to every project. Check
+`VERSION` and `Base.active_project()` after every new launch. Kaimon can offer
+an installation or substitute the daemon Julia if a requested version is absent;
+report a mismatch rather than treating it as satisfying a version-specific gate.
+Routine use of installed versions and arbitrary project paths needs no new human
+approval or registry edit. Formula/runner migrations remain separate work.
+
+Kaimon 2.9.0 has a 120-second startup timeout. Cold compilation, including Julia
+1.12's Pkg stdlib, can exceed it. A timeout marks the managed entry crashed but
+does not necessarily stop its process: inspect native `ping` and the returned
+log before retrying, because the owned gate may connect later. Repeated starts
+while the first process is still booting can create duplicate late arrivals;
+path deduplication applies to already-connected gates. Once it connects,
+`start_session` on that path returns its live key. Verify ownership and close
+all of your disposable gates, preserving other actors' state. This does not
+change the prescribed cold-start/clean-depot gate semantics.
+
+
+### Prescribed production math gate
+
+The original production CPU acceptance gate remains available; general warm use
+has not replaced formula/test gates. In a disposable owned DeRham worktree gate,
+verify Julia version, active project and `pathof(DeRham)`, then in QQ[x,y,z]
+convert `x^2+2*x*y+3*x*z+4*y^2+5*y*z+6*z^2` to `[6,5,4,3,2,1]` and reconstruct
+it exactly with `polynomial_to_vector` / `vector_to_polynomial`. Retire only the
+owned key. Preserve intentionally isolated cold-start and clean-depot tests.
 
 After an authorized Kaimon-only restart, repeat actual native checks in fresh
 providers. Supplemental HTTP initialization must match the response id (SSE
@@ -121,14 +224,38 @@ catalog, runtime auth and allow-list reside under
 `.gc/maintenance/kaimon-production-20261005/private-rollback/` (directory 0700).
 Do not copy whole user configs over newer concurrent account/settings changes.
 
-If production service authentication fails, preserve live Julia state first,
-restore the prior auth and canary catalog together from private backups, replace
-only the service name with `kaimon-canary`, and use `gc reload --soft` plus
-neutral projection into affected targets. Keep one localhost listener. Treat
-restoring the old bearer as a deliberate rollback, never as a second production
-credential. Preserve unrelated city config and worktrees.
+For authentication repair, preserve live Julia state first. Generate a fresh
+bearer privately and replace the runtime `api_keys` with only that credential;
+update the neutral catalog's Authorization header consistently. Kaimon captures
+security config at server startup, so credentials require a service-only restart
+in a quiescent window. Immediately before restarting, inventory native `ping`;
+if other actors have live gates, coordinate disposition through durable mail.
+Do not silently destroy their Julia memory. Use `gc internal project-mcp` to
+reconcile affected native targets and confirm old-key HTTP 401/new-key success
+without printing credentials. Keep files 0600 and private directories 0700.
+Private rotation backups are in
+`.gc/maintenance/kaimon-general-access-20261006/private-rollback/`; they contain
+an exposed revoked credential and must not be restored as an accepted key.
+Preserve unrelated settings and allow existing conversations to refresh
+naturally; projected files cannot replace credentials already loaded in memory.
 
 ## Evidence and limits
+
+General-access rollout evidence is in
+`.gc/maintenance/kaimon-general-access-20261006/`, including the fresh native
+Claude/Codex reports, credential rejection check, projection/preservation checks,
+strict prompt renders and focused doctor results. Fresh Claude verified default
+Julia 1.13.0; fresh Codex verified project-selected Julia 1.12.7. Both exercised
+unlisted exact worktrees, loaded the disposable package from the correct source,
+retained state across calls, confirmed path deduplication and used independent
+scratch projects. All proof evaluations used actual provider-native tools.
+The first cold Julia 1.12 launch timed out while Pkg compiled, then connected;
+the documented startup/late-arrival caveat remains. The optional detached DeRham
+launch failed before gate attachment during Pkg/Downloads/LibCURL precompilation
+(`Zstd_jll` precompiled image unavailable with the requested cache flags).
+The copied Manifest was unchanged; package loading in that worktree is unverified.
+No package update/resolve or external source repair was attempted. Existing
+conversations can retain revoked credentials until natural refresh.
 
 Sanitized production evidence is in
 `.gc/maintenance/kaimon-production-20261005/`; final provider reports and

@@ -9,19 +9,49 @@ import asyncio
 from contextlib import suppress
 import os
 import signal
+import tomllib
 from pathlib import Path
 
 
 CITY = Path(os.environ.get("GC_CITY", "/home/jjgarzella/Developer/ai/city/math-city"))
 KAIMON_ROOT = CITY / ".gc" / "kaimon-canary"
-JULIA = Path(os.environ.get("JULIA", "/home/jjgarzella/.juliaup/bin/julia"))
+# Use the installed binary directly: the juliaup shim interprets its depot root
+# differently from Kaimon's registry reader and may install a new release.
+JULIA = Path(os.environ.get(
+    "JULIA",
+    "/home/jjgarzella/.julia/juliaup/julia-1.13.0+0.aarch64.linux.gnu/bin/julia",
+))
 PROJECT = KAIMON_ROOT / "project"
 DEPOT = KAIMON_ROOT / "julia_depot"
+USER_DEPOT = Path(os.environ.get("KAIMON_USER_DEPOT", "/home/jjgarzella/.julia"))
 KAIMON_HOME = KAIMON_ROOT / "home"
 CONFIG_HOME = KAIMON_ROOT / "xdg-config"
 CACHE_HOME = Path(os.environ.get("KAIMON_CANARY_CACHE_HOME", "/tmp/math-city-kaimon"))
 PORT = int(os.environ.get("KAIMON_CANARY_PORT", "42828"))
 HOST = "127.0.0.1"
+
+
+def prepare_gate_environment() -> None:
+    """Supply the installed gate's missing dependency pins without resolving packages.
+
+    Kaimon appends pkgdir(KaimonGate) to every managed session's LOAD_PATH.
+    The distributed package lacks a Manifest, so ZMQ cannot resolve there.
+    Reuse the repaired server Manifest; never update the target project's deps.
+    """
+    manifest = PROJECT / "Manifest.toml"
+    pins = tomllib.loads(manifest.read_text())
+    version = pins["deps"]["KaimonGate"][0]["version"]
+    candidates = [
+        path for path in (DEPOT / "packages" / "KaimonGate").iterdir()
+        if tomllib.loads((path / "Project.toml").read_text()).get("version") == version
+    ]
+    if len(candidates) != 1:
+        raise RuntimeError("Expected one installed KaimonGate matching the server Manifest")
+    target = candidates[0] / "Manifest.toml"
+    if not target.exists() or target.read_bytes() != manifest.read_bytes():
+        temporary = target.with_suffix(".toml.tmp")
+        temporary.write_bytes(manifest.read_bytes())
+        temporary.replace(target)
 
 
 def require(name: str) -> str:
@@ -95,6 +125,7 @@ async def bridge_client(
 
 
 async def main() -> int:
+    prepare_gate_environment()
     socket_path = Path(require("GC_SERVICE_SOCKET"))
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -109,7 +140,9 @@ async def main() -> int:
     env.update(
         {
             "HOME": str(KAIMON_HOME),
-            "JULIA_DEPOT_PATH": str(DEPOT),
+            "JULIA_DEPOT_PATH": os.pathsep.join((str(DEPOT), str(USER_DEPOT))),
+            "JULIAUP_DEPOT_PATH": str(USER_DEPOT / "juliaup"),
+            "JULIA_PKG_PRECOMPILE_AUTO": "0",
             "XDG_CONFIG_HOME": str(CONFIG_HOME),
             "XDG_CACHE_HOME": str(CACHE_HOME),
             "KAIMON_EMBEDDED": "1",

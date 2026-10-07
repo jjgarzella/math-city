@@ -78,6 +78,9 @@ review_worker_target = "gasvillage.polecat"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"
+# funsearch — agentic FunSearch pack (epic mc-h4zx)
+[rigs.imports.funsearch]
+source = "packs/funsearch"
 # Lab Tech is temporarily disabled. Restore this import to re-enable its
 # recurring experiment order and dedicated tick worker.
 # [rigs.imports.labtech]

@@ -19,3 +19,6 @@
 [submodule "packs/basic-code-tools"]
 	path = packs/basic-code-tools
 	url = https://github.com/jjgarzella/basic-code-tools-pack.git
+[submodule "packs/funsearch"]
+	path = packs/funsearch
+	url = https://github.com/jjgarzella/funsearch-pack.git

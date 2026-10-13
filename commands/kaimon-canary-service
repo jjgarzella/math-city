@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+import json
 import os
 import signal
 import tomllib
@@ -140,9 +141,11 @@ async def main() -> int:
     env.update(
         {
             "HOME": str(KAIMON_HOME),
-            "JULIA_DEPOT_PATH": os.pathsep.join((str(DEPOT), str(USER_DEPOT))),
+            # Retain Julia's bundled stdlib caches after the two package depots.
+            "JULIA_DEPOT_PATH": os.pathsep.join((str(DEPOT), str(USER_DEPOT), "")),
             "JULIAUP_DEPOT_PATH": str(USER_DEPOT / "juliaup"),
             "JULIA_PKG_PRECOMPILE_AUTO": "0",
+            "JULIA_NUM_PRECOMPILE_TASKS": "1",
             "XDG_CONFIG_HOME": str(CONFIG_HOME),
             "XDG_CACHE_HOME": str(CACHE_HOME),
             "KAIMON_EMBEDDED": "1",
@@ -155,7 +158,9 @@ async def main() -> int:
         "--startup-file=no",
         f"--project={PROJECT}",
         "-e",
-        f'using Kaimon; Kaimon.main(["--headless", "--port", "{PORT}"])',
+        'using Kaimon; '
+        f'include({json.dumps(str(CITY / "commands" / "kaimon-managed-bootstrap.jl"))}); '
+        f'Kaimon.main(["--headless", "--port", "{PORT}"])',
         cwd=str(CITY),
         env=env,
     )

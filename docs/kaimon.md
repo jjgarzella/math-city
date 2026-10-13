@@ -303,7 +303,16 @@ remains unknown. The successful two-pool trial does not establish that cause.
 Default Hecke precompilation exceeded the tested 3–4 GiB setup caps on Julia
 1.12, and the Julia 1.13 default workload trial also exceeded its 4 GiB cap.
 Those owned jobs were stopped while several GiB remained available; the
-default workload checks are still incomplete. For future bounded setup, cap
+default workload checks are still incomplete. A later Julia 1.12 setup with
+explicit image/GC/BLAS thread limits exited successfully after 682 seconds,
+peaking at 3.80 GiB, but reported Graphviz extension and Oscar/Polymake cache
+warnings. Its native default-module follow-up verified Julia 1.12.7 and the
+exact project, then disconnected during package loading after 471 seconds
+while the Julia process remained alive. Its watcher recorded a 3.38 GiB peak
+and no limit breach. The disconnect cause remains unknown; two thread pools
+do not establish a fix. The owned process was retired after evidence capture.
+The earlier explicit existing-cache native CPU/state proof remains valid.
+For future bounded setup, cap
 `JULIA_NUM_PRECOMPILE_TASKS`, `JULIA_IMAGE_THREADS`, `JULIA_NUM_GC_THREADS`, and
 BLAS/OpenMP threads explicitly before launching. Image compilation has a
 separate thread budget; a single precompile task does not imply one image

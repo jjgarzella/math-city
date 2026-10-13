@@ -59,6 +59,11 @@ Workflow/formula migration is separate work (`mc-1xkm.2` and `.3`).
   no installed package source or project manifest; revalidate it on upgrade.
   To roll back, remove its launcher include and restore the prior launcher
   environment, then restart only Kaimon after resolving live session state.
+  `commands/check-kaimon-bootstrap.jl` retains the generated-script regression:
+  run it with the installed Julia 1.13 binary, `--startup-file=no`, the repaired
+  service project and combined depot, inside an approved memory/time window.
+  It checks path quoting, Pkg-before-gate ordering, instantiation and both
+  restart settings without starting a service or gate.
 - Service state: `.gc/services/kaimon-canary`, retained during the rename.
   The launcher bridges the supervisor's `GC_SERVICE_SOCKET` Unix socket to
   localhost TCP; `/svc/kaimon` is a private service mount. If either child or
@@ -136,6 +141,14 @@ ex(e="(owned_state + 1, VERSION, Base.active_project(), getpid())",
 
 The second call reads the first call's state in the same warm Julia process.
 `q=true` is the default and suppresses the value; use `q=false` for results.
+When an included script loads packages that may precompile, put its imports
+explicitly in the evaluation, for example
+`ex(e="using DeRham, Oscar; include(\"/owned/check.jl\")", ses="<key>", q=false)`.
+KaimonGate 1.4 detects `using`/`import` in the evaluation's syntax to suspend its
+stream capture during package loading. An `include(...)` alone hides those
+imports and can fail with `_CaptureIO does not support byte I/O` under Julia
+1.12's precompilation world age. This is separate from the repaired LibCURL
+bootstrap failure.
 If evaluation returns a background ID, collect it using
 `check_eval(eval_id="<id>")`; continue useful work rather than sleeping.
 For changed package code, load the package and verify `pathof(Package)` points

@@ -262,6 +262,42 @@ naturally; projected files cannot replace credentials already loaded in memory.
 
 ## Evidence and limits
 
+The October 13 startup repair (`mc-1xkm.13`, commit `9ab0407`) passed fresh
+Claude/Julia 1.13 and Codex/Julia 1.12 native startup, Pkg/Downloads provenance,
+and persistent-state checks. This resolves the reproduced bootstrap failure;
+it does not establish that every mathematical workload fits the host's budget.
+Evidence and the reproducible CPU check are under
+`.gc/maintenance/kaimon-repair-20261013/`.
+
+An owned, unchanged copy of DeRham at `59b331b` passed actual native loading and
+the QQ polynomial round-trip on Julia 1.12.7 with this explicit workaround:
+
+```toml
+[launch]
+julia_version = "1.12"
+threads = "1,1"
+extra_flags = ["--compiled-modules=existing"]
+```
+
+The session returned state 42 from previously stored state 41 and verified
+DeRham, Oscar and KaimonGate source paths. Loading took 437 seconds; the full
+verification window peaked at 3.44 GiB. This is unsuitable evidence for a
+60-second cold-start target and does not replace default compiled-module,
+clean-depot, or benchmark gates. A previous one-thread trial lost its native
+connection despite completing the package load in its process log; its cause
+remains unknown. The successful two-pool trial does not establish that cause.
+
+Default Hecke precompilation exceeded the tested 3–4 GiB setup caps on Julia
+1.12, and the Julia 1.13 default workload trial also exceeded its 4 GiB cap.
+Those owned jobs were stopped while several GiB remained available; the
+default workload checks are still incomplete. For future bounded setup, cap
+`JULIA_NUM_PRECOMPILE_TASKS`, `JULIA_IMAGE_THREADS`, `JULIA_NUM_GC_THREADS`, and
+BLAS/OpenMP threads explicitly before launching. Image compilation has a
+separate thread budget; a single precompile task does not imply one image
+compiler thread. These settings do not replace an external process-group RSS,
+host-memory-floor and time guard. Obtain an exact task-specific memory window;
+do not infer permission for a larger setup or benchmark from these diagnostics.
+
 General-access rollout evidence is in
 `.gc/maintenance/kaimon-general-access-20261006/`, including the fresh native
 Claude/Codex reports, credential rejection check, projection/preservation checks,

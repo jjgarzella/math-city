@@ -312,6 +312,12 @@ while the Julia process remained alive. Its watcher recorded a 3.38 GiB peak
 and no limit breach. The disconnect cause remains unknown; two thread pools
 do not establish a fix. The owned process was retired after evidence capture.
 The earlier explicit existing-cache native CPU/state proof remains valid.
+An additional Julia 1.13 trial with the same existing-cache flag returned
+native version/project/state provenance, then hit its 4 GiB owned RSS guard
+after 252 seconds (4,228,968 KiB peak; 3,551,268 KiB minimum host availability).
+Its native package/CPU evaluation failed on the resulting disconnect. The
+owned process exited; this trial supplies no Julia 1.13 workload acceptance
+and does not establish inherent version incompatibility.
 For future bounded setup, cap
 `JULIA_NUM_PRECOMPILE_TASKS`, `JULIA_IMAGE_THREADS`, `JULIA_NUM_GC_THREADS`, and
 BLAS/OpenMP threads explicitly before launching. Image compilation has a

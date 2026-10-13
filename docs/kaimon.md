@@ -30,10 +30,13 @@ Workflow/formula migration is separate work (`mc-1xkm.2` and `.3`).
   The runtime Manifest records Kaimon 2.9.0 and KaimonGate 1.4.0.
   Preserve this repaired depot rather than re-resolving packages during rollout.
   The launcher appends `/home/jjgarzella/.julia` as a fallback depot, preserving
-  the runtime depot first. `KAIMON_USER_DEPOT` can override the fallback path.
+  the runtime depot first, followed by a trailing empty depot entry so Julia
+  retains its bundled stdlib sources and compiled images. `KAIMON_USER_DEPOT`
+  can override the fallback path.
   It sets `JULIAUP_DEPOT_PATH` explicitly to the fallback depot's `juliaup`
   directory so private HOME does not hide installed versions, and disables
-  automatic package precompilation. These values are inherited by managed gates.
+  automatic package precompilation. Explicit precompilation uses one task.
+  These values are inherited by managed gates.
 - Socket-safe XDG cache: `/tmp/math-city-kaimon`. Override only with a similarly
   short `KAIMON_CANARY_CACHE_HOME`; long ZMQ Unix socket paths fail.
 - Kaimon's built-in managed launcher uses `--project=<exact-path>` and appends
@@ -45,6 +48,17 @@ Workflow/formula migration is separate work (`mc-1xkm.2` and `.3`).
   The original DeRham registry recipe still uses
   `commands/kaimon-canary-julia-session`; its default also launches the installed
   Julia 1.13.0 binary directly. It is not imposed on other projects.
+- Local Kaimon 2.9.0 bootstrap repair (`mc-1xkm.13`): the launcher loads
+  `commands/kaimon-managed-bootstrap.jl` after importing Kaimon. It verifies
+  the upstream version and generated boot script, then imports the runtime's
+  Pkg before optional Revise and KaimonGate. Instantiation and gate attachment
+  retain their original positions. Together with the bundled depot entry,
+  this prevents the reproduced LibCURL/Pkg startup failure when dependencies
+  from a Julia 1.12 target manifest would otherwise load before Julia 1.13 Pkg.
+  Neither change alone passed the controlled reproduction. The override changes
+  no installed package source or project manifest; revalidate it on upgrade.
+  To roll back, remove its launcher include and restore the prior launcher
+  environment, then restart only Kaimon after resolving live session state.
 - Service state: `.gc/services/kaimon-canary`, retained during the rename.
   The launcher bridges the supervisor's `GC_SERVICE_SOCKET` Unix socket to
   localhost TCP; `/svc/kaimon` is a private service mount. If either child or
@@ -176,6 +190,13 @@ an installation or substitute the daemon Julia if a requested version is absent;
 report a mismatch rather than treating it as satisfying a version-specific gate.
 Routine use of installed versions and arbitrary project paths needs no new human
 approval or registry edit. Formula/runner migrations remain separate work.
+
+For serialized work on a memory-constrained host, set `threads = "1"` in the
+owned project's `[launch]` section as well; Kaimon otherwise defaults to `auto`.
+Use the combined runtime/user/bundled depot for pinned DeRham environments.
+The user depot alone lacked the exact pinned ColorTypes 0.12.1 source during
+`ne-m7l`; its matching source is available in the isolated runtime depot.
+Installing newer ColorTypes versions does not satisfy that manifest pin.
 
 Kaimon 2.9.0 has a 120-second startup timeout. Cold compilation, including Julia
 1.12's Pkg stdlib, can exceed it. A timeout marks the managed entry crashed but

@@ -502,7 +502,7 @@ for (id, mod) in Base.loaded_modules
     path = pathof(mod)
     path === nothing && continue
     occursin("/stdlib/", path) && continue
-    d[id.name] = Dict("uuid"=>string(id.uuid), "path"=>path,
+    d[string(id.uuid)] = Dict("name"=>id.name, "uuid"=>string(id.uuid), "path"=>path,
                      "version"=>string(something(Base.pkgversion(mod), "")))
 end
 TOML.print(d)'''
@@ -510,7 +510,8 @@ TOML.print(d)'''
                                  f"--project={dependencies}", "-e", probe],
                                 check=True, env=env, capture_output=True, text=True)
         baked = tomllib.loads(loaded.stdout)
-        for name, entry in baked.items():
+        for entry in baked.values():
+            name = entry["name"]
             # Extension modules have deterministic IDs of their own; record them
             # but validate their owning package and weak deps through the full graph.
             if name not in graph and not any(name in e.get("extensions", {}) for e in graph.values()):

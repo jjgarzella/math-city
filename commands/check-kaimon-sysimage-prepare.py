@@ -190,14 +190,19 @@ class Prepare(unittest.TestCase):
         self.assertEqual((backup / "Project.toml").read_bytes(), before["Project.toml"])
 
     def test_project_changes_are_minimal_and_reported(self):
-        """Transparency: comments/order survive; only [sources] may differ, and the report says how."""
+        """Transparency: only [sources] may differ logically; an exact Project.diff and
+        byte backup are recorded (reformatting is accepted by the coordinator)."""
         before = (self.target / "Project.toml").read_text()
         result = self.prepare(self.path_map({"CityDep": self.owned_dep}))
         self.assertEqual(result.returncode, 0, result.log)
         after = (self.target / "Project.toml").read_text()
         if after == before:
             return
-        self.assertIn("# pinned by authors", after, "Project rewrite dropped author comments")
+        report = self.report(result)
+        diff = Path(report["project_diff"]).read_text()
+        self.assertIn("# pinned by authors", diff, "Project.diff omits a removed author line")
+        self.assertIn(str(self.owned_dep), diff, "Project.diff omits the source replacement")
+        self.assertEqual((Path(report["rollback_backup"]) / "Project.toml").read_text(), before)
         old, new = tomllib.loads(before), tomllib.loads(after)
         old.pop("sources", None), new.pop("sources", None)
         self.assertEqual(old, new, "only [sources] may change")

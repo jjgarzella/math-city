@@ -160,6 +160,7 @@ async def main() -> int:
         "-e",
         'using Kaimon; '
         f'include({json.dumps(str(CITY / "commands" / "kaimon-managed-bootstrap.jl"))}); '
+        f'include({json.dumps(str(CITY / "commands" / "kaimon-managed-sysimages.jl"))}); '
         f'Kaimon.main(["--headless", "--port", "{PORT}"])',
         cwd=str(CITY),
         env=env,

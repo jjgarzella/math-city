@@ -23,13 +23,14 @@ Workflow/formula migration is separate work (`mc-1xkm.2` and `.3`).
   remain intact. Installed Kaimon reads this flag on each request; changing it
   requires no restart. This general-use authorization supersedes the initial
   original-DeRham-only rollout restriction.
-- Julia 1.13.0: the installed `julia-1.13.0+0.aarch64.linux.gnu/bin/julia`
-  under `/home/jjgarzella/.julia/juliaup/`, launched directly to avoid shim
+- Julia 1.13.2 on the current macOS Apple Silicon host: the installed
+  `julia-1.13.2+0.aarch64.apple.darwin14/Julia-1.13.app/Contents/Resources/julia/bin/julia`
+  under `/Users/jj-agents/.julia/juliaup/`, launched directly to avoid shim
   auto-installation/depot ambiguity; isolated environment
   `.gc/kaimon-canary/project/`, primary runtime depot `.gc/kaimon-canary/julia_depot/`.
   The runtime Manifest records Kaimon 2.9.0 and KaimonGate 1.4.0.
   Preserve this repaired depot rather than re-resolving packages during rollout.
-  The launcher appends `/home/jjgarzella/.julia` as a fallback depot, preserving
+  The launcher appends `/Users/jj-agents/.julia` as a fallback depot, preserving
   the runtime depot first, followed by a trailing empty depot entry so Julia
   retains its bundled stdlib sources and compiled images. `KAIMON_USER_DEPOT`
   can override the fallback path.
@@ -47,7 +48,7 @@ Workflow/formula migration is separate work (`mc-1xkm.2` and `.3`).
   or mathematical projects. Recheck this repair after upgrading KaimonGate.
   The original DeRham registry recipe still uses
   `commands/kaimon-canary-julia-session`; its default also launches the installed
-  Julia 1.13.0 binary directly. It is not imposed on other projects.
+  Julia 1.13.2 binary directly. It is not imposed on other projects.
 - Local Kaimon 2.9.0 bootstrap repair (`mc-1xkm.13`): the launcher loads
   `commands/kaimon-managed-bootstrap.jl` after importing Kaimon. It verifies
   the upstream version and generated boot script, then imports the runtime's
@@ -171,7 +172,7 @@ files when they are no longer needed.
 
 ### Installed Julia version selection
 
-Without a recipe, gates use the daemon's Julia 1.13.0. Julia 1.12.7 is also
+Without a recipe, gates use the daemon's Julia 1.13.2. Julia 1.12.7 is also
 installed. Before launching, merge the following into the owned project's
 `kaimon.toml`, preserving existing settings:
 
@@ -224,6 +225,104 @@ may contain notifications first), support protocol `2025-11-25`, and distinguish
 401 authentication failures from JSON-RPC errors. Raw protocol clients do not
 prove actual Claude/Codex connectivity. Never paste bearer tokens into commands,
 logs or reports. Record old-token rejection after rotation.
+
+## Shared dependency images on the current Mac
+
+The city image targets Julia **1.13.2 on macOS aarch64**. It resolves the
+declared dependency union of DeRham, GPUFiniteFieldMatrices, MMPSingularities,
+alexp616/GPUPolynomials, CudaNTTs, EdgeIdeals, NewtonExperiments and modern
+Nemo 0.56.2, together with the installed KaimonGate bootstrap pins. The older
+local Nemo 0.55.1 cannot satisfy DeRham's Oscar >=1.8 constraint; its dirty
+checkout and local commit are preserved. The modern upstream source is isolated.
+No canonical math Project or legacy Manifest is silently upgraded.
+
+The common lock selects Oscar 1.8.2, Nemo 0.56.2, AbstractAlgebra 0.50.4,
+CUDA 5.11.3, CSV 0.10.17 and DataFrames 1.8.2. The complete UUID/version/tree
+graph, CPU target, Julia binary/base-image hashes, PackageCompiler lock,
+warmup/build-input hashes, artifact checksum, size and build time are recorded
+in each artifact's `metadata.json`. Artifacts and pinned build environments
+live under ignored `.gc/kaimon-sysimages/`; binaries are never committed.
+
+After source review, artifact/native acceptance and a safe service-only rollout,
+`commands/kaimon-managed-sysimages.jl` selects compatible images for **new
+interactive sessions**, including future worktrees. It uses the existing launch
+recipe and retains caller project/version/binary/flags and explicit images.
+`run_tests` keeps its original image resolver and isolated environment behavior.
+The Pkg-before-gate bootstrap repair remains in place. No existing session is
+changed by selection, profile publication, guidance updates or source edits.
+
+The selector verifies the actual Julia patch/build, platform, generic CPU
+target, immutable build inputs, binary checksum and all overlapping target
+dependency UUID/version/tree identities. It also checks the installed gate's
+actual hard dependency closure, plus direct compat in local path projects.
+Before selecting an image it requires Julia's `Pkg.is_manifest_current` and
+recorded hashes for every path dependency's Project file. Ordinary `.jl` edits
+remain supported; changed dependency declarations require explicit preparation.
+An incompatible/stale image is rejected with a Kaimon log diagnostic and normal
+Julia fallback. Child `ENV["KAIMON_CITY_SYSIMAGE"]` reports the selected artifact
+ID, `off`, or rejection reason. Always verify `VERSION`, `Base.active_project()`,
+`unsafe_string(Base.JLOptions().image_file)` and `pathof` the editable package
+with native tools. Explicit caller images remain caller-controlled.
+
+Old committed manifests generally do not match the common lock. Prepare an
+**owned isolated worktree before launching it**, using the published current
+profile and an explicit map of any local dependency sources:
+
+```sh
+"$GC_CITY/commands/kaimon-sysimage.py" prepare \
+  --project "$task_worktree" --owned-root "$task_owned_root" \
+  --path-map "$GC_CITY/.gc/kaimon-sysimages/current/source-paths.toml"
+```
+
+The helper announces exact source replacements, backs up original target bytes
+outside source, preserves legacy `Manifest.toml`, checks declared compat and
+writes a Julia 1.13 versioned Manifest. An existing versioned Manifest needs a
+matching tool receipt; `--replace-existing` explicitly backs up and replaces an
+otherwise conflicting owned output. Symlinked targets, unselected foreign paths
+and incompatible local development overrides are rejected. Failure restores the
+original target files. Receipts report exact rollback backup locations. Pass
+explicit `--julia`, `--union-manifest` and `--artifact` for independent review
+before a current profile is published. This command does not authorize editing
+a canonical checkout or another actor's worktree.
+
+City packages and KaimonGate stay outside the image. Registered Nemo is baked
+as Oscar's dependency; the selector rejects a Nemo development project or a
+path-developed baked dependency. Changing a baked dependency inside an already
+running session requires a new session with the image disabled. Worktree code
+remains local/editable; Revise is useful only when actually installed and loaded.
+The image does not install it or make unsupported structural reloads work.
+CUDA import and `functional()==false` on this host are CPU-only checks. They
+establish no GPU numerical support or deployment support on another platform.
+
+For normal Julia or prescribed cold/clean-depot/default-image gates, preserve
+the rest of the recipe and add:
+
+```toml
+[city_sysimage]
+mode = "off"
+```
+
+`mode = "required"` makes image rejection fail the launch instead of falling
+back. The service-wide equivalent is `KAIMON_SYSIMAGE_MODE=off` at its next safe
+start. Removing the managed-sysimages include from the service launcher restores
+upstream command construction; inventory live gates before any service restart.
+Do not use an image for intentionally isolated baseline gates. Explicit
+`--compiled-modules=no` also bypasses automatic selection.
+
+Rebuild with `commands/kaimon-sysimage.py build` against the reviewed union lock
+and exact Julia binary. Replay an artifact's pinned `tools/Manifest.toml` with
+`--tools-manifest`; never run a broad update in canonical projects. Any Julia,
+root set, dependency graph, PackageCompiler lock, CPU target or workload change
+produces a new hash identity. Complete artifacts publish by atomic rename;
+keep the previous artifact/profile for rollback and re-run native acceptance
+before activating a replacement. Publication alone does not authorize a restart.
+
+`commands/kaimon-sysimage-benchmark.py` alternates same-version/project image
+and normal fresh processes with matching managed bootstrap/thread settings,
+then repeats CPU calculations in each process. It samples aggregate descendant
+RSS. Existing depots and OS caches remain intact: these are process-cold tests,
+not claims of OS-cold caches or clean depots. Record the first launch separately,
+report the actual 60-second result, and retain the prescribed independent gates.
 
 ## Rollback
 

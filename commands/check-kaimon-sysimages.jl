@@ -1,0 +1,41 @@
+# Run with the pinned Kaimon service project in an owned cold process.
+using Kaimon, Test, TOML
+
+mktempdir() do temporary
+    old_mode = get(ENV, "KAIMON_SYSIMAGE_MODE", nothing)
+    old_root = get(ENV, "KAIMON_SYSIMAGE_ROOT", nothing)
+    ENV["KAIMON_SYSIMAGE_ROOT"] = joinpath(temporary, "not-published")
+    ENV["KAIMON_SYSIMAGE_MODE"] = "auto"
+    configs = [
+        Kaimon.LaunchConfig(),
+        Kaimon.LaunchConfig("2,1", "2", "3G", ["--check-bounds=yes"],
+                            "", joinpath(Sys.BINDIR,"julia"), true, "1.13.2"),
+        Kaimon.LaunchConfig("", "", "", ["--sysimage=/explicit/image"],
+                            "", "", false, ""),
+    ]
+    project = joinpath(temporary, "quoted project \" \$ value")
+    mkpath(project)
+    write(joinpath(project, "Project.toml"), "")
+    script = "owned_state = 41"
+    before = [Kaimon._build_julia_cmd(lc, script; project) for lc in configs]
+    before_resolver = which(Kaimon._resolve_sysimage, (Kaimon.LaunchConfig, String))
+    include(joinpath(@__DIR__, "kaimon-managed-sysimages.jl"))
+    @testset "automatic session selection preserves launch semantics" begin
+        # Missing artifact root leaves commands byte-for-byte unchanged.
+        @test [Base.invokelatest(Kaimon._build_julia_cmd, lc, script; project) for lc in configs] == before
+        @test which(Kaimon._resolve_sysimage, (Kaimon.LaunchConfig, String)) === before_resolver
+        ENV["KAIMON_SYSIMAGE_MODE"] = "off"
+        cmd = Base.invokelatest(Kaimon._build_julia_cmd, configs[2], script; project)
+        @test cmd[1:end-1] == before[2][1:end-1]
+        @test endswith(cmd[end], script)
+        @test occursin("KAIMON_CITY_SYSIMAGE", cmd[end])
+        @test occursin("off", cmd[end])
+        # Caller-specified image is preserved, including its boot script.
+        @test Base.invokelatest(Kaimon._build_julia_cmd, configs[3], script; project) == before[3]
+        # Normal test launcher still sees upstream resolver, not automatic selection.
+        @test Kaimon._resolve_sysimage(Kaimon.LaunchConfig(), project) == ""
+    end
+    old_mode === nothing ? delete!(ENV,"KAIMON_SYSIMAGE_MODE") : (ENV["KAIMON_SYSIMAGE_MODE"] = old_mode)
+    old_root === nothing ? delete!(ENV,"KAIMON_SYSIMAGE_ROOT") : (ENV["KAIMON_SYSIMAGE_ROOT"] = old_root)
+end
+println("CITY_SYSIMAGE_COMMAND_PASS")

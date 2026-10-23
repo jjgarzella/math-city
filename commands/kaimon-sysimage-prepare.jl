@@ -6,69 +6,131 @@ pfile = joinpath(project, "Project.toml")
 p = TOML.parsefile(pfile)
 original_project = deepcopy(p)
 m = TOML.parsefile(union_manifest)
-paths = isempty(path_map) ? Dict{String,String}() : TOML.parsefile(path_map)
-explicit_paths = Set(keys(paths))
-for (name, values) in m["deps"]
-    entry = only(values)
-    if haskey(entry, "path") && !haskey(paths, name)
-        paths[name] = abspath(dirname(union_manifest), entry["path"])
+frozen = m["deps"]
+explicit_paths = isempty(path_map) ? Dict{String,String}() : TOML.parsefile(path_map)
+root_name = get(p,"name","")
+root_uuid = get(p,"uuid","")
+if haskey(frozen,root_name) && haskey(only(frozen[root_name]),"git-tree-sha1")
+    error("The root package is an immutable image dependency; use normal Julia for its development")
+end
+
+# Pkg's actual workspace declaration, including nested workspace projects.
+workspace = Pkg.Types.collect_workspace(pfile)
+selected = Dict{String,Any}()
+selected_paths = Dict{String,String}()
+pending = Tuple{String,String,String,Dict{String,Any}}[]
+for (file, _) in workspace
+    data = TOML.parsefile(file)
+    for (name,id) in get(data,"deps",Dict())
+        push!(pending,(name,id,file,data))
     end
 end
-if haskey(p, "name")
-    if haskey(m["deps"],p["name"]) && haskey(only(m["deps"][p["name"]]),"git-tree-sha1")
-        error("The root package is an immutable image dependency; use normal Julia for its development")
+
+while !isempty(pending)
+    name, id, parent_file, parent = pop!(pending)
+    if name == root_name
+        id == root_uuid || error("Root UUID mismatch: " * name)
+        continue
     end
-    paths[p["name"]] = project
-end
-for (name, source) in get(p,"sources",Dict())
-    if haskey(source,"path") && !(name in explicit_paths)
-        paths[name] = abspath(project,source["path"])
-    end
-end
-for (name, path) in paths
-    haskey(m["deps"], name) || continue
-    frozen = only(m["deps"][name])
-    haskey(frozen,"git-tree-sha1") && error("Local source overrides frozen external dependency: " * name)
-    declared = get(get(p,"sources",Dict()),name,nothing)
-    if haskey(get(p,"deps",Dict()),name) && !(name in explicit_paths)
-        if declared !== nothing && haskey(declared,"url")
-            error("URL source would change for " * name * "; supply an explicit --path-map choice")
-        elseif declared === nothing && startswith(relpath(realpath(path),realpath(owned_root)),"..")
-            error("Foreign local dependency " * name * " requires explicit --path-map selection")
+    haskey(frozen,name) || error("Union lock does not cover target/workspace dependency: " * name)
+    entry = deepcopy(only(frozen[name]))
+    entry["uuid"] == id || error("Union UUID mismatch: " * name)
+    parent_source = get(get(parent,"sources",Dict()),name,nothing)
+    root_source = get(get(p,"sources",Dict()),name,nothing)
+    declared = root_source === nothing ? parent_source : root_source
+    declaring_file = root_source === nothing ? parent_file : pfile
+
+    if haskey(entry,"path")
+        path = if haskey(explicit_paths,name)
+            realpath(explicit_paths[name])
+        elseif declared !== nothing && haskey(declared,"path")
+            realpath(joinpath(dirname(declaring_file),declared["path"]))
+        else
+            error("Editable dependency " * name * " requires explicit --path-map or declared local source; refusing inherited union path")
         end
-    end
-    m["deps"][name][1]["path"] = path == project ? "." : path
-    if haskey(get(p, "deps", Dict()), name)
-        if name in explicit_paths || declared === nothing
+        if haskey(selected_paths,name)
+            selected_paths[name] == path || error("Conflicting local source choices: " * name)
+        end
+        local_file = joinpath(path,"Project.toml")
+        local_project = TOML.parsefile(local_file)
+        get(local_project,"uuid","") == id || error("Local source UUID mismatch: " * name)
+        get(local_project,"name",name) == name || error("Local source name mismatch: " * name)
+        get(local_project,"version","0.0.0") == get(entry,"version","0.0.0") ||
+            error("Local source version differs from union lock: " * name)
+        local_deps = get(local_project,"deps",Dict())
+        Set(keys(local_deps)) == Set(get(entry,"deps",String[])) ||
+            error("Local source dependencies differ from union lock; resolve the common union first: " * name)
+        entry["path"] = path
+        selected_paths[name] = path
+        if haskey(get(p,"deps",Dict()),name) && haskey(explicit_paths,name)
             replacement = Dict("path"=>path)
-            declared != replacement && println("Source alignment ", name, ": ", repr(declared), " -> ", repr(replacement))
-            get!(p,"sources",Dict())[name] = replacement
+            if root_source != replacement
+                println("Source alignment ",name,": ",repr(root_source)," -> ",repr(replacement))
+                get!(p,"sources",Dict())[name] = replacement
+            end
+        end
+        if !haskey(selected,name)
+            selected[name] = [entry]
+            for (dependency,dependency_id) in local_deps
+                push!(pending,(dependency,dependency_id,local_file,local_project))
+            end
+        end
+    else
+        if haskey(explicit_paths,name) || (declared !== nothing && haskey(declared,"path"))
+            error("Local source overrides frozen external dependency: " * name)
+        end
+        if declared !== nothing && haskey(declared,"url")
+            get(entry,"repo-url",nothing) == declared["url"] || error("Source URL differs from union lock: " * name)
+            haskey(declared,"rev") && get(entry,"repo-rev",nothing) != declared["rev"] &&
+                error("Source revision differs from union lock: " * name)
+        end
+        if !haskey(selected,name)
+            selected[name] = [entry]
+            for dependency in get(entry,"deps",String[])
+                dependency == root_name && continue
+                haskey(frozen,dependency) || error("Union lock lacks transitive dependency: " * dependency)
+                push!(pending,(dependency,only(frozen[dependency])["uuid"],parent_file,Dict{String,Any}()))
+            end
         end
     end
 end
-# The CLI describes and backs up these changes before calling this script.
+
+# Carry only the target/workspace hard closure, without rootself or other repos.
+for values in values(selected)
+    entry = only(values)
+    weak = get(entry,"weakdeps",nothing)
+    if weak isa Vector
+        # Names alone are ambiguous once an optional package is pruned. Keep
+        # UUID declarations without importing optional nodes into the closure.
+        entry["weakdeps"] = Dict(name=>only(frozen[name])["uuid"] for name in weak)
+    end
+end
+m["deps"] = selected
+for name in ("project_hash","city_path_project_hashes","city_workspace_project_hashes")
+    delete!(m,name)
+end
 if p != original_project
     open(pfile,"w") do io
         TOML.print(io,p;sorted=true)
     end
 end
 series = "$(VERSION.major).$(VERSION.minor)"
-mfile = joinpath(project, "Manifest-v$series.toml")
-delete!(m,"project_hash")
+mfile = joinpath(project,"Manifest-v$series.toml")
 open(mfile,"w") do io
     TOML.print(io,m;sorted=true)
 end
 env = Pkg.Types.EnvCache(pfile)
 m["project_hash"] = Pkg.Types.workspace_resolve_hash(env)
-m["city_path_project_hashes"] = Dict(name=>Dict(
-    "uuid"=>only(values)["uuid"], "path"=>only(values)["path"],
-    "sha256"=>bytes2hex(sha256(read(joinpath(project,only(values)["path"],"Project.toml")))))
-    for (name,values) in m["deps"] if haskey(only(values),"path"))
+m["city_path_project_hashes"] = Dict(name=>Dict("uuid"=>only(selected[name])["uuid"],
+    "path"=>path,"sha256"=>bytes2hex(SHA.sha256(read(joinpath(path,"Project.toml")))))
+    for (name,path) in selected_paths)
+m["city_workspace_project_hashes"] = Dict(relpath(file,project)=>bytes2hex(SHA.sha256(read(file)))
+    for file in keys(workspace) if file != pfile)
 open(mfile,"w") do io
     TOML.print(io,m;sorted=true)
 end
-# Validate declared sources against their explicit owned path overlays and
-# install missing pinned artifacts without resolving/upgrading the graph.
+before_boot = bytes2hex(SHA.sha256(read(mfile)))
 Pkg.instantiate(;allow_autoprecomp=false)
 @assert Pkg.is_manifest_current(project) === true
-println("CITY_SYSIMAGE_PREPARE_PASS ", mfile)
+@assert bytes2hex(SHA.sha256(read(mfile))) == before_boot "Instantiation changed the prepared closure lock"
+println("CITY_SYSIMAGE_PREPARE_PASS ",mfile," packages=",length(selected)," editable_stamps=",length(selected_paths))

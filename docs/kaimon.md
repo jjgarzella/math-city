@@ -276,7 +276,11 @@ profile and an explicit map of any local dependency sources:
 
 The helper announces exact source replacements, backs up original target bytes
 outside source, preserves legacy `Manifest.toml`, checks declared compat and
-writes a Julia 1.13 versioned Manifest. An existing versioned Manifest needs a
+writes a Julia 1.13 versioned Manifest containing only the target/workspace
+hard dependency closure. Rootself and unrelated repositories/stamps are removed;
+every transitive editable needs an explicit source map or declared local source.
+Frozen external UUID/version/tree pins remain exact. Receipts include the exact
+Project diff and rollback bytes. An existing versioned Manifest needs a
 matching tool receipt; `--replace-existing` explicitly backs up and replaces an
 otherwise conflicting owned output. Symlinked targets, unselected foreign paths
 and incompatible local development overrides are rejected. Failure restores the
@@ -293,6 +297,9 @@ remains local/editable; Revise is useful only when actually installed and loaded
 The image does not install it or make unsupported structural reloads work.
 CUDA import and `functional()==false` on this host are CPU-only checks. They
 establish no GPU numerical support or deployment support on another platform.
+The full union can activate additional package extensions beyond a smaller
+ordinary environment; one representative calculation is not universal workload
+or extension/invalidation acceptance.
 
 For normal Julia or prescribed cold/clean-depot/default-image gates, preserve
 the rest of the recipe and add:

@@ -6,6 +6,7 @@ Requires Python >= 3.11. Artifacts and build logs belong outside tracked source.
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -302,6 +303,10 @@ manifest = TOML.parsefile(ARGS[2])
 m = manifest["deps"]
 projects = [joinpath(ARGS[1], "Project.toml")]
 recorded = get(manifest,"city_path_project_hashes",Dict())
+for (file,digest) in get(manifest,"city_workspace_project_hashes",Dict())
+    bytes2hex(SHA.sha256(read(joinpath(ARGS[1],file)))) == digest ||
+        error("stale workspace Project hash: " * file)
+end
 for (package,entries) in m
     e = only(entries)
     haskey(e,"path") || continue
@@ -411,6 +416,11 @@ def prepare(args):
         raise
     result = {"project": str(project), "manifest": str(files[1]), "project_sha256": sha(files[0]),
               "manifest_sha256": sha(files[1]), "rollback_backup": str(backup), "status": "prepared"}
+    project_diff = "".join(difflib.unified_diff(before[files[0]].decode().splitlines(True),
+                                             files[0].read_text().splitlines(True),
+                                             fromfile="original/Project.toml", tofile="prepared/Project.toml"))
+    (backup / "Project.diff").write_text(project_diff)
+    result["project_diff"] = str(backup / "Project.diff")
     disposition.update(result)
     (backup / "disposition.json").write_text(json.dumps(disposition, indent=2) + "\n")
     temporary = receipt.with_suffix(".tmp")

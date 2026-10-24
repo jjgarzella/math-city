@@ -62,15 +62,24 @@ def main():
     output = Path(args.output).resolve()
     output.mkdir(parents=True, exist_ok=True)
     metadata = json.loads(Path(args.image).with_name("metadata.json").read_text())
-    roots = metadata["spec"]["roots"]
+    target_project = tomllib.loads((Path(args.project) / "Project.toml").read_text())
+    roots = sorted(set(metadata["spec"]["roots"]) & set(target_project.get("deps", {})))
+    root_package = target_project.get("name")
+    if root_package:
+        roots.append(root_package)
     imports = "; ".join("using " + p for p in roots)
     if "Oscar" in roots:
         math = '''R, (x,y,z) = Oscar.polynomial_ring(Oscar.QQ, ["x","y","z"])
 f = x^2 + 2*x*y + 3*x*z + 4*y^2 + 5*y*z + 6*z^2
 @assert f(1,2,3) == 114
 @assert (x+y)^2 == x^2+2*x*y+y^2'''
+        if root_package == "DeRham":
+            math += '''\nv = DeRham.polynomial_to_vector(f,3)
+@assert v == [6,5,4,3,2,1]
+@assert DeRham.vector_to_polynomial(v,2,2,R) == f'''
     else:
-        math = "@assert length(collect(Combinatorics.combinations(1:20, 3))) == 1140"
+        math = ("@assert length(collect(Combinatorics.combinations(1:20, 3))) == 1140"
+                if "Combinatorics" in roots else "@assert sum(i^2 for i in 1:20) == 2870")
     bootstrap = '''import Pkg
 try; using Revise; catch; end
 using KaimonGate

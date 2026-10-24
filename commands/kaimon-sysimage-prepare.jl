@@ -1,8 +1,13 @@
 # Explicit, task-owned Project/source/lockfile alignment. No canonical writes.
 using Pkg, TOML, SHA
 project, union_manifest, path_map, owned_root = ARGS
-@assert realpath(dirname(Base.active_project())) == realpath(project)
+project = realpath(project)
+owned_root = realpath(owned_root)
+@assert project == owned_root || startswith(project,owned_root * "/") "Target is outside owned root"
+@assert any(part in (".gc","worktrees") for part in splitpath(owned_root)) "Not an isolated task/worktree root"
 pfile = joinpath(project, "Project.toml")
+@assert !islink(pfile) "Refusing symlinked Project target"
+@assert !islink(joinpath(project,"Manifest-v$(VERSION.major).$(VERSION.minor).toml")) "Refusing symlinked Manifest target"
 p = TOML.parsefile(pfile)
 original_project = deepcopy(p)
 m = TOML.parsefile(union_manifest)
@@ -110,9 +115,29 @@ for name in ("project_hash","city_path_project_hashes","city_workspace_project_h
     delete!(m,name)
 end
 if p != original_project
-    open(pfile,"w") do io
-        TOML.print(io,p;sorted=true)
+    # Preserve unrelated text, comments and table order. Only replace source
+    # tables; unusual TOML syntax falls back to serialization with an exact diff.
+    original_text = read(pfile,String)
+    source_text = sprint(io->TOML.print(io,Dict("sources"=>p["sources"]);sorted=true))
+    kept = String[]
+    source_comments = String[]
+    in_sources = false
+    for line in split(original_text,'\n';keepempty=true)
+        header = match(r"^\s*\[([^\]]+)\]\s*(?:#.*)?$",line)
+        if header !== nothing
+            table = strip(header.captures[1])
+            in_sources = table == "sources" || startswith(table,"sources.")
+        end
+        if !in_sources
+            push!(kept,line)
+        elseif startswith(strip(line),"#")
+            push!(source_comments,line)
+        end
     end
+    proposal = join(kept,"\n") * "\n" * join(source_comments,"\n") * "\n" * source_text
+    matches = try TOML.parse(proposal) == p catch; false end
+    matches || (proposal = sprint(io->TOML.print(io,p;sorted=true)))
+    write(pfile,proposal)
 end
 series = "$(VERSION.major).$(VERSION.minor)"
 mfile = joinpath(project,"Manifest-v$series.toml")
@@ -130,7 +155,7 @@ open(mfile,"w") do io
     TOML.print(io,m;sorted=true)
 end
 before_boot = bytes2hex(SHA.sha256(read(mfile)))
-Pkg.instantiate(;allow_autoprecomp=false)
+Pkg.instantiate(Pkg.Types.Context(env=Pkg.Types.EnvCache(pfile));allow_autoprecomp=false)
 @assert Pkg.is_manifest_current(project) === true
 @assert bytes2hex(SHA.sha256(read(mfile))) == before_boot "Instantiation changed the prepared closure lock"
 println("CITY_SYSIMAGE_PREPARE_PASS ",mfile," packages=",length(selected)," editable_stamps=",length(selected_paths))

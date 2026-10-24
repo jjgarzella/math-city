@@ -236,6 +236,16 @@ local Nemo 0.55.1 cannot satisfy DeRham's Oscar >=1.8 constraint; its dirty
 checkout and local commit are preserved. The modern upstream source is isolated.
 No canonical math Project or legacy Manifest is silently upgraded.
 
+The immutable active profile is
+`.gc/kaimon-sysimages/current/profile.json` (`current` is an atomic symlink to
+one reviewed profile directory). Its `artifact_id` and absolute artifact path
+determine selection, independently of cache directory sort order. Build, select,
+prepare, wrapper and managed-hook defaults use that profile's artifact root;
+the initial unconfigured build root is `.gc/kaimon-sysimages/artifacts`.
+An explicit `--profile`/recipe `profile` or `--artifact`/recipe `artifact` is an
+intentional override. Without a profile an isolated cache must contain exactly
+one compatible image; multiple compatible images are rejected as ambiguous.
+
 The common lock selects Oscar 1.8.2, Nemo 0.56.2, AbstractAlgebra 0.50.4,
 CUDA 5.11.3, CSV 0.10.17 and DataFrames 1.8.2. The complete UUID/version/tree
 graph, CPU target, Julia binary/base-image hashes, PackageCompiler lock,
@@ -289,6 +299,32 @@ explicit `--julia`, `--union-manifest` and `--artifact` for independent review
 before a current profile is published. This command does not authorize editing
 a canonical checkout or another actor's worktree.
 
+When a live gate prevents a service restart, an owned worktree can use the same
+validated selector through Kaimon's supported `julia_bin` recipe. Keep existing
+thread, startup and extra-flag settings; merge these fields into an untracked
+`kaimon.toml` in the owned worktree (never commit host paths into a math repo):
+
+```toml
+[launch]
+julia_bin = "/Users/Shared/Developer/ai/city/math-city/commands/kaimon-sysimage-julia"
+julia_version = "1.13.2"
+
+[city_sysimage]
+julia_bin = "/Users/jj-agents/.julia/juliaup/julia-1.13.2+0.aarch64.apple.darwin14/Julia-1.13.app/Contents/Resources/julia/bin/julia"
+mode = "auto"
+```
+
+The second `julia_bin` is the original exact binary/base wrapper, so `mode=off`
+remains usable even if the image profile is broken. The wrapper automatically
+validates the actual KaimonGate environment from the managed/base-wrapper load
+stack or installed gate; no `bootstrap_projects` safety key is required.
+It enforces requested Julia versions, publishes `KAIMON_CITY_SYSIMAGE`, and
+forwards all caller flags/project unchanged apart from the validated image.
+Kaimon's test runner is forwarded to the original Julia without injecting an
+image because its script activates its test environment after startup. Default
+hook activation later makes this per-worktree wrapper unnecessary; remove only
+the added wrapper field and preserve the original recipe when retiring it.
+
 City packages and KaimonGate stay outside the image. Registered Nemo is baked
 as Oscar's dependency; the selector rejects a Nemo development project or a
 path-developed baked dependency. Changing a baked dependency inside an already
@@ -314,7 +350,8 @@ back. The service-wide equivalent is `KAIMON_SYSIMAGE_MODE=off` at its next safe
 start. Removing the managed-sysimages include from the service launcher restores
 upstream command construction; inventory live gates before any service restart.
 Do not use an image for intentionally isolated baseline gates. Explicit
-`--compiled-modules=no` also bypasses automatic selection.
+`--compiled-modules=no` and `--compiled-modules=existing` also bypass automatic
+selection; combining either with `mode=required` fails explicitly.
 
 Rebuild with `commands/kaimon-sysimage.py build` against the reviewed union lock
 and exact Julia binary. Replay an artifact's pinned `tools/Manifest.toml` with
@@ -323,6 +360,23 @@ root set, dependency graph, PackageCompiler lock, CPU target or workload change
 produces a new hash identity. Complete artifacts publish by atomic rename;
 keep the previous artifact/profile for rollback and re-run native acceptance
 before activating a replacement. Publication alone does not authorize a restart.
+
+After source/native review, create a frozen profile from the completed image,
+the full union lock and the explicit source map:
+
+```sh
+"$GC_CITY/commands/kaimon-sysimage.py" publish-profile \
+  --artifact "$artifact_directory" --union-manifest "$union_manifest" \
+  --path-map "$source_path_map" --julia "$exact_julia_binary"
+"$GC_CITY/commands/kaimon-sysimage.py" activate --profile "$reviewed_profile_json"
+```
+
+Publication preserves the current pointer. Activation atomically switches it
+for future sessions; rollback runs `activate --profile` against the retained
+previous profile. Both select the named artifact exclusively: an incompatible
+profile falls back to normal Julia rather than silently choosing another cache.
+They do not restart Kaimon or mutate an existing gate. Retain profile snapshots,
+image/build depots and old artifacts while any profile or process references them.
 
 `commands/kaimon-sysimage-benchmark.py` alternates same-version/project image
 and normal fresh processes with matching managed bootstrap/thread settings,

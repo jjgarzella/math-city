@@ -21,8 +21,11 @@ mktempdir() do temporary
     before_resolver = which(Kaimon._resolve_sysimage, (Kaimon.LaunchConfig, String))
     include(joinpath(@__DIR__, "kaimon-managed-sysimages.jl"))
     @testset "automatic session selection preserves launch semantics" begin
-        # Missing artifact root leaves commands byte-for-byte unchanged.
-        @test [Base.invokelatest(Kaimon._build_julia_cmd, lc, script; project) for lc in configs] == before
+        # Missing root preserves every original argument and reports child status.
+        after = [Base.invokelatest(Kaimon._build_julia_cmd, lc, script; project) for lc in configs]
+        @test all(a[1:end-1] == b[1:end-1] for (a,b) in zip(after,before))
+        @test all(endswith(a[end],script) for a in after)
+        @test all(occursin("KAIMON_CITY_SYSIMAGE",a[end]) for a in after)
         @test which(Kaimon._resolve_sysimage, (Kaimon.LaunchConfig, String)) === before_resolver
         ENV["KAIMON_SYSIMAGE_MODE"] = "off"
         cmd = Base.invokelatest(Kaimon._build_julia_cmd, configs[2], script; project)
@@ -31,7 +34,9 @@ mktempdir() do temporary
         @test occursin("KAIMON_CITY_SYSIMAGE", cmd[end])
         @test occursin("off", cmd[end])
         # Caller-specified image is preserved, including its boot script.
-        @test Base.invokelatest(Kaimon._build_julia_cmd, configs[3], script; project) == before[3]
+        explicit = Base.invokelatest(Kaimon._build_julia_cmd, configs[3], script; project)
+        @test explicit[1:end-1] == before[3][1:end-1]
+        @test occursin("explicit caller image",explicit[end])
         # Normal test launcher still sees upstream resolver, not automatic selection.
         @test Kaimon._resolve_sysimage(Kaimon.LaunchConfig(), project) == ""
     end

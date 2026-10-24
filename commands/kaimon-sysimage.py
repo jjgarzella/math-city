@@ -22,6 +22,8 @@ import tomllib
 HERE = Path(__file__).resolve().parent
 CITY = Path(os.environ.get("GC_CITY", "/Users/Shared/Developer/ai/city/math-city"))
 DEFAULT_ROOT = CITY / ".gc/kaimon-sysimages/artifacts"
+DEFAULT_PROFILE = CITY / ".gc/kaimon-sysimages/current/profile.json"
+GATE_UUID = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
 # These are editable city packages, even when one project pins a registry release.
 EDITABLE = {"DeRham", "NewtonExperiments", "GPUFiniteFieldMatrices", "EdgeIdeals",
             "MMPSingularities", "GPUPolynomials", "CudaNTTs", "GradedRingUtilities"}
@@ -47,6 +49,143 @@ def canonical(value):
 def read_toml(path):
     with Path(path).open("rb") as stream:
         return tomllib.load(stream)
+
+
+def load_profile(path=None):
+    explicit = bool(path or os.environ.get("KAIMON_SYSIMAGE_PROFILE"))
+    file = Path(path or os.environ.get("KAIMON_SYSIMAGE_PROFILE", str(DEFAULT_PROFILE))).resolve()
+    if not file.exists():
+        if explicit:
+            raise Rejected(f"requested city profile is missing: {file}")
+        return None
+    profile = json.loads(file.read_text())
+    if not isinstance(profile, dict) or profile.get("schema") != SCHEMA:
+        raise Rejected("unsupported city image profile schema")
+    for key in ("artifact", "artifact_id"):
+        if not isinstance(profile.get(key), str) or not profile[key]:
+            raise Rejected(f"city profile is missing {key}")
+    if "profile_id" in profile:
+        payload = {k: v for k, v in profile.items() if k != "profile_id"}
+        if hashlib.sha256(canonical(payload)).hexdigest() != profile["profile_id"]:
+            raise Rejected("stale city profile identity")
+    artifact = Path(profile["artifact"]).resolve()
+    if artifact.name != profile["artifact_id"]:
+        raise Rejected("profile artifact identity/path mismatch")
+    root = Path(profile.get("artifact_root", str(artifact.parent))).resolve()
+    if root != artifact.parent:
+        raise Rejected("profile artifact root/path mismatch")
+    for name, digest in profile.get("files", {}).items():
+        candidate = (file.parent / name).resolve()
+        if not candidate.is_relative_to(file.parent) or sha(candidate) != digest:
+            raise Rejected(f"stale city profile input: {name}")
+    profile.update(artifact=str(artifact), artifact_root=str(root),
+                   _directory=str(file.parent), _file=str(file))
+    return profile
+
+
+def activate_profile(profile_file):
+    profile = load_profile(profile_file)
+    if Path(profile["_file"]).name != "profile.json":
+        raise Rejected("activation requires the published profile.json filename")
+    current = CITY / ".gc/kaimon-sysimages/current"
+    current.parent.mkdir(parents=True, exist_ok=True)
+    if current.exists() and not current.is_symlink():
+        raise Rejected("current profile is not a managed symlink; refusing to replace its directory")
+    temporary = current.with_name(".current-" + os.urandom(8).hex())
+    temporary.symlink_to(profile["_directory"], target_is_directory=True)
+    temporary.replace(current)
+    print(json.dumps({"profile": profile["_file"], "artifact": profile["artifact"],
+                      "artifact_id": profile["artifact_id"], "current": str(current)}, indent=2))
+
+
+def publish_profile(args):
+    info = runtime(args.julia)
+    artifact = Path(args.artifact).resolve()
+    union_manifest = Path(args.union_manifest).resolve()
+    bootstrap = effective_bootstrap_projects(union_manifest.parent, info, configured=args.bootstrap_project)
+    _, meta = validate_artifact(artifact, info, union_manifest.parent, bootstrap)
+    if sha(union_manifest) != meta["source_manifest_sha256"]:
+        raise Rejected("profile union Manifest differs from recorded build source")
+    if sha(union_manifest.parent / "Project.toml") != meta["source_project_sha256"]:
+        raise Rejected("profile union Project differs from recorded build source")
+    root = CITY / ".gc/kaimon-sysimages/profiles"
+    root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".publishing-", dir=root))
+    sources = {"Manifest.toml": union_manifest, "Project.toml": union_manifest.parent / "Project.toml",
+               "source-paths.toml": Path(args.path_map).resolve()}
+    for name, path in sources.items():
+        shutil.copyfile(path, staging / name)
+    if sha(staging / "Manifest.toml") != meta["source_manifest_sha256"] or sha(staging / "Project.toml") != meta["source_project_sha256"]:
+        raise Rejected("profile build source changed while copying")
+    payload = {"schema": SCHEMA, "artifact_id": meta["id"], "artifact": str(artifact),
+               "artifact_root": str(artifact.parent), "julia_bin": info["binary"],
+               "julia_version": info["version"], "bootstrap_projects": list(map(str, bootstrap)),
+               "files": {name: sha(staging / name) for name in sources}}
+    profile_id = hashlib.sha256(canonical(payload)).hexdigest()
+    payload["profile_id"] = profile_id
+    (staging / "profile.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    final = root / profile_id
+    if final.exists():
+        load_profile(final / "profile.json")
+        shutil.rmtree(staging)
+    else:
+        staging.rename(final)
+    # Publication alone leaves the active profile untouched. Activation/rollback
+    # is a separate explicit atomic pointer change after review/native gates.
+    print(json.dumps({"profile": str(final / "profile.json"), "artifact_id": meta["id"]}, indent=2))
+
+
+def selection_configuration(root=None, profile_file=None, artifact=None):
+    root = root if root is not None else os.environ.get("KAIMON_SYSIMAGE_ROOT")
+    profile = load_profile(profile_file)
+    if artifact:
+        path = Path(artifact).resolve()
+        profile = dict(profile or {}, artifact=str(path), artifact_id=path.name,
+                       artifact_root=str(path.parent))
+    resolved_root = Path(root).resolve() if root else Path(profile["artifact_root"] if profile else DEFAULT_ROOT)
+    if profile and resolved_root != Path(profile["artifact_root"]):
+        if profile_file or artifact:
+            raise Rejected("explicit profile/artifact disagrees with explicit artifact root")
+        profile = None  # an explicit isolated cache root does not inherit another profile
+    return resolved_root, profile
+
+
+def effective_bootstrap_projects(project, info, profile=None, configured=()):
+    """Locate the actual managed gate from the target/LOAD_PATH, not a safety opt-in."""
+    candidates = []
+    config = read_toml(Path(project) / "Project.toml")
+    if config.get("uuid") == GATE_UUID:
+        candidates.append(Path(project))
+    if config.get("deps", {}).get("KaimonGate") == GATE_UUID:
+        entry = entries(read_toml(manifest_path(project, info["version"]))).get("KaimonGate", {})
+        if "path" in entry:
+            candidates.append(Path(project) / entry["path"])
+    # A configured base wrapper may rewrite LOAD_PATH; its runtime probe reports
+    # that stack too. Validate it in addition to the managed parent's stack.
+    load_paths = list(info.get("load_path", [])) + os.environ.get("JULIA_LOAD_PATH", "").split(os.pathsep)
+    for item in load_paths:
+        if item and not item.startswith("@"):
+            candidates.append(Path(item))
+    candidates += [Path(p) for p in (profile or {}).get("bootstrap_projects", [])]
+    candidates += [Path(p) for p in configured]
+    gate = []
+    for path in candidates:
+        file = path / "Project.toml"
+        if file.is_file() and read_toml(file).get("uuid") == GATE_UUID:
+            resolved = path.resolve()
+            if resolved not in gate:
+                gate.append(resolved)
+    if not gate:
+        # Only inspect this known installed package directory, never registry secrets.
+        installed = CITY / ".gc/kaimon-canary/julia_depot/packages/KaimonGate"
+        if installed.is_dir():
+            for path in installed.iterdir():
+                file = path / "Project.toml"
+                if file.is_file() and read_toml(file).get("uuid") == GATE_UUID:
+                    gate.append(path.resolve())
+    if not gate:
+        raise Rejected("cannot locate actual KaimonGate bootstrap environment; refusing unchecked image")
+    return gate
 
 
 def manifest_path(project, version):
@@ -95,6 +234,9 @@ def external_graph(manifest, packages, project):
 
 
 def run_julia(binary, code, *args, env=None):
+    env = dict(os.environ if env is None else env)
+    env.pop("JULIA_PROJECT", None)
+    env["JULIA_LOAD_PATH"] = "@stdlib"
     completed = subprocess.run([str(binary), "--startup-file=no", "--history-file=no",
                                 "-e", code, *map(str, args)],
                                check=True, capture_output=True, text=True, env=env)
@@ -106,6 +248,7 @@ def runtime(binary):
 TOML.print(Dict("version"=>string(VERSION), "machine"=>Sys.MACHINE,
  "commit"=>string(Base.GIT_VERSION_INFO.commit),
  "binary"=>realpath(joinpath(Sys.BINDIR, "julia")),
+ "load_path"=>copy(LOAD_PATH),
  "base_image"=>unsafe_string(Base.JLOptions().image_file)))'''
     data = tomllib.loads(run_julia(binary, code))
     for key in ("binary", "base_image"):
@@ -114,7 +257,7 @@ TOML.print(Dict("version"=>string(VERSION), "machine"=>Sys.MACHINE,
 
 
 def runtime_identity(data):
-    return {k: v for k, v in data.items() if k not in ("binary", "base_image")}
+    return {k: v for k, v in data.items() if k not in ("binary", "base_image", "load_path")}
 
 
 def require_runtime(info, requested):
@@ -207,18 +350,27 @@ def validate_artifact(directory, info, project, stack_projects=()):
     return image, meta
 
 
-def select_image(root, project, info, stack_projects=()):
+def select_image(root, project, info, stack_projects=(), profile=None):
     """Only published hash directories are candidates; staging dirs stay invisible."""
     failures = []
-    candidates = sorted(p for p in Path(root).glob("*/metadata.json")
-                        if len(p.parent.name) == 64)
+    if profile:
+        candidates = [Path(profile["artifact"]) / "metadata.json"]
+    else:
+        candidates = sorted(p for p in Path(root).glob("*/metadata.json")
+                            if len(p.parent.name) == 64)
+    selected = None
     for path in candidates:
         try:
             image, meta = validate_artifact(path.parent, info, project, stack_projects)
-            return image, meta, failures
+            if profile and meta["id"] != profile["artifact_id"]:
+                raise Rejected("selected metadata does not match intended profile artifact")
+            if selected is not None:
+                failures.append("multiple compatible artifacts without an active profile; selection is ambiguous")
+                return None, None, failures
+            selected = (image, meta)
         except (Rejected, OSError, KeyError, ValueError) as error:
             failures.append(f"{path.parent.name[:12]}: {error}")
-    return None, None, failures
+    return (*selected, failures) if selected else (None, None, failures)
 
 
 def julia_arguments(args):
@@ -263,35 +415,69 @@ def launch(args, execute=os.execv):
     project, explicit_image = julia_arguments(args)
     recipe_project = project or test_project_hint(args)
     recipe_path = recipe_project / "kaimon.toml" if recipe_project else None
-    recipe = read_toml(recipe_path).get("city_sysimage", {}) if recipe_path and recipe_path.exists() else {}
-    binary = os.environ.get("KAIMON_SYSIMAGE_JULIA", recipe.get("julia_bin", ""))
+    document = read_toml(recipe_path) if recipe_path and recipe_path.exists() else {}
+    recipe = document.get("city_sysimage", {})
+    mode = os.environ.get("KAIMON_SYSIMAGE_MODE", recipe.get("mode", "auto"))
+    if mode not in ("off", "auto", "required"):
+        raise Rejected(f"invalid city_sysimage mode: {mode}")
+    base_binary = os.environ.get("KAIMON_SYSIMAGE_JULIA", recipe.get("julia_bin", ""))
+    profile_error = None
+    root, profile = DEFAULT_ROOT, None
+    if mode != "off" or not base_binary:
+        try:
+            root, profile = selection_configuration(
+                os.environ.get("KAIMON_SYSIMAGE_ROOT", recipe.get("artifact_root")),
+                recipe.get("profile"), recipe.get("artifact"))
+        except (Rejected, OSError, ValueError, KeyError) as error:
+            profile_error = error
+    binary = base_binary or (profile or {}).get("julia_bin", "")
     if not binary:
         raise Rejected("set [city_sysimage].julia_bin to the original Julia binary/wrapper")
     binary = str(Path(binary).expanduser().resolve())
     if Path(binary) == Path(__file__).resolve():
         raise Rejected("recursive sysimage launcher")
-    mode = os.environ.get("KAIMON_SYSIMAGE_MODE", recipe.get("mode", "auto"))
-    if mode not in ("off", "auto", "required"):
-        raise Rejected(f"invalid city_sysimage mode: {mode}")
-    root = Path(os.environ.get("KAIMON_SYSIMAGE_ROOT", recipe.get("artifact_root", str(DEFAULT_ROOT))))
     flags = list(args)
+    status = "off" if mode == "off" else "explicit caller image" if explicit_image else "no exact project"
+    requested = recipe.get("julia_version", document.get("launch", {}).get("julia_version", ""))
+    info = None
+    if requested:
+        info = runtime(binary)
+        try:
+            require_runtime(info, requested)
+        except Rejected as error:
+            os.environ["KAIMON_CITY_SYSIMAGE"] = "rejected: " + str(error)
+            print(f"[city-sysimage] {error}; refusing runtime substitution", file=sys.stderr)
+            return 78
     if project is None:
         print("[city-sysimage] no exact --project; forwarding original Julia arguments", file=sys.stderr)
-    if project is not None and mode != "off" and not explicit_image:
+    cache_policy = any(flag in ("--compiled-modules=no", "--compiled-modules=existing") for flag in args)
+    if cache_policy and not explicit_image:
+        status = "off: caller cache policy"
+        if mode == "required":
+            os.environ["KAIMON_CITY_SYSIMAGE"] = status
+            print("[city-sysimage] required image conflicts with caller cache policy", file=sys.stderr)
+            return 78
+    if project is not None and mode != "off" and not explicit_image and not cache_policy:
         try:
-            info = runtime(binary)
-            stack_projects = recipe.get("bootstrap_projects", [])
-            image, metadata, failures = select_image(root, project, info, stack_projects)
+            if profile_error:
+                raise Rejected(str(profile_error))
+            info = info or runtime(binary)
+            stack_projects = effective_bootstrap_projects(project, info, profile, recipe.get("bootstrap_projects", []))
+            image, metadata, failures = select_image(root, project, info, stack_projects, profile)
             if image is None:
                 raise Rejected("; ".join(failures) or "no published compatible dependency image")
             # Julia validates direct Project compat with its own version grammar.
             check_project_compat(binary, project, info)
             flags.insert(0, f"--sysimage={image}")
+            status = metadata["id"]
             print(f"[city-sysimage] selected {metadata['id']} ({info['version']})", file=sys.stderr)
         except (Rejected, OSError, ValueError, subprocess.CalledProcessError) as error:
-            print(f"[city-sysimage] rejected: {error}; normal Julia fallback", file=sys.stderr)
+            status = "rejected: " + str(error)
+            print(f"[city-sysimage] {status}; " + ("required image unavailable" if mode == "required" else "normal Julia fallback"), file=sys.stderr)
             if mode == "required":
+                os.environ["KAIMON_CITY_SYSIMAGE"] = status
                 return 78
+    os.environ["KAIMON_CITY_SYSIMAGE"] = status
     execute(binary, [binary, *flags])
     return 0
 
@@ -399,9 +585,13 @@ def prepare(args):
             (backup / path.name).write_bytes(value)
     print(f"Aligning owned Project sources and {files[1]}; exact rollback backup: {backup}", flush=True)
     try:
-        subprocess.run([args.julia, "--startup-file=no", f"--project={project}",
+        setup_env = os.environ.copy()
+        setup_env.pop("JULIA_PROJECT", None)
+        setup_env["JULIA_LOAD_PATH"] = "@stdlib"
+        subprocess.run([args.julia, "--startup-file=no",
                         str(HERE / "kaimon-sysimage-prepare.jl"), str(project), str(manifest),
-                        str(Path(args.path_map).resolve()) if args.path_map else "", str(owner)], check=True)
+                        str(Path(args.path_map).resolve()) if args.path_map else "", str(owner)],
+                       check=True, env=setup_env)
         check_project_compat(args.julia, project, info)
         if args.artifact:
             validate_artifact(args.artifact, info, project)
@@ -476,8 +666,9 @@ def build(args):
         shutil.copyfile(HERE / filename, staging / filename)
     env = os.environ.copy()
     # Do not write compilation/install output to a service-owned depot.
-    env["JULIA_DEPOT_PATH"] = str(root / "depot") + os.pathsep + env.get("JULIA_DEPOT_PATH", "")
-    (root / "depot").mkdir(exist_ok=True)
+    depot = Path(args.depot).resolve() if args.depot else root / "depot"
+    depot.mkdir(parents=True, exist_ok=True)
+    env["JULIA_DEPOT_PATH"] = str(depot) + os.pathsep + env.get("JULIA_DEPOT_PATH", "")
     with (staging / "build.log").open("w") as log:
         def command(argv):
             subprocess.run(list(map(str, argv)), env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -534,6 +725,7 @@ TOML.print(d)'''
                     "loaded_modules": baked, "image_sha256": sha(staging / "image.dylib"),
                     "size_bytes": (staging / "image.dylib").stat().st_size,
                     "build_seconds": time.monotonic() - started,
+                    "build_depot": str(depot),
                     "source_project": str(project), "source_manifest_sha256": sha(source_path),
                     "source_project_sha256": sha(project / "Project.toml"), "julia": info}
         (staging / "metadata.json").write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
@@ -554,14 +746,16 @@ def main():
     builder.add_argument("--project", required=True)
     builder.add_argument("--julia", required=True)
     builder.add_argument("--packages", required=True)
-    builder.add_argument("--root", default=str(DEFAULT_ROOT))
+    builder.add_argument("--root")
     builder.add_argument("--packagecompiler", default="2.4.3")
     builder.add_argument("--tools-manifest", help="replay an artifact's pinned tools/Manifest.toml")
+    builder.add_argument("--depot", help="owned isolated build cache, independent of normal-load diagnostics")
     alignment = sub.add_parser("prepare")
     alignment.add_argument("--project", required=True)
     alignment.add_argument("--union-manifest")
     alignment.add_argument("--julia")
     alignment.add_argument("--artifact", help="require the prepared target to pass this artifact's compatibility checks")
+    alignment.add_argument("--profile", help="published profile override, including deliberate rollback")
     alignment.add_argument("--owned-root", required=True)
     alignment.add_argument("--path-map", help="TOML mapping of editable dependency names to owned paths")
     alignment.add_argument("--replace-existing", action="store_true",
@@ -570,30 +764,50 @@ def main():
         check = sub.add_parser(name)
         check.add_argument("--project", required=True)
         check.add_argument("--julia", required=True)
-        check.add_argument("--root", default=str(DEFAULT_ROOT))
+        check.add_argument("--root")
+        check.add_argument("--profile")
+        check.add_argument("--artifact", help="explicit artifact override instead of current profile")
         check.add_argument("--bootstrap-project", action="append", default=[])
         check.add_argument("--requested-julia", default="")
+    publication = sub.add_parser("publish-profile")
+    publication.add_argument("--artifact", required=True)
+    publication.add_argument("--union-manifest", required=True)
+    publication.add_argument("--path-map", required=True)
+    publication.add_argument("--julia", required=True)
+    publication.add_argument("--bootstrap-project", action="append", default=[])
+    activation = sub.add_parser("activate")
+    activation.add_argument("--profile", required=True)
     args = parser.parse_args()
     if args.command == "inventory":
         Path(args.output).write_text(json.dumps(inventory(args.projects_root), indent=2, sort_keys=True) + "\n")
     elif args.command == "build":
+        if not args.root:
+            active = load_profile()
+            args.root = (active or {}).get("artifact_root", str(DEFAULT_ROOT))
         build(args)
     elif args.command == "prepare":
-        profile_root = CITY / ".gc/kaimon-sysimages/current"
+        profile = load_profile(args.profile)
+        profile_root = Path(profile["_directory"]) if profile else DEFAULT_PROFILE.parent
+        if args.path_map and Path(args.path_map).absolute() == DEFAULT_PROFILE.parent / "source-paths.toml":
+            args.path_map = str(profile_root / "source-paths.toml")
         if not args.union_manifest:
             args.union_manifest = str(profile_root / "Manifest.toml")
         if not args.julia or not args.artifact:
-            profile_file = profile_root / "profile.json"
-            profile = json.loads(profile_file.read_text()) if profile_file.exists() else {}
-            args.julia = args.julia or profile.get("julia_bin", "")
-            args.artifact = args.artifact or profile.get("artifact")
+            args.julia = args.julia or (profile or {}).get("julia_bin", "")
+            args.artifact = args.artifact or (profile or {}).get("artifact")
         if not args.julia:
             raise Rejected("no published city profile; supply exact --julia and --union-manifest")
         prepare(args)
+    elif args.command == "publish-profile":
+        publish_profile(args)
+    elif args.command == "activate":
+        activate_profile(args.profile)
     else:
+        root, profile = selection_configuration(args.root, args.profile, args.artifact)
         info = runtime(args.julia)
         require_runtime(info, args.requested_julia)
-        image, metadata, failures = select_image(args.root, args.project, info, args.bootstrap_project)
+        bootstrap = effective_bootstrap_projects(args.project, info, profile, args.bootstrap_project)
+        image, metadata, failures = select_image(root, args.project, info, bootstrap, profile)
         if image is None:
             raise Rejected("; ".join(failures) or "no image available")
         check_project_compat(args.julia, args.project, info)

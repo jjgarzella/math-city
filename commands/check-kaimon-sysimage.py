@@ -1,7 +1,10 @@
 """Focused compatibility and launch regression tests (no service or Julia needed)."""
 import importlib.util
+import contextlib
+import io
 import json
 import os
+import shutil
 from pathlib import Path
 import tempfile
 import unittest
@@ -43,6 +46,12 @@ class Images(unittest.TestCase):
                      "packages": image.entries(image.read_toml(self.artifact / "dependencies/Manifest.toml")),
                      "image_sha256": image.sha(self.artifact / "image.dylib")}
         self.save()
+        self.gate = self.root / "actual-gate"
+        self.gate.mkdir()
+        (self.gate / "Project.toml").write_text(
+            'name = "KaimonGate"\nuuid = "' + image.GATE_UUID + '"\nversion = "1.4.0"\n'
+            '[deps]\nDependency = "' + UUID + '"\n')
+        (self.gate / "Manifest.toml").write_text(manifest)
 
     def save(self):
         (self.artifact / "metadata.json").write_text(json.dumps(self.meta))
@@ -129,9 +138,12 @@ class Images(unittest.TestCase):
         info = self.info if compatible else dict(self.info, version="1.13.2")
         argv = ["-i", "-t", "2,1", "--check-bounds=yes", f"--project={self.project}",
                 *extra, "--startup-file=no", "-e", 'using Gate; state = "$literal"']
-        with patch.dict(os.environ, {}, clear=True), patch.object(image, "runtime", return_value=info), \
+        def execute(binary, flags):
+            calls.append((binary, flags))
+            self.launch_status = os.environ.get("KAIMON_CITY_SYSIMAGE")
+        with patch.dict(os.environ, {"JULIA_LOAD_PATH": str(self.gate)}, clear=True), patch.object(image, "runtime", return_value=info), \
              patch.object(image, "check_project_compat"):
-            code = image.launch(argv, execute=lambda binary, flags: calls.append((binary, flags)))
+            code = image.launch(argv, execute=execute)
         self.assertEqual(recipe.read_bytes(), before)
         return code, calls, argv
 
@@ -183,6 +195,67 @@ class Images(unittest.TestCase):
         (gate / "Manifest.toml").write_text((gate / "Manifest.toml").read_text().replace('1.2.3', '1.2.4'))
         with self.assertRaisesRegex(image.Rejected, "bootstrap environment.*version mismatch"):
             image.validate_artifact(self.artifact, self.info, self.project, [gate])
+
+    def test_active_profile_controls_selection_and_rollback(self):
+        second_meta = json.loads(json.dumps(self.meta))
+        second_meta["spec"]["variant"] = "second compatible artifact"
+        second_id = image.hashlib.sha256(image.canonical(second_meta["spec"])).hexdigest()
+        second = self.root / second_id
+        shutil.copytree(self.artifact, second)
+        second_meta["id"] = second_id
+        (second / "metadata.json").write_text(json.dumps(second_meta))
+        profile_file = self.root / "current-profile.json"
+        for intended in (second, self.artifact):
+            profile_file.write_text(json.dumps({"schema": 1, "artifact": str(intended),
+                                               "artifact_id": intended.name}))
+            root, profile = image.selection_configuration(str(self.root), str(profile_file))
+            selected, metadata, failures = image.select_image(root, self.project, self.info, profile=profile)
+            self.assertEqual(selected, intended / "image.dylib")
+        selected, _, failures = image.select_image(self.root, self.project, self.info)
+        self.assertIsNone(selected)
+        self.assertTrue(any("ambiguous" in f for f in failures))
+
+    def test_wrapper_checks_actual_gate_by_default_and_exports_status(self):
+        self.run_launch()
+        self.assertEqual(self.launch_status, self.meta["id"])
+        gate_manifest = self.gate / "Manifest.toml"
+        gate_manifest.write_text(gate_manifest.read_text().replace('1.2.3', '1.2.4'))
+        code, calls, argv = self.run_launch()
+        self.assertEqual(calls[0][1], ["/original/julia", *argv])
+        self.assertIn("bootstrap environment", self.launch_status)
+        self.run_launch(mode="off")
+        self.assertEqual(self.launch_status, "off")
+
+    def test_atomic_activation_and_rollback_point_to_published_profile(self):
+        files = []
+        for name in ("first", "rollback"):
+            directory = self.root / "profiles" / name
+            directory.mkdir(parents=True)
+            file = directory / "profile.json"
+            file.write_text(json.dumps({"schema": 1, "artifact": str(self.artifact),
+                                        "artifact_id": self.artifact.name}))
+            files.append(file)
+        current = self.root / ".gc/kaimon-sysimages/current"
+        with patch.object(image, "CITY", self.root), patch.object(image, "DEFAULT_PROFILE", current / "profile.json"), \
+             patch.dict(os.environ, {}, clear=True), contextlib.redirect_stdout(io.StringIO()):
+            for file in files:
+                image.activate_profile(str(file))
+                self.assertTrue(current.is_symlink())
+                self.assertEqual(current.resolve(), file.parent)
+                root, profile = image.selection_configuration()
+                self.assertEqual(profile["_file"], str(file))
+                self.assertEqual(root, self.root)
+
+    def test_wrapper_enforces_requested_runtime(self):
+        self.run_launch()
+        recipe = self.project / "kaimon.toml"
+        recipe.write_text(recipe.read_text().replace('[launch]', '[launch]\njulia_version = "1.13.2"'))
+        calls = []
+        with patch.dict(os.environ, {}, clear=True), patch.object(image, "runtime", return_value=self.info):
+            code = image.launch([f"--project={self.project}", "-e", "1"], execute=lambda *args: calls.append(args))
+            self.assertIn("requested Julia", os.environ["KAIMON_CITY_SYSIMAGE"])
+        self.assertEqual(code, 78)
+        self.assertFalse(calls)
 
 
 if __name__ == "__main__":

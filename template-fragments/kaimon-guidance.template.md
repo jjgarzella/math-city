@@ -44,6 +44,11 @@ a substituted version does not satisfy a version-specific task.
 
 Use the reviewed city shared dependency image through automatic selection for
 compatible **new** Kaimon sessions; agents do not need manual `-J` flags.
+During a rollout that cannot restart the shared service, use the exact untracked
+`julia_bin` wrapper recipe in `docs/kaimon.md` (`commands/kaimon-sysimage-julia`,
+with your original exact binary in `[city_sysimage]`). A compatible Manifest
+alone does not enable selection until the managed hook is loaded. Confirm the
+actual child image and status; a wrapper rollout does not change existing gates.
 Before launching a task-owned worktree whose old Manifest differs from the
 published common lock, prepare it explicitly:
 

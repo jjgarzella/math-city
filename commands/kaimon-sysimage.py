@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -515,6 +516,42 @@ def test_project_hint(args):
     return None
 
 
+def neutral_managed_bootstrap(binary, project, script, info, metadata, artifact, bootstrap=()):
+    """Instantiate known managed sessions in ordinary Julia before image startup.
+
+    Pkg's dynamic artifact selectors inherit Base.julia_cmd()'s image. Running
+    this operation before loading the dependency image avoids initializing its
+    entire graph in every selector. Unknown caller scripts are never rewritten.
+    """
+    if "KaimonGate.serve(" not in script:
+        return script
+    quote = json.dumps(str(Path(project).resolve()), ensure_ascii=False).replace("$", "\\$")
+    prefix = (f"cd({quote})\nimport Pkg\ntry; using Revise; catch; end\n"
+              "using KaimonGate\nPkg.instantiate(; io=devnull)\n")
+    serve = r'@async KaimonGate\.serve\(force=true, allow_mirror=true, allow_restart=(true|false), spawned_by="agent"\)\n'
+    if not script.startswith(prefix) or not re.fullmatch(serve, script[len(prefix):]):
+        raise Rejected("unrecognized managed bootstrap; retain ordinary Julia startup")
+    project = Path(project).resolve()
+    files = (project / "Project.toml", manifest_path(project, info["version"]))
+    before = {file: sha(file) for file in files}
+    started = time.monotonic()
+    run_julia(binary, "cd(ARGS[1]); import Pkg; Pkg.instantiate(; io=devnull)", project,
+              project=project, preserve_load_path=True)
+    print(f"[city-sysimage] neutral managed instantiation completed in {time.monotonic() - started:.3f}s",
+          file=sys.stderr)
+    if any(sha(file) != digest for file, digest in before.items()):
+        raise Rejected("Project/Manifest changed during neutral instantiation; prepare again")
+    # Do not trust the earlier selection across a stateful Pkg operation.
+    _, fresh = validate_artifact(artifact, info, project, bootstrap)
+    if fresh != metadata:
+        raise Rejected("artifact metadata changed during neutral instantiation")
+    check_project_compat(binary, project, info, fresh, bootstrap)
+    # This exact operation completed above against unchanged lock/source inputs.
+    # Keep the original import order, gate attachment, restart flag and project.
+    return script.replace("Pkg.instantiate(; io=devnull)\n",
+                          "# Pkg.instantiate completed in neutral prelaunch Julia.\n", 1)
+
+
 def launch(args, execute=os.execv):
     project, explicit_image = julia_arguments(args)
     recipe_project = project or test_project_hint(args)
@@ -572,6 +609,11 @@ def launch(args, execute=os.execv):
                 raise Rejected("; ".join(failures) or "no published compatible dependency image")
             # Julia validates direct Project compat with its own version grammar.
             check_project_compat(binary, project, info, metadata, stack_projects)
+            if "-e" in flags:
+                index = flags.index("-e") + 1
+                rewritten = neutral_managed_bootstrap(binary, project, flags[index], info,
+                                                      metadata, image.parent, stack_projects)
+                flags[index] = rewritten
             flags.insert(0, f"--sysimage={image}")
             status = metadata["id"]
             print(f"[city-sysimage] selected {metadata['id']} ({info['version']})", file=sys.stderr)
@@ -905,6 +947,7 @@ def main():
         check.add_argument("--artifact", help="explicit artifact override instead of current profile")
         check.add_argument("--bootstrap-project", action="append", default=[])
         check.add_argument("--requested-julia", default="")
+        check.add_argument("--managed-script", help="exact Kaimon bootstrap; neutral instantiate before selection")
     publication = sub.add_parser("publish-profile")
     publication.add_argument("--artifact", required=True)
     publication.add_argument("--union-manifest", required=True)
@@ -947,8 +990,12 @@ def main():
         if image is None:
             raise Rejected("; ".join(failures) or "no image available")
         check_project_compat(args.julia, args.project, info, metadata, bootstrap)
+        script = None
+        if args.managed_script is not None:
+            script = neutral_managed_bootstrap(args.julia, args.project, args.managed_script,
+                                              info, metadata, image.parent, bootstrap)
         if args.command == "select":
-            print(image)
+            print(json.dumps({"image": str(image), "script": script}) if script is not None else image)
         else:
             print(json.dumps({"image": str(image), "id": metadata["id"], "runtime": info}, indent=2))
     return 0

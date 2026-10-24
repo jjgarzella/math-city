@@ -418,6 +418,20 @@ produces a new hash identity. Complete artifacts publish by atomic rename;
 keep the previous artifact/profile for rollback and re-run native acceptance
 before activating a replacement. Publication alone does not authorize a restart.
 
+For the exact repaired Kaimon 2.9.0 managed bootstrap, image launch first runs
+`Pkg.instantiate(; io=devnull)` in the original ordinary Julia process with the
+same target project, working directory, depot and caller/bootstrap load path.
+This keeps Pkg's dynamic artifact-selector children on Julia's base image.
+Afterwards selection requires unchanged Project/Manifest bytes and repeats
+artifact, bootstrap dependency, path-source freshness, compat and preference
+validation. Only after these checks succeed does the image process replace the
+already completed instantiation with a comment; its Pkg/Revise/Gate imports,
+gate options and caller launch flags remain unchanged. An unfamiliar managed
+script rejects automatic image use. Instantiation failure or changed inputs
+also rejects; auto mode retains the original ordinary Julia startup, while
+required mode fails. Off mode, explicit caller images, test scripts and cache
+policy bypasses retain their original bootstrap without this prelaunch step.
+
 After source/native review, create a frozen profile from the completed image,
 the full union lock and the explicit source map:
 

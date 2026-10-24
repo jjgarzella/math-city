@@ -191,7 +191,7 @@ class Images(unittest.TestCase):
         with self.assertRaisesRegex(image.Rejected, "version mismatch"):
             self.validate()
 
-    def run_launch(self, mode="auto", compatible=True, extra=()):
+    def run_launch(self, mode="auto", compatible=True, extra=(), script=None):
         recipe = self.project / "kaimon.toml"
         recipe.write_text('[launch]\nthreads = "2,1"\nextra_flags = ["--check-bounds=yes"]\n'
                           '[city_sysimage]\njulia_bin = "/original/julia"\n'
@@ -200,7 +200,7 @@ class Images(unittest.TestCase):
         calls = []
         info = self.info if compatible else dict(self.info, version="1.13.2")
         argv = ["-i", "-t", "2,1", "--check-bounds=yes", f"--project={self.project}",
-                *extra, "--startup-file=no", "-e", 'using Gate; state = "$literal"']
+                *extra, "--startup-file=no", "-e", script or 'using Gate; state = "$literal"']
         def execute(binary, flags):
             calls.append((binary, flags))
             self.launch_status = os.environ.get("KAIMON_CITY_SYSIMAGE")
@@ -214,6 +214,91 @@ class Images(unittest.TestCase):
         code, calls, argv = self.run_launch()
         self.assertEqual(code, 0)
         self.assertEqual(calls[0][1], ["/original/julia", f"--sysimage={self.artifact / 'image.dylib'}", *argv])
+
+    def managed_script(self, restart="true"):
+        quote = json.dumps(str(self.project), ensure_ascii=False).replace("$", "\\$")
+        return (f"cd({quote})\nimport Pkg\ntry; using Revise; catch; end\n"
+                "using KaimonGate\nPkg.instantiate(; io=devnull)\n"
+                f'@async KaimonGate.serve(force=true, allow_mirror=true, allow_restart={restart}, spawned_by="agent")\n')
+
+    def test_managed_neutral_instantiate_before_image_preserves_flags(self):
+        for restart in ("false", "true"):
+            script = self.managed_script(restart)
+            with patch.object(image, "run_julia") as neutral:
+                code, calls, original = self.run_launch(script=script)
+            self.assertEqual(code, 0)
+            neutral.assert_called_once()
+            positional, kwargs = neutral.call_args
+            self.assertEqual(positional[0], "/original/julia")
+            self.assertIn("Pkg.instantiate(; io=devnull)", positional[1])
+            self.assertIn("cd(ARGS[1])", positional[1])
+            self.assertEqual(positional[2], self.project)
+            self.assertEqual(kwargs, {"project": self.project, "preserve_load_path": True})
+            # Only the verified operation is replaced; every caller flag stays.
+            argv = calls[0][1]
+            self.assertEqual(argv[:-1], ["/original/julia", f"--sysimage={self.artifact / 'image.dylib'}", *original[:-1]])
+            self.assertEqual(argv[-1].replace("# Pkg.instantiate completed in neutral prelaunch Julia.",
+                                            "Pkg.instantiate(; io=devnull)"), script)
+
+    def test_managed_unknown_bootstrap_never_runs_neutral_or_rewrites(self):
+        for script in (self.managed_script().replace("io=devnull", "verbose=true"),
+                       self.managed_script().replace("using KaimonGate\n", "using OtherGate\n"),
+                       self.managed_script() + "dangerous_side_effect()\n"):
+            with patch.object(image, "run_julia") as neutral:
+                _, calls, argv = self.run_launch(script=script)
+            neutral.assert_not_called()
+            self.assertEqual(calls[0][1], ["/original/julia", *argv])
+            self.assertIn("unrecognized managed bootstrap", self.launch_status)
+
+    def test_managed_instantiate_failure_does_not_load_image(self):
+        for mode in ("auto", "required"):
+            failure = image.subprocess.CalledProcessError(1, ["julia"], stderr="missing artifact")
+            with patch.object(image, "run_julia", side_effect=failure):
+                code, calls, argv = self.run_launch(mode=mode, script=self.managed_script())
+            if mode == "required":
+                self.assertEqual(code, 78)
+                self.assertEqual(calls, [])
+            else:
+                self.assertEqual(calls[0][1], ["/original/julia", *argv])
+
+    def test_managed_instantiate_cannot_silently_update_lock_or_project(self):
+        for file in (self.project / "Project.toml", self.project / "Manifest.toml"):
+            old = file.read_bytes()
+            def change(*args, **kwargs):
+                file.write_bytes(old + b"\n# changed during instantiate\n")
+            with patch.object(image, "run_julia", side_effect=change):
+                _, calls, argv = self.run_launch(script=self.managed_script())
+            self.assertEqual(calls[0][1], ["/original/julia", *argv])
+            self.assertIn("changed during neutral instantiation", self.launch_status)
+            file.write_bytes(old)
+
+    def test_managed_revalidates_artifact_after_instantiate(self):
+        def corrupt(*args, **kwargs):
+            (self.artifact / "image.dylib").write_bytes(b"changed during instantiate")
+        with patch.object(image, "run_julia", side_effect=corrupt):
+            _, calls, argv = self.run_launch(script=self.managed_script())
+        self.assertEqual(calls[0][1], ["/original/julia", *argv])
+        self.assertIn("checksum mismatch", self.launch_status)
+
+    def test_off_explicit_and_test_cache_flags_do_not_preinstantiate(self):
+        for mode, extra in (("off", ()), ("auto", ("--sysimage=/caller",)),
+                            ("auto", ("--compiled-modules=no",)),
+                            ("auto", ("--compiled-modules=existing",))):
+            with patch.object(image, "run_julia") as neutral:
+                _, calls, argv = self.run_launch(mode=mode, extra=extra, script=self.managed_script())
+            neutral.assert_not_called()
+            self.assertEqual(calls[0][1], ["/original/julia", *argv])
+
+    def test_managed_rechecks_freshness_sources_and_preferences_after_instantiate(self):
+        script = self.managed_script()
+        for message in ("stale path-source Project hash", "nonempty baked-package preferences"):
+            with patch.object(image, "run_julia") as neutral, \
+                 patch.object(image, "check_project_compat", side_effect=image.Rejected(message)) as check:
+                with self.assertRaisesRegex(image.Rejected, message):
+                    image.neutral_managed_bootstrap("/original/julia", self.project, script,
+                                                   self.info, self.meta, self.artifact, [self.gate])
+            neutral.assert_called_once()
+            check.assert_called_once_with("/original/julia", self.project, self.info, self.meta, [self.gate])
 
     def test_fallback_and_required(self):
         code, calls, argv = self.run_launch(compatible=False)

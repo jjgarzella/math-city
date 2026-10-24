@@ -51,7 +51,7 @@ end
             return _city_status!(cmd,"unavailable: no city image profile or artifact directory")
         end
         argv = [_city_sysimage_selector,"select","--project",project,"--julia",first(cmd),
-                "--bootstrap-project",pkgdir(KaimonGate)]
+                "--bootstrap-project",pkgdir(KaimonGate),"--managed-script",cmd[end]]
         !isempty(root) && append!(argv,["--root",root])
         (explicit_profile || isfile(profile)) && append!(argv,["--profile",profile])
         !isempty(explicit_artifact) && append!(argv,["--artifact",explicit_artifact])
@@ -65,8 +65,10 @@ end
             # Probe the same child stack, rather than the daemon's own stack.
             child_load_path = _build_session_env()["JULIA_LOAD_PATH"]
             selector = addenv(Cmd(argv), "JULIA_LOAD_PATH"=>child_load_path)
-            image = strip(read(pipeline(selector;stderr=errors),String))
+            selected = JSON.parse(read(pipeline(selector;stderr=errors),String))
+            image = String(selected["image"])
             isabspath(image) && isfile(image) || error("Invalid selector response")
+            cmd[end] = String(selected["script"])
             insert!(cmd,2,"--sysimage=$image")
             status = basename(dirname(image))
             _push_log!(:info,"City dependency image $status selected for $project")

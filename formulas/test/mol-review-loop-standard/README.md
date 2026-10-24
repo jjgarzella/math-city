@@ -53,6 +53,15 @@ shared verdict-glue check (`review-verdict.sh`) unchanged.
   absent. NOTE: workflow `{{vars}}` (e.g. `{{severity_threshold}}` →
   `FIX_THRESHOLD` in apply-fixes) render at *sling* time, not at `formula show`,
   so they are intentionally not asserted-substituted here.
+- **test_04_workspace_context** — executes the shared setup block with stubbed
+  bead commands: explicit work_dir/branch/base_sha vars take precedence, root
+  metadata remains a supported fallback, and missing work_dir stops without
+  installing into the worker PWD.
+- **test_05_test_gate** — runs real isolated git worktrees with stubbed bead
+  writes: pre-existing-only failures permit a commit and are recorded in root
+  metadata plus the apply-fixes note; new failures create a testing finding and
+  iterate; unavailable baseline runs fail closed; strict mode keeps the original
+  any-nonzero-fails behavior.
 
 ## What is NOT covered here
 

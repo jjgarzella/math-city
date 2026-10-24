@@ -20,18 +20,20 @@ steps="$(formula_py step-ids | tr '\n' ' ')"
 assert_eq "workspace-setup review-loop " "$steps" "two top-level steps: workspace-setup, review-loop"
 
 # --- review-loop is a ralph [steps.check] with the cap + the SHARED exec check
-assert_eq "3"                     "$(formula_py ralph-max review-loop)"           "iteration cap max_attempts = 3"
+assert_eq "4"                     "$(formula_py ralph-max review-loop)"           "total cap is three regular attempts plus one final verification"
 assert_eq "exec"                  "$(formula_py ralph-check review-loop mode)"    "check mode = exec"
 assert_eq ".gc-review-verdict.sh" "$(formula_py ralph-check review-loop path)"    "check path = .gc-review-verdict.sh (the SHARED verdict glue, work_dir-relative)"
 assert_eq "120s"                  "$(formula_py ralph-check review-loop timeout)" "check timeout = 120s"
 
 # --- body children: [review-pipeline -> apply-fixes] -------------------------
 children="$(formula_py child-ids review-loop | tr '\n' ' ')"
-assert_eq "review-pipeline apply-fixes " "$children" "body children: review-pipeline then apply-fixes"
-assert_eq "gasvillage.polecat" "$(formula_py meta review-pipeline gc.run_target)" \
-  "review-pipeline gc.run_target = gasvillage.polecat"
-assert_eq "gasvillage.polecat" "$(formula_py meta apply-fixes gc.run_target)" \
-  "apply-fixes gc.run_target = gasvillage.polecat (fresh ctx/iteration)"
+assert_eq "review-pipeline test apply-fixes " "$children" "body children: review-pipeline, test gate, then apply-fixes"
+assert_eq "{{review_worker_target}}" "$(formula_py meta review-pipeline gc.run_target)" \
+  "review-pipeline gc.run_target resolves from the rig-scoped worker variable"
+assert_eq "{{review_worker_target}}" "$(formula_py meta test gc.run_target)" \
+  "test gc.run_target resolves from the same rig-scoped worker variable"
+assert_eq "{{review_worker_target}}" "$(formula_py meta apply-fixes gc.run_target)" \
+  "apply-fixes gc.run_target resolves from the rig-scoped worker variable"
 
 # --- review-pipeline is the compose.expand'd reviewer slot -------------------
 PIPE_DESC="$(formula_py desc review-pipeline)"
@@ -41,14 +43,21 @@ assert_contains "$PIPE_DESC" "synthesis"      "review-pipeline notes the expande
 
 # --- vars: fragment contract (target<-review_target rename) + loop knobs ------
 host_vars="$(formula_py defined-vars | tr '\n' ' ')"
-expected_host="$( { fragment_vars | sed 's/^review_target$/target/'; echo notify_target; } | sort | tr '\n' ' ')"
+expected_host="$( { fragment_vars | sed 's/^review_target$/target/'; echo notify_target; echo work_dir; echo branch; echo base_sha; echo test_command; echo test_gate; echo test_failure_pattern; echo allowed_paths; } | sort | tr '\n' ' ')"
 assert_eq "$expected_host" "$host_vars" \
-  "loop declares the fragment contract (review_target->target) plus notify_target"
+  "loop declares the fragment contract plus explicit work_dir/branch/base_sha context and notify_target"
 
 assert_eq "main"  "$(formula_py var-default base_branch)"       "base_branch default = main"
 assert_eq ""      "$(formula_py var-default target)"            "target default = empty (base_branch..HEAD)"
 assert_eq "minor" "$(formula_py var-default severity_threshold)" "severity_threshold default = minor (fix blocker/major/minor, surface nit)"
 assert_eq ""      "$(formula_py var-default notify_target)"     "notify_target default = empty (notify disabled)"
+assert_eq ""      "$(formula_py var-default work_dir)"         "work_dir default = empty (use root metadata for an explicit direct sling)"
+assert_eq ""      "$(formula_py var-default branch)"          "branch default = empty (use root metadata when available)"
+assert_eq ""      "$(formula_py var-default base_sha)"        "base_sha default = empty (use root metadata when available)"
+assert_eq ""      "$(formula_py var-default test_command)"  "test_command default = empty (rig formula_vars supplies it when configured)"
+assert_eq "no-new-failures" "$(formula_py var-default test_gate)" "test_gate defaults to the temporary no-new-failures policy"
+assert_eq ""      "$(formula_py var-default test_failure_pattern)" "test_failure_pattern default = empty (use normalized FAIL/ERROR lines)"
+assert_eq ""      "$(formula_py var-default allowed_paths)" "allowed_paths default = empty (derive reviewed diff + tests)"
 
 # every {{template ref}} points at a defined var
 undefined=""
@@ -113,11 +122,25 @@ while IFS= read -r line; do
   assert_eq "$fdef" "$(formula_py var-default "$hname")" "default $hname mirrors fragment $fname (=$fdef)"
 done < <(fragment_var_defaults)
 
+# --- deterministic test step shares the guarded test-gate implementation ------
+TEST_DESC="$(formula_py desc test)"
+assert_contains "$TEST_DESC" "review_apply_fixes_load test" "test loads the current attempt through the shared helper"
+assert_contains "$TEST_DESC" "review_apply_fixes_test_before_commit" "test uses the same test-gate function as commits"
+assert_contains "$TEST_DESC" "{{test_command}}" "test receives the configured test command"
+assert_contains "$TEST_DESC" "{{test_gate}}" "test receives the configured test-gate mode"
+assert_contains "$TEST_DESC" "{{test_failure_pattern}}" "test receives the configured failure pattern"
+assert_contains "$TEST_DESC" "gc.review.iteration_start_head" "test records the branch head before apply-fixes"
+assert_contains "$TEST_DESC" "gc.review.test_result=running" "test marks its result as pending before the run"
+assert_contains "$TEST_DESC" "durable testing" "a test failure becomes a durable testing finding"
+
 # --- apply-fixes wires the SHARED verdict->severity->fix machinery ------------
 FIX_DESC="$(formula_py desc apply-fixes)"
 assert_contains "$FIX_DESC" "formulas/lib/review-apply-fixes.sh" "apply-fixes sources the shared review-apply-fixes.sh lib"
 assert_contains "$FIX_DESC" "review_apply_fixes_load"            "apply-fixes loads the run via the lib"
-assert_contains "$FIX_DESC" "review_apply_fixes_map_verdict"     "apply-fixes maps the synthesis verdict via the lib"
+assert_contains "$FIX_DESC" "review_apply_fixes_iteration_action" "apply-fixes combines synthesis, test outcome, commit state, and attempt cap"
+assert_contains "$FIX_DESC" "review_apply_fixes_synthesis_for_attempt" "a test failure before fixes forces re-review after those fixes"
+assert_contains "$FIX_DESC" "final verification"                   "attempt four is documented as verification-only"
+assert_contains "$FIX_DESC" "last_fix_attempt"                    "fix commits are recorded on the loop root"
 assert_contains "$FIX_DESC" "review_apply_fixes_set_verdict"     "apply-fixes writes review.verdict via the lib"
 assert_contains "$FIX_DESC" "review_apply_fixes_escalate"        "apply-fixes escalates (terminate-to-human) via the lib"
 assert_contains "$FIX_DESC" "FIX_THRESHOLD=\"{{severity_threshold}}\"" "apply-fixes hands the loop's severity_threshold to the lib as FIX_THRESHOLD"
@@ -125,6 +148,23 @@ assert_contains "$FIX_DESC" "review.verdict"  "apply-fixes documents the loop's 
 assert_contains "$FIX_DESC" "blocked"         "apply-fixes documents the blocked verdict path"
 assert_contains "$FIX_DESC" "TERMINATE-TO-HUMAN" "apply-fixes documents blocked -> terminate-to-human"
 assert_contains "$FIX_DESC" "ZFC"             "apply-fixes attributes the fix-vs-surface decision to the agent (ZFC)"
+assert_contains "$FIX_DESC" "TEST_COMMAND"    "apply-fixes passes the rig test command to the guarded commit path"
+assert_contains "$FIX_DESC" "TEST_GATE" "apply-fixes passes the test-gate mode to the guarded commit path"
+assert_contains "$FIX_DESC" "TEST_FAILURE_PATTERN" "apply-fixes passes the optional failure identifier pattern"
+assert_contains "$FIX_DESC" "permanent target" "apply-fixes documents strict mode as the permanent target"
+assert_contains "$FIX_DESC" "gc.review.preexisting_test_failures" "apply-fixes documents durable baseline failure metadata"
+assert_contains "$FIX_DESC" "ALLOWED_PATHS"   "apply-fixes passes the allowed-path list to the scope guard"
+assert_contains "$FIX_DESC" "review_apply_fixes_commit_and_push" "apply-fixes uses one guarded test/scope/commit/push helper"
+assert_contains "$FIX_DESC" 'if [ "$commit_status" -eq 2 ] || [ "$commit_status" -eq 3 ]; then' \
+  "apply-fixes escalates inspection failures and scope refusals"
+assert_contains "$FIX_DESC" 'review_apply_fixes_escalate "review_apply_fixes_commit_and_push returned status $commit_status:' \
+  "apply-fixes escalation includes the helper status and captured diagnostic"
+assert_contains "$FIX_DESC" 'if [ "$commit_status" -eq 10 ]; then' \
+  "apply-fixes preserves the recorded test-failure terminal path"
+assert_contains "$FIX_DESC" "returns status 10 before commit or push" "test failure blocks commit until apply-fixes decides the terminal"
+assert_contains "$FIX_DESC" "third attempt without a fix commit" "final regular attempt escalates when it cannot make progress"
+assert_contains "$FIX_DESC" "test_command"   "test gate uses the configured rig test command"
+assert_contains "$FIX_DESC" "out-of-scope"    "apply-fixes refuses out-of-scope edits before commit"
 
 # --- no-drift: workspace-setup installs exactly the SHARED check the base loop uses
 SETUP_BLOCK="$(formula_py block workspace-setup '.gc-review-verdict.sh')"
@@ -134,6 +174,11 @@ assert_contains "$SETUP_BLOCK" 'GC_CITY' \
   "workspace-setup references the lib via \$GC_CITY (branch-independent)"
 assert_contains "$SETUP_BLOCK" 'cp -f "$VERDICT_SRC" "$WORK_DIR/.gc-review-verdict.sh"' \
   "workspace-setup copies the lib to the work_dir-relative check path"
+assert_contains "$SETUP_BLOCK" 'WORK_DIR="{{work_dir}}"' "workspace-setup starts with explicit work_dir context"
+assert_contains "$SETUP_BLOCK" 'BRANCH="{{branch}}"' "workspace-setup starts with explicit branch context"
+assert_contains "$SETUP_BLOCK" 'BASE_SHA="{{base_sha}}"' "workspace-setup starts with explicit immutable base context"
+assert_contains "$SETUP_BLOCK" 'STOP: no valid work_dir supplied or recorded' "workspace-setup stops when no work_dir is known"
+assert_not_contains "$SETUP_BLOCK" 'WORK_DIR="$PWD"' "workspace-setup never falls back to the worker PWD"
 
 # --- NO abort_scope / on_complete directive ----------------------------------
 if grep -nE '^[[:space:]]*(on_complete|on_fail)[[:space:]]*=' "$FORMULA" >/dev/null 2>&1; then

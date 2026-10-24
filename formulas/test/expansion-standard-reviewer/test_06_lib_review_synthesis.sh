@@ -51,7 +51,7 @@ synth_sandbox
 loaded="$(synth_env bash -c '
   set -uo pipefail
   . "$GC_CITY/formulas/lib/review-synthesis.sh"
-  review_synthesis_load >/dev/null
+  review_synthesis_load synthesis >/dev/null || exit $?
   echo "ROOT=$REVIEW_ROOT"
   echo "FINDINGS=$REVIEW_FINDINGS"
   echo "ELIGIBLE=$REVIEW_ELIGIBLE"
@@ -69,7 +69,7 @@ synth_sandbox
 cands="$(synth_env bash -c '
   set -uo pipefail
   . "$GC_CITY/formulas/lib/review-synthesis.sh"
-  review_synthesis_load >/dev/null
+  review_synthesis_load synthesis >/dev/null || exit $?
   review_synthesis_candidates
 ')"
 n="$(printf '%s\n' "$cands" | grep -c .)"
@@ -90,7 +90,7 @@ synth_sandbox
 emit="$(synth_env bash -c '
   set -uo pipefail
   . "$GC_CITY/formulas/lib/review-synthesis.sh"
-  review_synthesis_load >/dev/null
+  review_synthesis_load synthesis >/dev/null || exit $?
   review_synthesis_promote w-sec  blocker "a real finding could be silently dropped"
   review_synthesis_promote w-perf major   "bd list runs on every call"
   review_synthesis_promote w-docs minor   "doc gap on the public header"
@@ -136,7 +136,7 @@ SY_ROOT="root-synth-guard"; SY_ELIGIBLE="yes"; SY_TARGET_KIND="range"; SY_CANDID
 synth_sandbox
 guard_rc="$(synth_env bash -c '
   . "$GC_CITY/formulas/lib/review-synthesis.sh"
-  review_synthesis_load >/dev/null
+  review_synthesis_load synthesis >/dev/null || exit $?
   review_synthesis_promote w-sec critical "not a valid severity" >/dev/null 2>&1
   echo "RC=$?"
 ')"
@@ -151,7 +151,7 @@ synth_sandbox
 synth_env bash -c '
   set -uo pipefail
   . "$GC_CITY/formulas/lib/review-synthesis.sh"
-  review_synthesis_load >/dev/null
+  review_synthesis_load synthesis >/dev/null || exit $?
   cands="$(review_synthesis_candidates)"
   [ -z "$cands" ] && review_synthesis_record_verdict pass 0 0 0 0 "no candidate findings from any lane"
 ' >/dev/null 2>&1

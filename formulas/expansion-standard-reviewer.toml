@@ -176,13 +176,13 @@ exactly, then read what it printed:
 ```bash
 set -uo pipefail
 json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh"
+review_phase_resolve analyze || exit $?
 echo "[analyze] GC_AGENT=${GC_AGENT:-} GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
 gc bd heartbeat "$GC_BEAD_ID" || true
 
 # Molecule ROOT — the durable inputs hang off it so every lane finds them.
-ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
-  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
-[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"   # single-bead molecule: the bead is its own root
+ROOT="$REVIEW_PHASE_ROOT_ID"
 
 # work_dir under review: an inherited work_dir on the root wins (the loop's
 # workspace-setup / standalone host records the worktree the reviewer scopes to);
@@ -266,8 +266,6 @@ This is cheap auxiliary reasoning at the `{aux_model}` tier. Decide two things:
       bump, or a generated-file-only change;
     * the change is clearly automated (a dependency-bump or codegen commit) and
       obviously fine;
-    * this exact change has already been reviewed by this formula (a findings
-      container under `$ROOT` already exists).
   Otherwise mark ELIGIBLE. (Anthropic's "PR closed/draft" clauses are dropped: a
   resolved diff has no open/closed state.)
 
@@ -288,13 +286,13 @@ here-document:
 ```bash
 set -uo pipefail
 json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh"
+review_phase_resolve analyze || exit $?
 
 ELIGIBLE="yes"                       # <-- set to "no" to skip per the gate above
 REASON="eligible: non-trivial change under review"   # <-- one-line reason
 
-ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
-  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
-[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"
+ROOT="$REVIEW_PHASE_ROOT_ID"
 INPUTS_DIR="${GC_CITY:?GC_CITY must be set by the runtime}/.gc/review-inputs/${ROOT}"
 mkdir -p "$INPUTS_DIR"
 
@@ -354,13 +352,13 @@ load the inputs the analyze pass hung off the molecule root:
 ```bash
 set -uo pipefail
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
-review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+review_lane_load_inputs quality || exit $?  # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
 
 if [ "$REVIEW_ELIGIBLE" = "no" ]; then
   # The analyze pass deemed the change ineligible (empty / trivial / generated).
   # This lane is a clean no-op — close pass and file nothing. It is NOT pruned
   # from the graph: every lane runs and self-skips when it has nothing to do.
-  review_lane_close "quality: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  review_lane_close "quality: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)" || exit $?
   exit 0
 fi
 echo "[quality] kind=$REVIEW_TARGET_KIND  diff=$REVIEW_DIFF  files=$REVIEW_FILES  summary=$REVIEW_SUMMARY"
@@ -396,7 +394,7 @@ severity — do not inflate); and a best-guess priority 0-4.
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-lane.sh"
-review_lane_load_inputs
+review_lane_load_inputs quality || exit $?
 
 # Repeat per candidate, substituting your values:
 BODY=$(mktemp)
@@ -409,7 +407,7 @@ EOF
 review_lane_file_finding quality <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
 
 # After all candidates — or immediately, if this lens found nothing (clean pass):
-review_lane_close "quality: filed <N> candidate finding(s) (category:quality)"
+review_lane_close "quality: filed <N> candidate finding(s) (category:quality)" || exit $?
 ```
 
 Exit criteria: every code-quality candidate on the changed surface is filed as a
@@ -438,13 +436,13 @@ load the inputs the analyze pass hung off the molecule root:
 ```bash
 set -uo pipefail
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
-review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+review_lane_load_inputs security || exit $?  # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
 
 if [ "$REVIEW_ELIGIBLE" = "no" ]; then
   # The analyze pass deemed the change ineligible (empty / trivial / generated).
   # This lane is a clean no-op — close pass and file nothing. It is NOT pruned
   # from the graph: every lane runs and self-skips when it has nothing to do.
-  review_lane_close "security: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  review_lane_close "security: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)" || exit $?
   exit 0
 fi
 echo "[security] kind=$REVIEW_TARGET_KIND  diff=$REVIEW_DIFF  files=$REVIEW_FILES  summary=$REVIEW_SUMMARY"
@@ -483,7 +481,7 @@ assigns final severity — do not inflate); and a best-guess priority 0-4.
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-lane.sh"
-review_lane_load_inputs
+review_lane_load_inputs security || exit $?
 
 # Repeat per candidate, substituting your values:
 BODY=$(mktemp)
@@ -496,7 +494,7 @@ EOF
 review_lane_file_finding security <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
 
 # After all candidates — or immediately, if this lens found nothing (clean pass):
-review_lane_close "security: filed <N> candidate finding(s) (category:security)"
+review_lane_close "security: filed <N> candidate finding(s) (category:security)" || exit $?
 ```
 
 Exit criteria: every security candidate on the changed surface is filed as a
@@ -525,13 +523,13 @@ load the inputs the analyze pass hung off the molecule root:
 ```bash
 set -uo pipefail
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
-review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+review_lane_load_inputs performance || exit $?  # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
 
 if [ "$REVIEW_ELIGIBLE" = "no" ]; then
   # The analyze pass deemed the change ineligible (empty / trivial / generated).
   # This lane is a clean no-op — close pass and file nothing. It is NOT pruned
   # from the graph: every lane runs and self-skips when it has nothing to do.
-  review_lane_close "performance: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  review_lane_close "performance: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)" || exit $?
   exit 0
 fi
 echo "[performance] kind=$REVIEW_TARGET_KIND  diff=$REVIEW_DIFF  files=$REVIEW_FILES  summary=$REVIEW_SUMMARY"
@@ -570,7 +568,7 @@ assigns final severity — do not inflate); and a best-guess priority 0-4.
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-lane.sh"
-review_lane_load_inputs
+review_lane_load_inputs performance || exit $?
 
 # Repeat per candidate, substituting your values:
 BODY=$(mktemp)
@@ -583,7 +581,7 @@ EOF
 review_lane_file_finding performance <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
 
 # After all candidates — or immediately, if this lens found nothing (clean pass):
-review_lane_close "performance: filed <N> candidate finding(s) (category:performance)"
+review_lane_close "performance: filed <N> candidate finding(s) (category:performance)" || exit $?
 ```
 
 Exit criteria: every performance candidate on the changed surface is filed as a
@@ -613,13 +611,13 @@ load the inputs the analyze pass hung off the molecule root:
 ```bash
 set -uo pipefail
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
-review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+review_lane_load_inputs architecture || exit $?  # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
 
 if [ "$REVIEW_ELIGIBLE" = "no" ]; then
   # The analyze pass deemed the change ineligible (empty / trivial / generated).
   # This lane is a clean no-op — close pass and file nothing. It is NOT pruned
   # from the graph: every lane runs and self-skips when it has nothing to do.
-  review_lane_close "architecture: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  review_lane_close "architecture: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)" || exit $?
   exit 0
 fi
 echo "[architecture] kind=$REVIEW_TARGET_KIND  diff=$REVIEW_DIFF  files=$REVIEW_FILES  summary=$REVIEW_SUMMARY"
@@ -659,7 +657,7 @@ inflate); and a best-guess priority 0-4.
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-lane.sh"
-review_lane_load_inputs
+review_lane_load_inputs architecture || exit $?
 
 # Repeat per candidate, substituting your values:
 BODY=$(mktemp)
@@ -672,7 +670,7 @@ EOF
 review_lane_file_finding architecture <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
 
 # After all candidates — or immediately, if this lens found nothing (clean pass):
-review_lane_close "architecture: filed <N> candidate finding(s) (category:architecture)"
+review_lane_close "architecture: filed <N> candidate finding(s) (category:architecture)" || exit $?
 ```
 
 Exit criteria: every architecture candidate the change raises is filed as a
@@ -701,13 +699,13 @@ load the inputs the analyze pass hung off the molecule root:
 ```bash
 set -uo pipefail
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
-review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+review_lane_load_inputs testing || exit $?  # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
 
 if [ "$REVIEW_ELIGIBLE" = "no" ]; then
   # The analyze pass deemed the change ineligible (empty / trivial / generated).
   # This lane is a clean no-op — close pass and file nothing. It is NOT pruned
   # from the graph: every lane runs and self-skips when it has nothing to do.
-  review_lane_close "testing: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  review_lane_close "testing: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)" || exit $?
   exit 0
 fi
 echo "[testing] kind=$REVIEW_TARGET_KIND  diff=$REVIEW_DIFF  files=$REVIEW_FILES  summary=$REVIEW_SUMMARY"
@@ -747,7 +745,7 @@ priority 0-4.
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-lane.sh"
-review_lane_load_inputs
+review_lane_load_inputs testing || exit $?
 
 # Repeat per candidate, substituting your values:
 BODY=$(mktemp)
@@ -760,7 +758,7 @@ EOF
 review_lane_file_finding testing <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
 
 # After all candidates — or immediately, if this lens found nothing (clean pass):
-review_lane_close "testing: filed <N> candidate finding(s) (category:testing)"
+review_lane_close "testing: filed <N> candidate finding(s) (category:testing)" || exit $?
 ```
 
 Exit criteria: every testing candidate on the changed surface is filed as a
@@ -789,13 +787,13 @@ load the inputs the analyze pass hung off the molecule root:
 ```bash
 set -uo pipefail
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
-review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+review_lane_load_inputs docs || exit $?  # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
 
 if [ "$REVIEW_ELIGIBLE" = "no" ]; then
   # The analyze pass deemed the change ineligible (empty / trivial / generated).
   # This lane is a clean no-op — close pass and file nothing. It is NOT pruned
   # from the graph: every lane runs and self-skips when it has nothing to do.
-  review_lane_close "docs: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  review_lane_close "docs: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)" || exit $?
   exit 0
 fi
 echo "[docs] kind=$REVIEW_TARGET_KIND  diff=$REVIEW_DIFF  files=$REVIEW_FILES  summary=$REVIEW_SUMMARY"
@@ -833,7 +831,7 @@ best-guess priority 0-4.
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-lane.sh"
-review_lane_load_inputs
+review_lane_load_inputs docs || exit $?
 
 # Repeat per candidate, substituting your values:
 BODY=$(mktemp)
@@ -846,7 +844,7 @@ EOF
 review_lane_file_finding docs <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
 
 # After all candidates — or immediately, if this lens found nothing (clean pass):
-review_lane_close "docs: filed <N> candidate finding(s) (category:docs)"
+review_lane_close "docs: filed <N> candidate finding(s) (category:docs)" || exit $?
 ```
 
 Exit criteria: every documentation candidate the change raises is filed as a
@@ -892,12 +890,12 @@ Pure transport — no judgment. Source the shared synthesis helper (referenced v
 ```bash
 set -uo pipefail
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-synthesis.sh"
-review_synthesis_load          # sets REVIEW_ROOT/FINDINGS/INPUTS_DIR/DIFF/SUMMARY/ELIGIBLE + heartbeats
+review_synthesis_load synthesis || exit $?  # sets REVIEW_ROOT/FINDINGS/INPUTS_DIR/DIFF/SUMMARY/ELIGIBLE + heartbeats
 
 if [ "$REVIEW_ELIGIBLE" = "no" ]; then
   # The analyze pass deemed the change ineligible; the lenses all no-op'd. There
   # is nothing to synthesize — record a clean pass and stop.
-  review_synthesis_record_verdict pass 0 0 0 0 "ineligible change — nothing to synthesize"
+  review_synthesis_record_verdict pass 0 0 0 0 "ineligible change — nothing to synthesize" || exit $?
   exit 0
 fi
 
@@ -909,7 +907,7 @@ If `candidates.tsv` is EMPTY, the six lenses found nothing — a clean pass. Rec
 it and stop:
 
 ```bash
-review_synthesis_record_verdict pass 0 0 0 0 "no candidate findings from any lane"
+review_synthesis_record_verdict pass 0 0 0 0 "no candidate findings from any lane" || exit $?
 exit 0
 ```
 
@@ -965,7 +963,7 @@ or a sub-threshold candidate. Keep running tallies for the verdict.
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-synthesis.sh"
-review_synthesis_load
+review_synthesis_load synthesis || exit $?
 
 # --- promote each surviving candidate at/above the threshold: ---
 #   review_synthesis_promote <wisp_id> <blocker|major|minor|nit> "<one-line rationale>"
@@ -992,10 +990,10 @@ rejects burned. (merged + burned + promoted should equal considered.)
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-synthesis.sh"
-review_synthesis_load
+review_synthesis_load synthesis || exit $?
 review_synthesis_record_verdict <pass|pass_with_findings|fail> \
   <considered> <promoted> <merged> <burned> \
-  "<one-line headline: e.g. 1 blocker, 2 major across security+quality>"
+  "<one-line headline: e.g. 1 blocker, 2 major across security+quality>" || exit $?
 ```
 
 `review_synthesis_record_verdict` writes `gc.review.synthesis_verdict` + counts on

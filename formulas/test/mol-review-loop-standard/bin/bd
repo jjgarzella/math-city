@@ -12,13 +12,32 @@
 #   BD_SYNTH_PROMOTED  gc.review.synthesis_promoted on the root (absent if empty)
 #   BD_SYNTH_BURNED    gc.review.synthesis_burned on the root (absent if empty)
 #   BD_WORKDIR         work_dir on the root (absent if empty)
+#   BD_BASE_SHA        immutable review base_sha on the root
+#   BD_BASE_BRANCH     gc.var.base_branch on the root
+#   BD_TEST_COMMAND    gc.var.test_command on the root
+#   BD_TEST_GATE       gc.var.test_gate on the root
+#   BD_TEST_FAILURE_PATTERN gc.var.test_failure_pattern on the root
+#   BD_ALLOWED_PATHS   gc.var.allowed_paths on the root
 #   BD_FINDINGS        the findings container id (<root>.findings)
 #   BD_FINDINGS_FILE   file holding the parent-child dependency JSON (durable findings)
 #   BD_META_LOG        file: one `<bead>\t<key=value>` line per `--set-metadata`
 #   BD_UPDATE_LOG      file: one `id=.. status=.. notes=..` line per `bd update`
+#   BD_CREATE_LOG      file: one structured row for each created finding
 set -u
 
 has_flag() { local want="$1"; shift; local a; for a in "$@"; do [ "$a" = "$want" ] && return 0; done; return 1; }
+
+logged_root_metadata() {
+  local target="$1" result='{}' bead pair key value
+  [ -n "${BD_META_LOG:-}" ] && [ -f "$BD_META_LOG" ] || { printf '{}\n'; return 0; }
+  while IFS=$'\t' read -r bead pair; do
+    [ "$bead" = "$target" ] || continue
+    key="${pair%%=*}"
+    value="${pair#*=}"
+    result="$(jq -c --arg k "$key" --arg v "$value" '. + {($k):$v}' <<< "$result")" || return 2
+  done < "$BD_META_LOG"
+  printf '%s\n' "$result"
+}
 
 sub="${1:-}"
 case "$sub" in
@@ -26,7 +45,8 @@ case "$sub" in
     target="${2:-}"
     if has_flag --json "$@"; then
       if [ "$target" = "${GC_BEAD_ID:-}" ]; then
-        printf '[{"id":"%s","metadata":{"gc.root_bead_id":"%s"}}]\n' "$target" "${BD_ROOT:-}"
+        jq -nc --arg id "$target" --arg root "${BD_ROOT:-}" --arg step "${BD_STEP_ID:-test.apply-fixes}" \
+          '[{id:$id,metadata:{"gc.root_bead_id":$root,"gc.step_id":$step}}]'
       elif [ "$target" = "${BD_ROOT:-}" ]; then
         # Root bead: the synthesis verdict + counts + work_dir, built with jq so
         # optional fields stay valid JSON when a knob is unset.
@@ -36,11 +56,25 @@ case "$sub" in
           --arg p  "${BD_SYNTH_PROMOTED:-}" \
           --arg b  "${BD_SYNTH_BURNED:-}" \
           --arg wd "${BD_WORKDIR:-}" \
-          '{id:$id, metadata: (
+          --arg base "${BD_BASE_SHA:-}" \
+          --arg branch "${BD_BASE_BRANCH:-main}" \
+          --arg test "${BD_TEST_COMMAND:-}" \
+          --arg test_gate "${BD_TEST_GATE:-}" \
+          --arg test_pattern "${BD_TEST_FAILURE_PATTERN:-}" \
+          --arg allowed "${BD_ALLOWED_PATHS:-}" \
+          --argjson writes "$(logged_root_metadata "$target")" \
+          --arg step "${BD_ROOT_STEP_ID:-test}" \
+          '{id:$id, metadata: ({"gc.step_id":$step,"gc.var.base_branch":$branch} +
                (if $v  != "" then {"gc.review.synthesis_verdict":$v}   else {} end)
              + (if $p  != "" then {"gc.review.synthesis_promoted":$p}  else {} end)
              + (if $b  != "" then {"gc.review.synthesis_burned":$b}    else {} end)
-             + (if $wd != "" then {"work_dir":$wd}                     else {} end))}
+             + (if $wd != "" then {"work_dir":$wd}                     else {} end)
+             + (if $base != "" then {"base_sha":$base}                  else {} end)
+             + (if $test != "" then {"gc.var.test_command":$test}       else {} end)
+             + (if $test_gate != "" then {"gc.var.test_gate":$test_gate} else {} end)
+             + (if $test_pattern != "" then {"gc.var.test_failure_pattern":$test_pattern} else {} end)
+             + (if $allowed != "" then {"gc.var.allowed_paths":$allowed} else {} end)
+             + $writes)}
            | [.]'
       elif [ -n "${BD_FINDINGS:-}" ] && [ "$target" = "${BD_FINDINGS:-}" ] && [ -n "${BD_FINDINGS_FILE:-}" ] && [ -f "${BD_FINDINGS_FILE}" ]; then
         # Show omits .children in bd 1.3; dep list returns the fixture below.
@@ -64,6 +98,23 @@ case "$sub" in
       exit 2
     fi
     exit 0 ;;
+  create)
+    shift
+    parent=""; title=""; labels=""; description=""; prev=""
+    for a in "$@"; do
+      case "$prev" in
+        --parent) parent="$a" ;;
+        --title) title="$a" ;;
+        --labels) labels="$a" ;;
+        --description) description="$a" ;;
+      esac
+      prev="$a"
+    done
+    description="${description//$'\n'/\\n}"
+    [ -n "${BD_CREATE_LOG:-}" ] && printf 'parent=%s\tlabels=%s\ttitle=%s\tdescription=%s\n' \
+      "$parent" "$labels" "$title" "$description" >> "$BD_CREATE_LOG"
+    printf '%s\n' "test-failure-finding"
+    exit 0 ;;
   update)
     shift
     bid="${1:-}"
@@ -76,6 +127,7 @@ case "$sub" in
         --status=*) status="${a#*=}" ;;
         --notes=*)  notes="${a#*=}" ;;
       esac
+      if [ "$prev" = "--notes" ]; then notes="$a"; fi
       prev="$a"
     done
     [ -n "${BD_UPDATE_LOG:-}" ] && printf 'id=%s\tstatus=%s\tnotes=%s\n' "$bid" "$status" "$notes" >> "$BD_UPDATE_LOG"

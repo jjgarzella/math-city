@@ -105,6 +105,13 @@ assert_contains "$DESC" "DURABLE"           "analyze persists DURABLE artifacts 
 assert_contains "$DESC" "eligibility"       "analyze runs an eligibility gate"
 assert_contains "$DESC" "change summary"    "analyze produces a change summary"
 assert_contains "$DESC" "self-contained"    "analyze frames lanes as self-contained beads"
+# A retry remains reviewable even when an earlier pass left findings; the
+# empty-diff and trivial-change exclusions are still explicit.
+assert_not_contains "$DESC" "this exact change has already been reviewed by this formula" \
+  "an existing findings container does not make a retry ineligible"
+assert_contains "$DESC" "INELIGIBLE. Reason: empty diff, nothing to review." \
+  "empty diffs remain ineligible"
+assert_contains "$DESC" "the diff is trivial" "trivial diffs remain ineligible"
 
 # --- synthesis pass (gcs-f4j.8.3): single dispatch, needs all 6, judgment tier -
 # The 8th pass runs once, AFTER every lens, at the deep (opus) tier — it sees

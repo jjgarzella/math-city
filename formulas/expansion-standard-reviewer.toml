@@ -266,8 +266,6 @@ This is cheap auxiliary reasoning at the `{aux_model}` tier. Decide two things:
       bump, or a generated-file-only change;
     * the change is clearly automated (a dependency-bump or codegen commit) and
       obviously fine;
-    * this exact change has already been reviewed by this formula (a findings
-      container under `$ROOT` already exists).
   Otherwise mark ELIGIBLE. (Anthropic's "PR closed/draft" clauses are dropped: a
   resolved diff has no open/closed state.)
 

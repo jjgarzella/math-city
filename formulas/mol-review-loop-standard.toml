@@ -432,8 +432,8 @@ rm -f "$commit_error_file"
 `allowed_paths` is an optional newline-separated list of repo-relative file
 paths; directory prefixes end in `/`. When empty, the helper derives the list
 from the reviewed diff and adds the matching formula or top-level `test/` and
-`tests/` directories that exist. out-of-scope changes (status 3) or inspection failures
-(status 2) escalates to a human with the captured diagnostic; a test failure
+`tests/` directories that exist. An out-of-scope refusal (status 3) or inspection
+failure (status 2) escalates to a human with the captured diagnostic; a test failure
 (status 10) retains its iterate-and-stop behavior. `test_command` defaults to the rig's
 `formula_vars.test_command`; when empty, the commit test gate is skipped. A test
 failure is recorded as a durable testing finding, writes `review.verdict=iterate`,

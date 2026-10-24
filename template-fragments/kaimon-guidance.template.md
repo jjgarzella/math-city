@@ -57,6 +57,10 @@ Preparation announces and backs up exact target source/lockfile changes; never
 apply it to a canonical or foreign checkout. An existing versioned Manifest
 requires a matching tool receipt or explicit `--replace-existing`. A rejected
 preparation restores original files. Existing caller flags/images remain intact.
+The published source map points at retained shared reference worktrees, not
+canonical repositories. For dependencies you will edit, pass your own path map
+with exact owned source paths. Never edit those reference copies or another
+task's worktree; retain city artifact/profile/source paths after worker drain.
 Stale/incompatible images fall back to normal Julia with a diagnostic; check
 `ENV["KAIMON_CITY_SYSIMAGE"]` and
 `unsafe_string(Base.JLOptions().image_file)` along with version/project/source.

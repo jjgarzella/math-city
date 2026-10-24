@@ -299,6 +299,17 @@ explicit `--julia`, `--union-manifest` and `--artifact` for independent review
 before a current profile is published. This command does not authorize editing
 a canonical checkout or another actor's worktree.
 
+The initial profile's `source-paths.toml` names the retained reference copies
+under `.gc/kaimon-sysimages/mc-xf9j5/workloads/`, not canonical repositories.
+These shared inputs stay available after the worker drains. For a dependency
+you will actively edit, supply your own `--path-map` with that package's absolute
+owned worktree path; do not edit a retained reference copy or another task's
+worktree. The root package always comes from your exact `--project`. Preparation
+prints each source replacement and records its exact diff and original bytes.
+Retain referenced worktrees, profiles, artifact/build depots and source locks
+while any profile or session uses them; these city `.gc` paths are independent
+of ephemeral provider homes.
+
 When a live gate prevents a service restart, an owned worktree can use the same
 validated selector through Kaimon's supported `julia_bin` recipe. Keep existing
 thread, startup and extra-flag settings; merge these fields into an untracked

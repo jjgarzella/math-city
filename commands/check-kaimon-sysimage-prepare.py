@@ -399,7 +399,12 @@ class Prepare(unittest.TestCase):
         baked = {n: e for n, e in self.locked.items() if n in ("Primes", "IntegerMathUtils")}
         write_manifest(staging / "dependencies/Manifest.toml", self.julia_version, baked)
         inputs = {"dependencies/Manifest.toml": image.sha(staging / "dependencies/Manifest.toml")}
-        spec = {"schema": image.SCHEMA, "runtime": image.runtime_identity(info),
+        preferences = dict(image.preference_identity(baked),
+                           contexts=[{"empty": True, "nonempty_uuids": []}])
+        (staging / "preferences.json").write_text(json.dumps(preferences))
+        inputs["preferences.json"] = image.sha(staging / "preferences.json")
+        spec = {"schema": image.SCHEMA, "preferences": image.preference_identity(baked),
+                "runtime": image.runtime_identity(info),
                 "platform": [sys.platform, image.platform.machine()], "cpu_target": "generic",
                 "roots": ["Primes"], "inputs": inputs}
         identity = image.hashlib.sha256(image.canonical(spec)).hexdigest()

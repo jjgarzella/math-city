@@ -28,6 +28,7 @@ GATE_UUID = "5ee84a8c-75bd-412f-a7b8-4e6463aa635f"
 EDITABLE = {"DeRham", "NewtonExperiments", "GPUFiniteFieldMatrices", "EdgeIdeals",
             "MMPSingularities", "GPUPolynomials", "CudaNTTs", "GradedRingUtilities"}
 SCHEMA = 1
+PREFERENCE_POLICY = "empty-baked-preferences-v1"
 
 
 class Rejected(ValueError):
@@ -99,11 +100,13 @@ def activate_profile(profile_file):
 
 
 def publish_profile(args):
-    info = runtime(args.julia)
     artifact = Path(args.artifact).resolve()
     union_manifest = Path(args.union_manifest).resolve()
+    info = runtime(args.julia, union_manifest.parent)
     bootstrap = effective_bootstrap_projects(union_manifest.parent, info, configured=args.bootstrap_project)
     _, meta = validate_artifact(artifact, info, union_manifest.parent, bootstrap)
+    audit_preferences(args.julia, meta["packages"],
+                      preference_stacks(union_manifest.parent, info, bootstrap))
     if sha(union_manifest) != meta["source_manifest_sha256"]:
         raise Rejected("profile union Manifest differs from recorded build source")
     if sha(union_manifest.parent / "Project.toml") != meta["source_project_sha256"]:
@@ -233,24 +236,28 @@ def external_graph(manifest, packages, project):
     return selected
 
 
-def run_julia(binary, code, *args, env=None):
+def run_julia(binary, code, *args, env=None, preserve_load_path=False, project=None):
     env = dict(os.environ if env is None else env)
     env.pop("JULIA_PROJECT", None)
-    env["JULIA_LOAD_PATH"] = "@stdlib"
+    if not preserve_load_path:
+        env["JULIA_LOAD_PATH"] = "@stdlib"
+    project_flags = [f"--project={project}"] if project else []
     completed = subprocess.run([str(binary), "--startup-file=no", "--history-file=no",
-                                "-e", code, *map(str, args)],
+                                *project_flags, "-e", code, *map(str, args)],
                                check=True, capture_output=True, text=True, env=env)
     return completed.stdout
 
 
-def runtime(binary):
-    code = '''using TOML
+def runtime(binary, project=None):
+    code = '''original_load_path = copy(LOAD_PATH)
+pushfirst!(LOAD_PATH, "@stdlib")
+using TOML
 TOML.print(Dict("version"=>string(VERSION), "machine"=>Sys.MACHINE,
  "commit"=>string(Base.GIT_VERSION_INFO.commit),
  "binary"=>realpath(joinpath(Sys.BINDIR, "julia")),
- "load_path"=>copy(LOAD_PATH),
+ "load_path"=>original_load_path,
  "base_image"=>unsafe_string(Base.JLOptions().image_file)))'''
-    data = tomllib.loads(run_julia(binary, code))
+    data = tomllib.loads(run_julia(binary, code, preserve_load_path=True, project=project))
     for key in ("binary", "base_image"):
         data[key + "_sha256"] = sha(data[key])
     return data
@@ -269,6 +276,87 @@ def require_runtime(info, requested):
     actual = info["version"].split(".")
     if actual[:len(parts)] != parts:
         raise Rejected(f"requested Julia {requested} but launcher selected {info['version']}")
+
+
+def preference_stacks(project, info, stack_projects=()):
+    """Audit ordered caller, actual base-wrapper, and managed bootstrap stacks."""
+    defaults = ["@", "@v#.#", "@stdlib"]
+    caller = []
+    raw = os.environ.get("JULIA_LOAD_PATH")
+    for entry in ([] if raw == "" else (raw.split(os.pathsep) if raw is not None else defaults)):
+        for item in defaults if not entry else [entry]:
+            item = os.path.expanduser(item)
+            if item not in caller:
+                caller.append(item)
+    actual = list(info.get("load_path", caller))
+    managed = actual + [str(path) for path in stack_projects if str(path) not in actual]
+    stacks = []
+    for stack in (caller, actual, managed):
+        stack = [str(Path(project).resolve()) if item == "@" else item for item in stack]
+        if stack not in stacks:
+            stacks.append(stack)
+    return stacks
+
+
+def preference_identity(packages):
+    ids = sorted({entry["uuid"] for entry in packages.values()})
+    extensions = sorted([entry["uuid"], name] for entry in packages.values()
+                        for name in entry.get("extensions", {}))
+    empty = {"packages": {id: {} for id in ids}, "extensions": [[*ext, {}] for ext in extensions]}
+    return {"schema": 1, "policy": PREFERENCE_POLICY, "queried_uuids": ids,
+            "extensions": extensions, "effective_sha256": hashlib.sha256(canonical(empty)).hexdigest()}
+
+
+def preference_arguments(packages, stacks):
+    ids = sorted({entry["uuid"] for entry in packages.values()})
+    request = "stacks = " + json.dumps(stacks, ensure_ascii=False)
+    request += "\nextensions = " + json.dumps(preference_identity(packages)["extensions"], ensure_ascii=False)
+    return [len(ids), *ids, request]
+
+
+def require_empty_preferences(audit, packages):
+    if any(audit.get(key) != value for key, value in preference_identity(packages).items()):
+        raise Rejected("invalid or incompatible compile-time preference identity")
+    if audit.get("failed"):
+        raise Rejected("cannot audit baked-package preferences")
+    if len(audit.get("queried_extension_uuids", [])) != len(preference_identity(packages)["extensions"]):
+        raise Rejected("incomplete extension preference audit")
+    contexts = audit.get("contexts")
+    if not isinstance(contexts, list) or not contexts:
+        raise Rejected("missing effective preference audit")
+    by_uuid = {entry["uuid"]: name for name, entry in packages.items()}
+    for context in contexts:
+        if context.get("nonempty_uuids"):
+            names = ", ".join(sorted(by_uuid.get(id, id) for id in context["nonempty_uuids"]))
+            raise Rejected(f"non-default preferences for baked package(s) {names}; "
+                           "use normal Julia (city_sysimage mode=off); this image requires empty preferences")
+        if context.get("empty") is not True:
+            raise Rejected("compile-time preferences were not audited empty")
+
+
+def freeze_preference_audit(audit, staging):
+    # Temporary staging names must not make otherwise identical build IDs vary.
+    def freeze(value):
+        if isinstance(value, dict):
+            return {freeze(key): freeze(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [freeze(item) for item in value]
+        if isinstance(value, str) and value.startswith(str(staging) + os.sep):
+            return "$ARTIFACT/" + value[len(str(staging)) + 1:]
+        return value
+    return freeze(audit)
+
+
+def audit_preferences(binary, packages, stacks, *, env=None, script=None):
+    script = script or HERE / "kaimon-sysimage-preferences.jl"
+    try:
+        output = run_julia(binary, "include(popfirst!(ARGS)); TOML.print(preference_audit(ARGS);sorted=true)",
+                           script, *preference_arguments(packages, stacks), env=env)
+    except subprocess.CalledProcessError as error:
+        raise Rejected("cannot audit baked-package preferences") from error
+    audit = dict(preference_identity(packages), **tomllib.loads(output))
+    require_empty_preferences(audit, packages)
+    return audit
 
 
 def dependency_closure(pins, roots):
@@ -338,6 +426,11 @@ def validate_artifact(directory, info, project, stack_projects=()):
     frozen = entries(read_toml(directory / "dependencies/Manifest.toml"))
     if meta["packages"] != frozen:
         raise Rejected("package provenance differs from frozen build Manifest")
+    if (meta["spec"].get("preferences") != preference_identity(frozen) or
+            "preferences.json" not in meta["inputs"]):
+        raise Rejected("image lacks an audited compile-time preference policy; rebuild required")
+    preferences = json.loads((directory / "preferences.json").read_text())
+    require_empty_preferences(preferences, frozen)
     image = directory / "image.dylib"
     if sha(image) != meta["image_sha256"]:
         raise Rejected("image checksum mismatch")
@@ -441,7 +534,7 @@ def launch(args, execute=os.execv):
     requested = recipe.get("julia_version", document.get("launch", {}).get("julia_version", ""))
     info = None
     if requested:
-        info = runtime(binary)
+        info = runtime(binary, project)
         try:
             require_runtime(info, requested)
         except Rejected as error:
@@ -461,13 +554,13 @@ def launch(args, execute=os.execv):
         try:
             if profile_error:
                 raise Rejected(str(profile_error))
-            info = info or runtime(binary)
+            info = info or runtime(binary, project)
             stack_projects = effective_bootstrap_projects(project, info, profile, recipe.get("bootstrap_projects", []))
             image, metadata, failures = select_image(root, project, info, stack_projects, profile)
             if image is None:
                 raise Rejected("; ".join(failures) or "no published compatible dependency image")
             # Julia validates direct Project compat with its own version grammar.
-            check_project_compat(binary, project, info)
+            check_project_compat(binary, project, info, metadata, stack_projects)
             flags.insert(0, f"--sysimage={image}")
             status = metadata["id"]
             print(f"[city-sysimage] selected {metadata['id']} ({info['version']})", file=sys.stderr)
@@ -482,7 +575,7 @@ def launch(args, execute=os.execv):
     return 0
 
 
-def check_project_compat(binary, project, info):
+def check_project_compat(binary, project, info, metadata=None, stack_projects=()):
     code = '''import Pkg, TOML, SHA
 Pkg.is_manifest_current(ARGS[1]) === true || error("stale Project/Manifest; prepare or resolve before image selection")
 manifest = TOML.parsefile(ARGS[2])
@@ -516,10 +609,22 @@ for file in unique(projects)
         end
     end
 end'''
+    arguments = [project, manifest_path(project, info["version"])]
+    if metadata is not None:
+        # Import Pkg safely first; preference resolution then uses the actual
+        # caller/base-wrapper/bootstrap stacks in this same lightweight process.
+        code += "\ntry; include(ARGS[3]); TOML.print(preference_audit(ARGS[4:end]);sorted=true); " \
+                "catch; error(\"cannot audit baked-package preferences\"); end"
+        arguments += [HERE / "kaimon-sysimage-preferences.jl",
+                      *preference_arguments(metadata["packages"], preference_stacks(project, info, stack_projects))]
     try:
-        run_julia(binary, code, project, manifest_path(project, info["version"]))
+        output = run_julia(binary, code, *arguments)
     except subprocess.CalledProcessError as error:
         raise Rejected(error.stderr.strip()) from error
+    if metadata is not None:
+        audit = dict(preference_identity(metadata["packages"]), **tomllib.loads(output))
+        require_empty_preferences(audit, metadata["packages"])
+        return audit
 
 
 def inventory(root):
@@ -666,13 +771,17 @@ def build(args):
         f'\n[compat]\nPackageCompiler = "={args.packagecompiler}"\n')
     if args.tools_manifest:
         shutil.copyfile(args.tools_manifest, tools / "Manifest.toml")
-    for filename in ("kaimon-sysimage-build.jl", "kaimon-sysimage-workload.jl"):
+    for filename in ("kaimon-sysimage-build.jl", "kaimon-sysimage-workload.jl",
+                     "kaimon-sysimage-preferences.jl"):
         shutil.copyfile(HERE / filename, staging / filename)
     env = os.environ.copy()
     # Do not write compilation/install output to a service-owned depot.
     depot = Path(args.depot).resolve() if args.depot else root / "depot"
     depot.mkdir(parents=True, exist_ok=True)
     env["JULIA_DEPOT_PATH"] = str(depot) + os.pathsep + env.get("JULIA_DEPOT_PATH", "")
+    pref_script = staging / "kaimon-sysimage-preferences.jl"
+    # Reject source preferences before instantiation can discard them.
+    audit_preferences(args.julia, graph, preference_stacks(project, info), env=env, script=pref_script)
     with (staging / "build.log").open("w") as log:
         def command(argv):
             subprocess.run(list(map(str, argv)), env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -682,14 +791,22 @@ def build(args):
         tools_pins = entries(read_toml(tools / "Manifest.toml"))
         if tools_pins["PackageCompiler"]["version"] != args.packagecompiler:
             raise Rejected("PackageCompiler version differs from requested pin")
+        # PackageCompiler 2.4.3 traces/serializes with [dependencies, @stdlib].
+        preferences = audit_preferences(args.julia, graph, [[str(dependencies), "@stdlib"]],
+                                        env=env, script=pref_script)
+        (staging / "preferences.json").write_text(json.dumps(freeze_preference_audit(preferences, staging),
+                                                           indent=2, sort_keys=True) + "\n")
         inputs = {str(p.relative_to(staging)): sha(p) for p in [
             tools / "Project.toml", tools / "Manifest.toml", dependencies / "Project.toml",
             dependencies / "Manifest.toml", staging / "kaimon-sysimage-build.jl",
-            staging / "kaimon-sysimage-workload.jl"]}
+            staging / "kaimon-sysimage-workload.jl", pref_script, staging / "preferences.json"]}
         spec = {"schema": SCHEMA, "runtime": runtime_identity(info),
                 "platform": [sys.platform, platform.machine()], "cpu_target": "generic",
-                "roots": packages, "inputs": inputs, "packagecompiler": args.packagecompiler}
+                "roots": packages, "inputs": inputs, "packagecompiler": args.packagecompiler,
+                "preferences": preference_identity(graph)}
         identity = hashlib.sha256(canonical(spec)).hexdigest()
+        (staging / "build-spec.json").write_text(json.dumps({"id": identity, "spec": spec},
+                                                          indent=2, sort_keys=True) + "\n")
         final = root / identity
         if final.exists():
             validate_artifact(final, info, dependencies)
@@ -715,6 +832,10 @@ TOML.print(d)'''
                                  f"--project={dependencies}", "-e", probe],
                                 check=True, env=env, capture_output=True, text=True)
         baked = tomllib.loads(loaded.stdout)
+        final_preferences = audit_preferences(args.julia, graph, [[str(dependencies), "@stdlib"]],
+                                              env=env, script=pref_script)
+        if final_preferences != preferences:
+            raise Rejected("effective build preference inputs changed during compilation")
         for entry in baked.values():
             name = entry["name"]
             # Extension modules have deterministic IDs of their own; record them
@@ -808,13 +929,13 @@ def main():
         activate_profile(args.profile)
     else:
         root, profile = selection_configuration(args.root, args.profile, args.artifact)
-        info = runtime(args.julia)
+        info = runtime(args.julia, args.project)
         require_runtime(info, args.requested_julia)
         bootstrap = effective_bootstrap_projects(args.project, info, profile, args.bootstrap_project)
         image, metadata, failures = select_image(root, args.project, info, bootstrap, profile)
         if image is None:
             raise Rejected("; ".join(failures) or "no image available")
-        check_project_compat(args.julia, args.project, info)
+        check_project_compat(args.julia, args.project, info, metadata, bootstrap)
         if args.command == "select":
             print(image)
         else:

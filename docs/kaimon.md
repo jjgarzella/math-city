@@ -351,6 +351,25 @@ The full union can activate additional package extensions beyond a smaller
 ordinary environment; one representative calculation is not universal workload
 or extension/invalidation acceptance.
 
+The current image policy supports **empty effective preferences for baked
+package UUIDs (including declared extensions) only**. Julia's package-cache preference invalidation does not
+reload modules already serialized into a sysimage. Before adding `-J`, the
+selector uses `Base.get_preferences` over the ordered caller, actual base-wrapper
+and managed bootstrap stacks, including exported Project preferences and
+`JuliaLocalPreferences.toml`/`LocalPreferences.toml` with Julia's precedence and
+clearing rules. Preferences for unbaked packages remain allowed. A nonempty
+baked-package preference causes normal Julia fallback, or a required-mode error,
+even when `Pkg.is_manifest_current` still accepts the lock. Use `mode = "off"`
+for custom preferences; changing preferences in an existing image session
+requires a new session. This policy does not support custom-preference images.
+
+New builds freeze `preferences.json` and the probe source into the image's
+hashed inputs and record the effective empty-preference identity in
+`build-spec.json` before construction. They check the exact PackageCompiler
+serialization stack again before construction and publication. Receipts contain
+UUIDs, paths and hashes without preference values or keys. Older images without
+this provenance require a rebuild; no empty-preference history is inferred.
+
 For normal Julia or prescribed cold/clean-depot/default-image gates, preserve
 the rest of the recipe and add:
 
@@ -370,7 +389,8 @@ selection; combining either with `mode=required` fails explicitly.
 Rebuild with `commands/kaimon-sysimage.py build` against the reviewed union lock
 and exact Julia binary. Replay an artifact's pinned `tools/Manifest.toml` with
 `--tools-manifest`; never run a broad update in canonical projects. Any Julia,
-root set, dependency graph, PackageCompiler lock, CPU target or workload change
+root set, dependency graph, PackageCompiler lock, CPU target, preference policy
+or workload change
 produces a new hash identity. Complete artifacts publish by atomic rename;
 keep the previous artifact/profile for rollback and re-run native acceptance
 before activating a replacement. Publication alone does not authorize a restart.

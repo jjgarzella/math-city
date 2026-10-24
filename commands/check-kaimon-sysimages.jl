@@ -39,6 +39,25 @@ mktempdir() do temporary
         @test occursin("explicit caller image",explicit[end])
         # Normal test launcher still sees upstream resolver, not automatic selection.
         @test Kaimon._resolve_sysimage(Kaimon.LaunchConfig(), project) == ""
+        # The daemon can have a different stack from its managed child overlay.
+        # An empty existing artifact root runs selection, then falls back.
+        mkpath(ENV["KAIMON_SYSIMAGE_ROOT"])
+        wrapper = joinpath(temporary, "probe-wrapper")
+        receipt = joinpath(temporary, "child-load-path.txt")
+        julia = realpath(joinpath(Sys.BINDIR,"julia"))
+        write(wrapper, "#!/bin/sh\nprintf '%s' \"\$JULIA_LOAD_PATH\" > $(repr(receipt))\nexec $(repr(julia)) \"\$@\"\n")
+        chmod(wrapper,0o755)
+        original_load_path = get(ENV,"JULIA_LOAD_PATH",nothing)
+        try
+            ENV["JULIA_LOAD_PATH"] = "@stdlib"
+            ENV["KAIMON_SYSIMAGE_MODE"] = "auto"
+            lc = Kaimon.LaunchConfig("2,1", "", "", String[], "", wrapper, false, "")
+            Base.invokelatest(Kaimon._build_julia_cmd, lc, script;project)
+            @test read(receipt,String) == Kaimon._build_session_env()["JULIA_LOAD_PATH"]
+            @test ENV["JULIA_LOAD_PATH"] == "@stdlib"
+        finally
+            original_load_path === nothing ? delete!(ENV,"JULIA_LOAD_PATH") : (ENV["JULIA_LOAD_PATH"] = original_load_path)
+        end
     end
     old_mode === nothing ? delete!(ENV,"KAIMON_SYSIMAGE_MODE") : (ENV["KAIMON_SYSIMAGE_MODE"] = old_mode)
     old_root === nothing ? delete!(ENV,"KAIMON_SYSIMAGE_ROOT") : (ENV["KAIMON_SYSIMAGE_ROOT"] = old_root)

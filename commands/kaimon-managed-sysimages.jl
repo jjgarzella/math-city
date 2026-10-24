@@ -61,7 +61,11 @@ end
         errors = IOBuffer()
         status = ""
         try
-            image = strip(read(pipeline(Cmd(argv);stderr=errors),String))
+            # spawn_session! applies this overlay after building the command.
+            # Probe the same child stack, rather than the daemon's own stack.
+            child_load_path = _build_session_env()["JULIA_LOAD_PATH"]
+            selector = addenv(Cmd(argv), "JULIA_LOAD_PATH"=>child_load_path)
+            image = strip(read(pipeline(selector;stderr=errors),String))
             isabspath(image) && isfile(image) || error("Invalid selector response")
             insert!(cmd,2,"--sysimage=$image")
             status = basename(dirname(image))

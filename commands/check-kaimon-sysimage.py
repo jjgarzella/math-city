@@ -36,7 +36,12 @@ class Images(unittest.TestCase):
         (staging / "dependencies").mkdir()
         (staging / "dependencies/Manifest.toml").write_text(manifest)
         inputs = {"dependencies/Manifest.toml": image.sha(staging / "dependencies/Manifest.toml")}
-        self.build_spec = {"runtime": self.info, "platform": [image.sys.platform, image.platform.machine()],
+        preferences = dict(image.preference_identity({"Dependency": {"uuid": UUID}}),
+                           contexts=[{"empty": True, "nonempty_uuids": []}])
+        (staging / "preferences.json").write_text(json.dumps(preferences))
+        inputs["preferences.json"] = image.sha(staging / "preferences.json")
+        self.build_spec = {"preferences": image.preference_identity({"Dependency": {"uuid": UUID}}),
+                           "runtime": self.info, "platform": [image.sys.platform, image.platform.machine()],
                            "cpu_target": "generic", "inputs": inputs}
         identity = image.hashlib.sha256(image.canonical(self.build_spec)).hexdigest()
         self.artifact = self.root / identity
@@ -58,6 +63,29 @@ class Images(unittest.TestCase):
 
     def validate(self, info=None):
         return image.validate_artifact(self.artifact, info or self.info, self.project)
+
+    def test_legacy_image_requires_rebuild(self):
+        del self.meta["spec"]["preferences"]
+        identity = image.hashlib.sha256(image.canonical(self.meta["spec"])).hexdigest()
+        new_path = self.root / identity
+        self.artifact.rename(new_path)
+        self.artifact = new_path
+        self.meta["id"] = identity
+        self.save()
+        with self.assertRaisesRegex(image.Rejected, "preference policy"):
+            self.validate()
+
+    def test_off_and_explicit_image_ignore_broken_profile(self):
+        for extra, mode in [((), "off"), (("--sysimage=/caller/image",), "auto")]:
+            self.run_launch(mode=mode, extra=extra)
+            calls = []
+            with patch.dict(os.environ, {"KAIMON_SYSIMAGE_PROFILE": str(self.root / "absent")}, clear=True), \
+                 patch.object(image, "runtime") as probe:
+                image.launch([f"--project={self.project}", *extra],
+                             execute=lambda binary, flags: calls.append(flags))
+            probe.assert_not_called()
+            self.assertEqual(len(calls), 1)
+            self.assertFalse(any("--sysimage=" in arg and "caller" not in arg for arg in calls[0]))
 
     def test_compatible_project(self):
         self.assertEqual(self.validate()[0], self.artifact / "image.dylib")

@@ -82,6 +82,14 @@ the shared service merely to change your worktree's mode. Follow the artifact,
 rebuild, receipt rollback and verified deployment instructions in the city docs;
 guidance or a saved profile alone does not prove an image was actually selected.
 
+The current image requires empty effective preferences for every baked package
+UUID. The selector checks exported/local preferences with Julia's ordered
+caller/base-wrapper/bootstrap resolution; a current Manifest alone is
+insufficient. A mismatch falls back, or errors in required mode. Use `mode =
+"off"` in a new owned session for custom baked-package preferences. Images
+without recorded build preference provenance require a rebuild. Preference
+changes cannot replace code already baked into a running session.
+
 Before evaluating changed package code, confirm the **exact project/worktree**
 and loaded package source (`pathof(Package)` after loading it). Editing files
 alone does not replace loaded definitions; Revise covers supported edits when

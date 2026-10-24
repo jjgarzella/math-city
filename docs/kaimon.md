@@ -499,17 +499,17 @@ RSS. Existing depots and OS caches remain intact: these are process-cold tests,
 not claims of OS-cold caches or clean depots. Record the first launch separately,
 report the actual 60-second result, and retain the prescribed independent gates.
 
-### Native acceptance results (2026-10-24, rollout pending)
+### Native acceptance results and wrapper release (2026-10-24)
 
 The completed current-Mac image is
 `be6cc6b35c11eef2b1077e5e0b0d3874f540d2a6872f2253f7ed2eb329487640`,
 SHA256 `fb46d195e7392f87a1a262149cb6c420dd05ee67702f637bedebd729672fb2a9`.
 It contains 32 external roots and 253 dependency graph entries, occupies
 1,818,498,328 bytes and took 1,637 seconds to build with Julia 1.13.2 and
-PackageCompiler 2.4.3. Publication of profile `ceb668e8...` is inactive;
-production adoption remains held for the coordinator release decision. The
-final launcher `e178a64` passed independent source review and the delivered
-Codex checks below; the earlier failed attempts remain part of this record.
+PackageCompiler 2.4.3. Profile `ceb668e8...` is now the active current profile
+for the canonical wrapper route. The live service has not loaded the automatic
+hook. The final launcher `e178a64` passed independent source review and the
+delivered Codex checks below; earlier failed attempts remain part of this record.
 
 The original independent Codex native calls used the same owned DeRham worktree, exact
 runtime, prepared lock, managed depot and default `auto` threads (14+1).
@@ -678,6 +678,23 @@ Project/Manifest hashes restored, and recipes restored. No service, profile or
 production default was changed by these acceptance runs. At their completion
 the profile was inactive; scoped installation, current-profile selection and a
 canonical-wrapper native canary require the separate coordinator release check.
+
+The coordinator-approved scoped release installed the 23 reviewed targets and
+atomically selected profile
+`ceb668e8da63456dd6423911510397236172bf0dd9fe10ee4271e38db7e0e467`.
+One owned production-native canary used the canonical wrapper and **default
+current profile**, without an explicit profile override. It delivered exact
+Julia 1.13.2/project/image/status/`JULIA_PROJECT`/editable-source assertions,
+image checksum, QQ coefficients and evaluation 114, then state 42 in a separate
+call. The owned gate shut down; inventory returned to zero sessions and daemon
+PID 18411 stayed unchanged. This verified installed-path/default-profile
+adoption, not another benchmark. Actual `gc prime` output for Codex and Claude
+and the native projection catalog passed the wrapper-route guidance check.
+No service restart, live patch or observer integration occurred. Installation,
+prior-absent/current pointer, canary metadata, shutdown and guidance receipts
+are retained in `.gc/kaimon-sysimages/mc-xf9j5/release-20261024T0556Z/`.
+For rollback use per-project `mode = "off"`; the current pointer was absent
+before this release. Preserve all retained artifact/source/lock inputs above.
 
 Raw receipts are retained under
 `.gc/kaimon-sysimages/mc-xf9j5/acceptance-codex-mc-wisp-21fg9x/continuation-2jgcfx/`

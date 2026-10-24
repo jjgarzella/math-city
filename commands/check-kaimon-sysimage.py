@@ -129,6 +129,41 @@ class Images(unittest.TestCase):
         with self.assertRaisesRegex(image.Rejected, "stale/tampered"):
             self.validate()
 
+    def test_immutable_git_source_matches_project_manifest_and_image(self):
+        revision = "e" * 40
+        tree = "a" * 40
+        url = "file:///owned/compatibility-fork"
+        entry = dict(self.meta["packages"]["Dependency"], **{
+            "git-tree-sha1": tree, "repo-url": url, "repo-rev": revision})
+        metadata = {"packages": {"Dependency": entry}}
+        project = self.project / "Project.toml"
+        manifest = self.project / "Manifest.toml"
+        def write_source(source, locked=None):
+            project.write_text(f'[deps]\nDependency = "{UUID}"\n[sources.Dependency]\n' +
+                               "".join(f'{k} = {json.dumps(v)}\n' for k,v in source.items()))
+            values = entry if locked is None else locked
+            manifest.write_text('julia_version = "1.12.7"\nmanifest_format = "2.0"\n[[deps.Dependency]]\n' +
+                                "".join(f'{k} = {json.dumps(v)}\n' for k,v in values.items()))
+        matching = {"url": url, "rev": revision}
+        write_source(matching)
+        self.assertEqual(image.validate_project(self.project, self.info, metadata), self.project)
+        for source in ({"path": "../editable"}, {"url": url},
+                       {"url": url, "rev": "main"}, {"url": url, "rev": "f" * 40},
+                       {"url": url + "-other", "rev": revision},
+                       dict(matching, path="../editable")):
+            write_source(source)
+            with self.subTest(source=source), self.assertRaisesRegex(image.Rejected, "source override"):
+                image.validate_project(self.project, self.info, metadata)
+        for key, value in (("repo-url", url + "-other"), ("repo-rev", "f" * 40),
+                           ("git-tree-sha1", "b" * 40), ("path", "../editable")):
+            write_source(matching, dict(entry, **{key:value}))
+            with self.subTest(manifest_key=key), self.assertRaises(image.Rejected):
+                image.validate_project(self.project, self.info, metadata)
+        floating = dict(entry, **{"repo-rev": "main"})
+        write_source({"url": url, "rev": "main"}, floating)
+        with self.assertRaisesRegex(image.Rejected, "source override"):
+            image.validate_project(self.project, self.info, {"packages": {"Dependency": floating}})
+
     def test_stale_identity_and_package_metadata(self):
         self.meta["spec"]["cpu_target"] = "native"
         self.save()

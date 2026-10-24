@@ -391,7 +391,18 @@ def validate_project(project, info, metadata, *, bootstrap=False):
             raise Rejected(f"project itself is baked: {name}")
         override = config.get("sources", {}).get(name, {})
         if override:
-            raise Rejected(f"Project source override for baked dependency {name}")
+            # An explicit immutable source is also how a reviewed compatibility
+            # fork is recorded. Accept only the very same full Git revision in
+            # Project, Manifest and image; paths and floating refs stay refused.
+            revision = expected.get("repo-rev", "")
+            locked = by_uuid.get(expected["uuid"], (None, {}))[1]
+            source = {"url": expected.get("repo-url"), "rev": revision}
+            if not (source["url"] and len(revision) == 40 and
+                    all(c in "0123456789abcdef" for c in revision.lower()) and
+                    expected.get("git-tree-sha1") and override == source and
+                    locked.get("repo-url") == source["url"] and
+                    locked.get("repo-rev") == revision):
+                raise Rejected(f"Project source override for baked dependency {name}")
         if expected["uuid"] not in by_uuid:
             continue
         target_name, actual = by_uuid[expected["uuid"]]

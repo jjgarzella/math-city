@@ -15,7 +15,9 @@ commit() { # commit <repo> <file> <content> <msg>
 # present, executable, valid bash
 [ -f "$RESOLVER" ] && ok "resolve-diff.sh present at $RESOLVER" || fail "resolve-diff.sh present" "missing"
 [ -x "$RESOLVER" ] && ok "resolve-diff.sh is executable" || fail "resolve-diff.sh is executable"
+[ -f "$TARGET_KIND_LIB" ] && ok "shared target classifier is present" || fail "shared target classifier is present"
 bash -n "$RESOLVER" 2>/dev/null && ok "resolve-diff.sh parses (bash -n)" || fail "resolve-diff.sh parses"
+bash -n "$TARGET_KIND_LIB" 2>/dev/null && ok "shared target classifier parses" || fail "shared target classifier parses"
 
 # empty diff -> exit 0, empty machine stdout (the analyze 'empty' branch keys on this)
 repo="$(new_git_repo)"
@@ -30,6 +32,9 @@ for p in "." "./pkg" "/etc/passwd"; do
   run_step0 "$repo" "$p"
   assert_eq "2" "$STEP0_RC" "path target '$p' -> exit 2 (analyze -> whole-repo audit)"
 done
+# Existing bare paths use the same shared path classification.
+run_step0 "$repo" "seed.txt"
+assert_eq "2" "$STEP0_RC" "existing bare path target 'seed.txt' -> exit 2"
 rm -rf "$repo"
 
 # range -> kind=range with a real git diff, eval-able machine stdout
@@ -65,6 +70,11 @@ rm -rf "$repo"
 section "02b analyze -> resolver wiring (no drift)"
 RAW="$(formula_py desc '{target}.analyze')"
 assert_contains "$RAW" 'formulas/lib/resolve-diff.sh' "analyze calls the shared resolver path"
+assert_contains "$RAW" 'review-target-kind.sh' "analyze loads the shared target grammar"
+assert_contains "$RAW" 'review_target_classify' "analyze classifies through the shared contract"
+assert_not_contains "$RAW" 'grep -Eq.*pull' "analyze does not duplicate PR target grammar"
+assert_not_contains "$RAW" 'PROVENANCE_TARGET" == *..*' "analyze does not duplicate range target grammar"
+assert_not_contains "$RAW" '[ -e "$WORK_DIR/$PROVENANCE_TARGET" ]' "analyze does not duplicate bare-path classification"
 assert_contains "$RAW" 'GC_CITY' "analyze locates the resolver via \$GC_CITY (branch-independent)"
 assert_contains "$RAW" '"$RESOLVER_TARGET" "$RESOLVER_BASE"' "analyze passes captured/pinned target and base refs to the resolver"
 assert_contains "$RAW" 'PR refs changed while resolving' "analyze refuses a PR whose refs change while resolving"

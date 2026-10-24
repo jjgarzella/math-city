@@ -44,21 +44,23 @@ if [ -z "$TARGET" ]; then
   TARGET="${BASE}..HEAD"
 fi
 
-# Reject path / whole-tree targets. These reviewers review CHANGES, not a tree;
-# whole-workspace review is a different job.
-case "$TARGET" in
-  "." | ".." | "./"* | "../"* | "/"*)
-    echo "ERROR: '$TARGET' looks like a path. resolve-diff reviews a DIFF" >&2
-    echo "       (PR | branch | commit-range | base_ref..HEAD), not a path or" >&2
-    echo "       the whole workspace. Aborting." >&2
-    exit 2 ;;
-esac
+# One shared grammar is used here and by the analyze provenance capture.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/review-target-kind.sh"
+review_target_classify "$TARGET" "$PWD"
+TARGET_KIND="$REVIEW_TARGET_KIND"
+
+# This resolver reviews diffs, while analyze may use path targets for a
+# whole-repository audit. Both consumers share the same path classification.
+if [ "$TARGET_KIND" = path ]; then
+  echo "ERROR: '$TARGET' is a filesystem path, not a PR/branch/range. Aborting." >&2
+  exit 2
+fi
 
 DIFF_FILE="$(mktemp)"
 FILES_FILE="$(mktemp)"
 
-if printf '%s' "$TARGET" | grep -Eq '^#?[0-9]+$' \
-   || printf '%s' "$TARGET" | grep -Eq '^https?://.*/pull/[0-9]+/?$'; then
+if [ "$TARGET_KIND" = pr ]; then
   # --- PR: a number, #number, or a PR URL -> gh pr diff ---
   PR="${TARGET#\#}"
   TARGET_KIND="pr"
@@ -70,20 +72,14 @@ if printf '%s' "$TARGET" | grep -Eq '^#?[0-9]+$' \
     exit 3
   fi
   gh pr diff "$PR" --name-only > "$FILES_FILE"
-elif printf '%s' "$TARGET" | grep -q '\.\.'; then
+elif [ "$TARGET_KIND" = range ]; then
   # --- commit-range or base_ref..HEAD -> git diff <range> (verbatim) ---
-  TARGET_KIND="range"
   git diff "$TARGET" > "$DIFF_FILE"
   git diff --name-only "$TARGET" > "$FILES_FILE"
 else
   # --- bare branch / ref name -> diff from the merge-base with BASE ---
   # Three-dot mirrors `gh pr diff`: only the changes the branch introduced,
   # ignoring changes that landed on BASE after the branch diverged.
-  if [ -e "$TARGET" ]; then
-    echo "ERROR: '$TARGET' is a filesystem path, not a PR/branch/range. Aborting." >&2
-    exit 2
-  fi
-  TARGET_KIND="branch"
   git diff "${BASE}...${TARGET}" > "$DIFF_FILE"
   git diff --name-only "${BASE}...${TARGET}" > "$FILES_FILE"
 fi

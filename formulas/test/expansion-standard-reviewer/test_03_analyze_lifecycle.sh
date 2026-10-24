@@ -78,6 +78,24 @@ assert_eq "yes" "$(meta_val gc.review.eligible)" "whole-repo path audit remains 
 RENDER_BASE_BRANCH="$path_test_base"
 rm -rf "$repo"
 
+# --- scenario C2: a bare path with no configured or remote base falls back to HEAD
+repo="$(new_git_repo)"
+AB_CITY=""; AB_META_LOG=""; AB_PHASE_META_LOG=""; AB_ROOT="root-bare-path"
+AB_PHASE_BEAD="analyze-bare-path"; AB_ELIGIBLE="yes"; AB_REASON="eligible: whole-repo audit"
+bare_path_test_base="${RENDER_BASE_BRANCH:-main}"
+RENDER_BASE_BRANCH="__esr_missing_base__"
+run_analyze_block 'resolve-diff.sh' "seed.txt" "$repo"
+assert_eq "0" "$AB_RC" "analyze step 1 exits 0 on an existing bare path target"
+assert_eq "path" "$(meta_val gc.review.target_kind)" "existing bare path -> gc.review.target_kind = path"
+assert_contains "$(cat "$AB_INPUTS/diff" 2>/dev/null)" "whole-repo audit" "bare path audit records whole-repo scope"
+bare_path_head="$(git -C "$repo" rev-parse HEAD)"
+assert_eq "$bare_path_head" "$(phase_meta_val analyze-bare-path input_head_sha)" \
+  "bare path audit records the checked-out head"
+assert_eq "$bare_path_head" "$(phase_meta_val analyze-bare-path base_sha)" \
+  "bare path audit falls back to HEAD when local and origin base refs are absent"
+RENDER_BASE_BRANCH="$bare_path_test_base"
+rm -rf "$repo"
+
 # --- scenario D: changed-head retry with an existing findings container -------
 repo="$(new_git_repo)"
 ( cd "$repo"; git checkout -q -b feature )
@@ -209,6 +227,51 @@ expected_diff_sha="$(LC_ALL=C shasum -a 256 "$AB_INPUTS/diff" | awk '{print $1}'
 assert_eq "$expected_diff_sha" "$(phase_meta_val analyze-pinned-branch diff_sha256)" \
   "branch phase hashes the bytes actually saved for the lenses"
 unset ESR_TEST_REAL_RESOLVER ESR_TEST_REAL_GIT ESR_TEST_REPO ESR_TEST_MOVE_BRANCH ESR_TEST_NEW_HEAD ESR_TEST_RESOLVER_ARGS
+rm -rf "$repo"
+
+# --- scenario F2: branch provenance falls back to origin/<base> ---------------
+origin_base_branch="${RENDER_BASE_BRANCH:-main}"
+repo="$(new_git_repo)"
+( cd "$repo"; git checkout -q -b feature )
+( cd "$repo"; printf 'package feature\nfunc A() {}\n' > feature.go; git add feature.go; git commit -q -m "add feature" )
+remote_base_sha="$(git -C "$repo" rev-parse "$origin_base_branch")"
+git -C "$repo" update-ref "refs/remotes/origin/$origin_base_branch" "$remote_base_sha"
+git -C "$repo" branch -D "$origin_base_branch" >/dev/null
+remote_feature_head="$(git -C "$repo" rev-parse feature)"
+expected_remote_diff="$(mktemp)"
+git -C "$repo" diff "$remote_base_sha...$remote_feature_head" > "$expected_remote_diff"
+[ -z "$(git -C "$repo" show-ref --verify --hash "refs/heads/$origin_base_branch" 2>/dev/null)" ] \
+  && ok "remote-base fixture has no local $origin_base_branch branch" \
+  || fail "remote-base fixture has no local $origin_base_branch branch"
+assert_eq "$remote_base_sha" "$(git -C "$repo" rev-parse "refs/remotes/origin/$origin_base_branch")" \
+  "remote-base fixture retains origin/$origin_base_branch"
+
+AB_CITY="$(mktemp -d "$TMPDIR/esr-city-origin-base.XXXXXX")"
+mkdir -p "$AB_CITY/formulas/lib"
+ESR_TEST_REAL_RESOLVER="$RESOLVER"
+ESR_TEST_RESOLVER_ARGS="$AB_CITY/resolver.args"
+export ESR_TEST_REAL_RESOLVER ESR_TEST_RESOLVER_ARGS
+cat > "$AB_CITY/formulas/lib/resolve-diff.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\t%s\n' "$1" "$2" > "$ESR_TEST_RESOLVER_ARGS"
+exec "$ESR_TEST_REAL_RESOLVER" "$@"
+SH
+chmod +x "$AB_CITY/formulas/lib/resolve-diff.sh"
+AB_META_LOG=""; AB_PHASE_META_LOG=""; AB_ROOT="root-origin-base"; AB_PHASE_BEAD="analyze-origin-base"
+AB_FINDINGS=""; AB_CANDIDATES_FILE=""
+run_analyze_block 'resolve-diff.sh' "feature" "$repo"
+assert_eq "0" "$AB_RC" "branch analysis succeeds with only an origin-tracking base"
+assert_eq "$remote_feature_head $remote_base_sha" "$(tr '\t' ' ' < "$ESR_TEST_RESOLVER_ARGS")" \
+  "resolver receives pinned branch head and origin base OIDs"
+assert_eq "$remote_feature_head" "$(phase_meta_val analyze-origin-base input_head_sha)" \
+  "branch provenance records the pinned feature head"
+assert_eq "$remote_base_sha" "$(phase_meta_val analyze-origin-base base_sha)" \
+  "branch provenance records the merge base resolved from origin/main"
+cmp -s "$expected_remote_diff" "$AB_INPUTS/diff" \
+  && ok "saved branch diff matches the pinned origin base and feature head" \
+  || fail "saved branch diff matches the pinned origin base and feature head"
+unset ESR_TEST_REAL_RESOLVER ESR_TEST_RESOLVER_ARGS
 rm -rf "$repo"
 
 # --- scenario G: PR provenance is captured before diff and hashes saved bytes -

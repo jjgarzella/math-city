@@ -10,6 +10,7 @@
 : "${SUITE_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 : "${FORMULA:=$SUITE_DIR/../../expansion-standard-reviewer.toml}"
 : "${RESOLVER:=$SUITE_DIR/../../lib/resolve-diff.sh}"
+: "${TARGET_KIND_LIB:=$SUITE_DIR/../../lib/review-target-kind.sh}"
 FORMULA_PY="$SUITE_DIR/_formula.py"
 
 # --- counters ----------------------------------------------------------------
@@ -128,6 +129,8 @@ run_analyze_block() {
     cp -f "$RESOLVER" "$AB_CITY/formulas/lib/resolve-diff.sh"
     chmod +x "$AB_CITY/formulas/lib/resolve-diff.sh"
   fi
+  [ -f "$AB_CITY/formulas/lib/review-target-kind.sh" ] \
+    || cp -f "$TARGET_KIND_LIB" "$AB_CITY/formulas/lib/review-target-kind.sh"
   [ -z "${AB_META_LOG:-}" ] && AB_META_LOG="$(mktemp)"
   [ -z "${AB_PHASE_META_LOG:-}" ] && AB_PHASE_META_LOG="$(mktemp)"
   AB_INPUTS="$AB_CITY/.gc/review-inputs/$AB_ROOT"

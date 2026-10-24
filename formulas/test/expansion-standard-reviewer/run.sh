@@ -22,8 +22,9 @@ SUITE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export SUITE_DIR
 export FORMULA="${FORMULA:-$SUITE_DIR/../../expansion-standard-reviewer.toml}"
 export RESOLVER="${RESOLVER:-$SUITE_DIR/../../lib/resolve-diff.sh}"
+export TARGET_KIND_LIB="${TARGET_KIND_LIB:-$SUITE_DIR/../../lib/review-target-kind.sh}"
 
-for f in "$FORMULA" "$RESOLVER"; do
+for f in "$FORMULA" "$RESOLVER" "$TARGET_KIND_LIB"; do
   if [ ! -f "$f" ]; then
     echo "FATAL: not found: $f" >&2
     exit 2

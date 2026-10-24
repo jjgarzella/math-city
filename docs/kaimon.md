@@ -513,6 +513,31 @@ being collected on owned acceptance fixtures to distinguish those costs.
 No cause, fix, readiness waiver or production activation is inferred from
 the import timings.
 
+The subsequent owned trace established the expensive operation: instantiation
+took 75.565 seconds, while Pkg import, optional Revise and KaimonGate import
+took 0.001, 0.045 and 0.030 seconds respectively. Full command captures from
+the Claude retry showed sequential CUDA runtime/compiler, LLVMExtra and CUDA
+driver artifact selectors inheriting the full image, including its initialization
+children. The neutral-instantiation repair above keeps those selectors on the
+base image. Its first version still triggered ordinary-image package
+precompilation: a native canary took 100.281 seconds to start, including an
+observed 50.724-second DeRham compilation child, and failed readiness.
+
+After disabling automatic precompilation only in the neutral selected-image
+step, a fresh owned worktree with a source-only probe passed exact runtime,
+project, image, editable source, lock/freshness, QQ math and state 41→42 checks.
+The continuous native times were 56.193 seconds to session key, 62.273 to
+provenance, 89.320 to delivered math and 94.589 to delivered state 42.
+**Full readiness still failed the 60-second requirement.** No setup time is
+excluded from that result. Neutral instantiation took 8.982 seconds and its
+artifact selectors were subsecond base-image children. Compatibility/preference
+processes occupied about 14 seconds; the image ran for about 24 seconds before
+the session key returned. A fresh DeRham compilation child occupied about
+21 seconds of the 27-second package/math call. Simple native calls also took
+5–6 seconds. This is a cold source/worktree result with existing depots and OS
+caches retained, not a fair paired benchmark. Independent updated cold/warm
+measurements and review remain required before adoption.
+
 Raw receipts are retained under
 `.gc/kaimon-sysimages/mc-xf9j5/acceptance-codex-mc-wisp-21fg9x/continuation-2jgcfx/`
 (`native-events.json`, `native-results/`, startup logs and RSS samples), with

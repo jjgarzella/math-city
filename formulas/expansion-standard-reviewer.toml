@@ -205,10 +205,10 @@ RESOLVER="${GC_CITY}/formulas/lib/resolve-diff.sh"
 [ -x "$RESOLVER" ] || { echo "ERROR: shared resolver missing or not executable at $RESOLVER" >&2; exit 2; }
 
 # Resolve IN the work_dir under review (the checked-out change). stdout carries the
-# eval-able TARGET_KIND/DIFF_FILE/FILES_FILE plus pinned PR_HEAD_SHA/PR_BASE_SHA
-# for PR targets (empty on an empty diff); stderr narrates. Exit 2 = path/whole-tree,
-# exit 3 = PR fetch failed. review_target and base_branch are baked in at expansion
-# (single-brace expansion vars).
+# eval-able TARGET_KIND/DIFF_FILE/FILES_FILE plus the resolved head/base OIDs
+# used to create the diff (empty on an empty diff); PR OIDs are also exposed under
+# PR_HEAD_SHA/PR_BASE_SHA. stderr narrates. Exit 2 = path/whole-tree, exit 3 = PR
+# fetch failed. review_target and base_branch are baked in at expansion.
 RESOLVED="$(cd "$WORK_DIR" && "$RESOLVER" "{review_target}" "{base_branch}")"; RC=$?
 
 if [ "$RC" -eq 3 ]; then
@@ -245,51 +245,22 @@ fi
 bd update "$ROOT" --set-metadata gc.review.inputs_dir="$INPUTS_DIR"
 bd update "$ROOT" --set-metadata gc.review.target_kind="$TARGET_KIND"
 
-# Provenance belongs to this analyze phase bead, so retries retain a separate
-# record for the exact source and durable diff each attempt reviewed.
+# Provenance belongs to this analyze phase bead. Resolved changes take their
+# OIDs from the resolver that produced the diff, keeping the durable input and its
+# recorded source on the same immutable commits.
 PROVENANCE_TARGET="{review_target}"
 [ -n "$PROVENANCE_TARGET" ] || PROVENANCE_TARGET="{base_branch}..HEAD"
-BASE_BRANCH_REF="{base_branch}"
-git -C "$WORK_DIR" rev-parse --verify "${BASE_BRANCH_REF}^{commit}" >/dev/null 2>&1 \
-  || BASE_BRANCH_REF="origin/{base_branch}"
-INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify 'HEAD^{commit}')"
-BASE_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${BASE_BRANCH_REF}^{commit}" 2>/dev/null)"
-
-# Keep the commit IDs aligned with resolve-diff.sh's target semantics.
-if [ "$TARGET_KIND" = "pr" ]; then
-  INPUT_HEAD_SHA="${PR_HEAD_SHA:-}"
-  BASE_SHA="${PR_BASE_SHA:-}"
-  [ -n "$INPUT_HEAD_SHA" ] && [ -n "$BASE_SHA" ] || {
-    echo "ERROR: resolver omitted pinned PR head/base provenance for $PROVENANCE_TARGET" >&2
-    exit 2
-  }
+if [ "$TARGET_KIND" = "pr" ] || [ "$TARGET_KIND" = "branch" ] || [ "$TARGET_KIND" = "range" ]; then
+  INPUT_HEAD_SHA="${RESOLVED_HEAD_SHA:-}"
+  BASE_SHA="${RESOLVED_BASE_SHA:-}"
 else
-  case "$PROVENANCE_TARGET" in
-    *...*)
-      RANGE_BASE="${PROVENANCE_TARGET%%...*}"
-      RANGE_HEAD="${PROVENANCE_TARGET#*...}"
-      [ -n "$RANGE_BASE" ] || RANGE_BASE="$BASE_BRANCH_REF"
-      [ "$RANGE_BASE" = "{base_branch}" ] && RANGE_BASE="$BASE_BRANCH_REF"
-      [ -n "$RANGE_HEAD" ] || RANGE_HEAD="HEAD"
-      INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${RANGE_HEAD}^{commit}")"
-      BASE_SHA="$(git -C "$WORK_DIR" merge-base "$RANGE_BASE" "$RANGE_HEAD")"
-      ;;
-    *..*)
-      RANGE_BASE="${PROVENANCE_TARGET%%..*}"
-      RANGE_HEAD="${PROVENANCE_TARGET#*..}"
-      [ -n "$RANGE_BASE" ] || RANGE_BASE="$BASE_BRANCH_REF"
-      [ "$RANGE_BASE" = "{base_branch}" ] && RANGE_BASE="$BASE_BRANCH_REF"
-      [ -n "$RANGE_HEAD" ] || RANGE_HEAD="HEAD"
-      INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${RANGE_HEAD}^{commit}")"
-      BASE_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${RANGE_BASE}^{commit}")"
-      ;;
-    *)
-      if [ "$TARGET_KIND" = "branch" ]; then
-        INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${PROVENANCE_TARGET}^{commit}")"
-        BASE_SHA="$(git -C "$WORK_DIR" merge-base "$BASE_BRANCH_REF" "$PROVENANCE_TARGET")"
-      fi
-      ;;
-  esac
+  # Empty and path targets did not resolve a diff. Keep recording the current
+  # worktree/base state for their ineligible or whole-tree audit paths.
+  BASE_BRANCH_REF="{base_branch}"
+  git -C "$WORK_DIR" rev-parse --verify "${BASE_BRANCH_REF}^{commit}" >/dev/null 2>&1 \
+    || BASE_BRANCH_REF="origin/{base_branch}"
+  INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify 'HEAD^{commit}')"
+  BASE_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${BASE_BRANCH_REF}^{commit}" 2>/dev/null)"
 fi
 [ -n "$INPUT_HEAD_SHA" ] && [ -n "$BASE_SHA" ] || {
   echo "ERROR: cannot resolve input head/base provenance for $PROVENANCE_TARGET" >&2

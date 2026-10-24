@@ -26,8 +26,9 @@
 #               TARGET_KIND=pr|branch|range
 #               DIFF_FILE=<path to the unified diff>
 #               FILES_FILE=<path to the newline-separated touched-file list>
-#               PR_HEAD_SHA=<captured PR head commit> (PR targets only)
-#               PR_BASE_SHA=<captured PR base commit> (PR targets only)
+#               RESOLVED_HEAD_SHA=<commit used as the diff head>
+#               RESOLVED_BASE_SHA=<commit used as the diff base>
+#               PR_HEAD_SHA / PR_BASE_SHA=<captured PR OIDs> (PR targets only)
 #           On an empty diff stdout is empty: that emptiness IS the clean-stop
 #           signal (there is nothing to review).
 #
@@ -60,6 +61,8 @@ DIFF_FILE="$(mktemp)"
 FILES_FILE="$(mktemp)"
 PR_HEAD_SHA=""
 PR_BASE_SHA=""
+RESOLVED_HEAD_SHA=""
+RESOLVED_BASE_SHA=""
 
 if printf '%s' "$TARGET" | grep -Eq '^#?[0-9]+$' \
    || printf '%s' "$TARGET" | grep -Eq '^https?://.*/pull/[0-9]+/?$'; then
@@ -80,6 +83,8 @@ if printf '%s' "$TARGET" | grep -Eq '^#?[0-9]+$' \
       exit 3
     fi
   done
+  RESOLVED_HEAD_SHA="$PR_HEAD_SHA"
+  RESOLVED_BASE_SHA="$PR_BASE_SHA"
   case "$PR_URL" in
     https://*|http://*) ;;
     *) echo "ERROR: 'gh pr view $PR' returned an invalid PR URL" >&2; exit 3 ;;
@@ -108,10 +113,40 @@ if printf '%s' "$TARGET" | grep -Eq '^#?[0-9]+$' \
     exit 3
   fi
 elif printf '%s' "$TARGET" | grep -q '\.\.'; then
-  # --- commit-range or base_ref..HEAD -> git diff <range> (verbatim) ---
+  # --- commit range -> pin refs once, then diff those exact commits ---
   TARGET_KIND="range"
-  git diff "$TARGET" > "$DIFF_FILE"
-  git diff --name-only "$TARGET" > "$FILES_FILE"
+  if printf '%s' "$TARGET" | grep -q '\.\.\.'; then
+    RANGE_BASE="${TARGET%%...*}"
+    RANGE_HEAD="${TARGET#*...}"
+    [ -n "$RANGE_BASE" ] || RANGE_BASE="HEAD"
+    [ -n "$RANGE_HEAD" ] || RANGE_HEAD="HEAD"
+  else
+    RANGE_BASE="${TARGET%%..*}"
+    RANGE_HEAD="${TARGET#*..}"
+    [ -n "$RANGE_BASE" ] || RANGE_BASE="HEAD"
+    [ -n "$RANGE_HEAD" ] || RANGE_HEAD="HEAD"
+  fi
+  if ! RANGE_BASE_SHA="$(git rev-parse --verify "${RANGE_BASE}^{commit}" 2>/dev/null)"; then
+    echo "ERROR: cannot resolve range base '$RANGE_BASE'" >&2
+    exit 1
+  fi
+  if ! RESOLVED_HEAD_SHA="$(git rev-parse --verify "${RANGE_HEAD}^{commit}" 2>/dev/null)"; then
+    echo "ERROR: cannot resolve range head '$RANGE_HEAD'" >&2
+    exit 1
+  fi
+  if printf '%s' "$TARGET" | grep -q '\.\.\.'; then
+    if ! RESOLVED_BASE_SHA="$(git merge-base "$RANGE_BASE_SHA" "$RESOLVED_HEAD_SHA")"; then
+      echo "ERROR: cannot resolve merge base for range '$TARGET'" >&2
+      exit 1
+    fi
+  else
+    RESOLVED_BASE_SHA="$RANGE_BASE_SHA"
+  fi
+  if ! git diff "$RESOLVED_BASE_SHA" "$RESOLVED_HEAD_SHA" > "$DIFF_FILE" \
+      || ! git diff --name-only "$RESOLVED_BASE_SHA" "$RESOLVED_HEAD_SHA" > "$FILES_FILE"; then
+    echo "ERROR: cannot diff resolved range '$TARGET'" >&2
+    exit 1
+  fi
 else
   # --- bare branch / ref name -> diff from the merge-base with BASE ---
   # Three-dot mirrors `gh pr diff`: only the changes the branch introduced,
@@ -121,8 +156,23 @@ else
     exit 2
   fi
   TARGET_KIND="branch"
-  git diff "${BASE}...${TARGET}" > "$DIFF_FILE"
-  git diff --name-only "${BASE}...${TARGET}" > "$FILES_FILE"
+  if ! RESOLVED_HEAD_SHA="$(git rev-parse --verify "${TARGET}^{commit}" 2>/dev/null)"; then
+    echo "ERROR: cannot resolve branch target '$TARGET'" >&2
+    exit 1
+  fi
+  if ! BASE_REF_SHA="$(git rev-parse --verify "${BASE}^{commit}" 2>/dev/null)"; then
+    echo "ERROR: cannot resolve base branch '$BASE'" >&2
+    exit 1
+  fi
+  if ! RESOLVED_BASE_SHA="$(git merge-base "$BASE_REF_SHA" "$RESOLVED_HEAD_SHA")"; then
+    echo "ERROR: cannot resolve merge base for '$BASE...$TARGET'" >&2
+    exit 1
+  fi
+  if ! git diff "$RESOLVED_BASE_SHA" "$RESOLVED_HEAD_SHA" > "$DIFF_FILE" \
+      || ! git diff --name-only "$RESOLVED_BASE_SHA" "$RESOLVED_HEAD_SHA" > "$FILES_FILE"; then
+    echo "ERROR: cannot diff resolved branch '$TARGET'" >&2
+    exit 1
+  fi
 fi
 
 # Empty diff is a hard stop — there is nothing to review. Clean (exit 0) and
@@ -140,5 +190,7 @@ fi
 } >&2
 
 # Machine result -> stdout (eval / source-able by the caller).
-printf 'TARGET_KIND=%s\nDIFF_FILE=%s\nFILES_FILE=%s\nPR_HEAD_SHA=%s\nPR_BASE_SHA=%s\n' \
-  "$TARGET_KIND" "$DIFF_FILE" "$FILES_FILE" "${PR_HEAD_SHA:-}" "${PR_BASE_SHA:-}"
+printf 'TARGET_KIND=%s\nDIFF_FILE=%s\nFILES_FILE=%s\nRESOLVED_HEAD_SHA=%s\nRESOLVED_BASE_SHA=%s\nPR_HEAD_SHA=%s\nPR_BASE_SHA=%s\n' \
+  "$TARGET_KIND" "$DIFF_FILE" "$FILES_FILE" \
+  "${RESOLVED_HEAD_SHA:-}" "${RESOLVED_BASE_SHA:-}" \
+  "${PR_HEAD_SHA:-}" "${PR_BASE_SHA:-}"

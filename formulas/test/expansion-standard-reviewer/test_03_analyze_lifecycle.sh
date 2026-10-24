@@ -154,3 +154,117 @@ run_analyze_block 'gc.review.eligible' "main..HEAD" "$repo"
 assert_eq "0" "$AB_RC" "trivial-diff eligibility verdict persists successfully"
 assert_eq "no" "$(meta_val gc.review.eligible)" "trivial comment-only diff remains ineligible"
 rm -rf "$repo"
+
+# --- scenario F: a moving branch ref is pinned before the resolver runs -------
+repo="$(new_git_repo)"
+( cd "$repo"; git checkout -q -b feature; printf 'package feature\nfunc A() {}\n' > feature.go; git add feature.go; git commit -q -m "add A" )
+pinned_head="$(git -C "$repo" rev-parse feature)"
+( cd "$repo"; printf 'package feature\nfunc A() {}\nfunc B() {}\n' > feature.go; git add feature.go; git commit -q -m "add B" )
+moved_head="$(git -C "$repo" rev-parse feature)"
+git -C "$repo" checkout -q main
+git -C "$repo" update-ref refs/heads/feature "$pinned_head"
+expected_base="$(git -C "$repo" rev-parse main)"
+expected_diff="$(mktemp)"
+git -C "$repo" diff "$expected_base...$pinned_head" > "$expected_diff"
+AB_CITY="$(mktemp -d "$TMPDIR/esr-city-pinned.XXXXXX")"
+mkdir -p "$AB_CITY/formulas/lib"
+ESR_TEST_REAL_RESOLVER="$RESOLVER"
+ESR_TEST_REAL_GIT="$(command -v git)"
+ESR_TEST_REPO="$repo"
+ESR_TEST_MOVE_BRANCH=feature
+ESR_TEST_NEW_HEAD="$moved_head"
+ESR_TEST_RESOLVER_ARGS="$AB_CITY/resolver.args"
+export ESR_TEST_REAL_RESOLVER ESR_TEST_REAL_GIT ESR_TEST_REPO ESR_TEST_MOVE_BRANCH ESR_TEST_NEW_HEAD ESR_TEST_RESOLVER_ARGS
+cat > "$AB_CITY/formulas/lib/resolve-diff.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\t%s\n' "$1" "$2" > "$ESR_TEST_RESOLVER_ARGS"
+"$ESR_TEST_REAL_GIT" -C "$ESR_TEST_REPO" update-ref "refs/heads/$ESR_TEST_MOVE_BRANCH" "$ESR_TEST_NEW_HEAD"
+exec "$ESR_TEST_REAL_RESOLVER" "$@"
+SH
+chmod +x "$AB_CITY/formulas/lib/resolve-diff.sh"
+AB_META_LOG=""; AB_PHASE_META_LOG=""; AB_ROOT="root-pinned-branch"; AB_PHASE_BEAD="analyze-pinned-branch"
+AB_FINDINGS=""; AB_CANDIDATES_FILE=""
+run_analyze_block 'resolve-diff.sh' "feature" "$repo"
+assert_eq "0" "$AB_RC" "pinned branch analysis succeeds after its ref moves"
+assert_eq "$moved_head" "$(git -C "$repo" rev-parse feature)" "resolver fixture moved the branch ref"
+assert_eq "$pinned_head $expected_base" "$(tr '\t' ' ' < "$ESR_TEST_RESOLVER_ARGS")" \
+  "resolver receives captured immutable branch/base OIDs"
+assert_eq "$pinned_head" "$(phase_meta_val analyze-pinned-branch input_head_sha)" \
+  "branch provenance records the captured head, not the moved ref"
+assert_eq "$expected_base" "$(phase_meta_val analyze-pinned-branch base_sha)" \
+  "branch provenance records the exact merge base used by the diff"
+cmp -s "$expected_diff" "$AB_INPUTS/diff" \
+  && ok "saved branch diff matches the captured immutable commits" \
+  || fail "saved branch diff matches the captured immutable commits"
+expected_diff_sha="$(LC_ALL=C shasum -a 256 "$AB_INPUTS/diff" | awk '{print $1}')"
+assert_eq "$expected_diff_sha" "$(phase_meta_val analyze-pinned-branch diff_sha256)" \
+  "branch phase hashes the bytes actually saved for the lenses"
+unset ESR_TEST_REAL_RESOLVER ESR_TEST_REAL_GIT ESR_TEST_REPO ESR_TEST_MOVE_BRANCH ESR_TEST_NEW_HEAD ESR_TEST_RESOLVER_ARGS
+rm -rf "$repo"
+
+# --- scenario G: PR provenance is captured before diff and hashes saved bytes -
+repo="$(new_git_repo)"
+AB_CITY=""; AB_META_LOG=""; AB_PHASE_META_LOG=""; AB_ROOT="root-pr-stable"
+AB_PHASE_BEAD="analyze-pr-stable"; AB_FINDINGS=""; AB_CANDIDATES_FILE=""
+ESR_TEST_PR_HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ESR_TEST_PR_BASE_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+unset ESR_TEST_PR_ADVANCE_FILE
+export ESR_TEST_PR_HEAD_SHA ESR_TEST_PR_BASE_SHA
+run_analyze_block 'resolve-diff.sh' "42" "$repo"
+assert_eq "0" "$AB_RC" "stable PR analysis succeeds"
+assert_eq "pr" "$(meta_val gc.review.target_kind)" "stable PR remains a PR target"
+assert_eq "$ESR_TEST_PR_HEAD_SHA" "$(phase_meta_val analyze-pr-stable input_head_sha)" \
+  "PR phase records the head OID captured before diff generation"
+assert_eq "$ESR_TEST_PR_BASE_SHA" "$(phase_meta_val analyze-pr-stable base_sha)" \
+  "PR phase records the base OID captured before diff generation"
+expected_pr_diff="$(mktemp)"
+cat > "$expected_pr_diff" <<'DIFF'
+diff --git a/pkg/widget.go b/pkg/widget.go
+index 1111111..2222222 100644
+--- a/pkg/widget.go
++++ b/pkg/widget.go
+@@ -1,3 +1,4 @@
+ package pkg
++func Added() int { return 1 }
+DIFF
+cmp -s "$expected_pr_diff" "$AB_INPUTS/diff" \
+  && ok "saved PR diff matches the resolver output" \
+  || fail "saved PR diff matches the resolver output"
+expected_pr_diff_sha="$(LC_ALL=C shasum -a 256 "$AB_INPUTS/diff" | awk '{print $1}')"
+assert_eq "$expected_pr_diff_sha" "$(phase_meta_val analyze-pr-stable diff_sha256)" \
+  "PR phase hashes the bytes actually saved for the lenses"
+rm -rf "$repo"
+
+# --- scenario H: PR refs changing during resolution are refused ---------------
+repo="$(new_git_repo)"
+AB_CITY="$(mktemp -d "$TMPDIR/esr-city-pr-race.XXXXXX")"
+mkdir -p "$AB_CITY/formulas/lib"
+ESR_TEST_REAL_RESOLVER="$RESOLVER"
+ESR_TEST_PR_ADVANCE_FILE="$AB_CITY/pr-advanced"
+ESR_TEST_PR_HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ESR_TEST_PR_BASE_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+ESR_TEST_PR_CHANGED_HEAD_SHA=cccccccccccccccccccccccccccccccccccccccc
+ESR_TEST_PR_CHANGED_BASE_SHA=dddddddddddddddddddddddddddddddddddddddd
+export ESR_TEST_REAL_RESOLVER ESR_TEST_PR_ADVANCE_FILE ESR_TEST_PR_HEAD_SHA ESR_TEST_PR_BASE_SHA
+export ESR_TEST_PR_CHANGED_HEAD_SHA ESR_TEST_PR_CHANGED_BASE_SHA
+cat > "$AB_CITY/formulas/lib/resolve-diff.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+: > "$ESR_TEST_PR_ADVANCE_FILE"
+exec "$ESR_TEST_REAL_RESOLVER" "$@"
+SH
+chmod +x "$AB_CITY/formulas/lib/resolve-diff.sh"
+AB_META_LOG=""; AB_PHASE_META_LOG=""; AB_ROOT="root-pr-race"; AB_PHASE_BEAD="analyze-pr-race"
+AB_FINDINGS=""; AB_CANDIDATES_FILE=""
+run_analyze_block 'resolve-diff.sh' "42" "$repo"
+assert_eq "2" "$AB_RC" "analysis refuses PR refs that changed during diff generation"
+assert_contains "$AB_OUT" "PR refs changed while resolving" "changed PR snapshot reports a clear refusal"
+[ ! -e "$AB_INPUTS/diff" ] && ok "changed PR diff is not persisted" \
+  || fail "changed PR diff is not persisted"
+[ -z "$(phase_meta_val analyze-pr-race input_head_sha)" ] \
+  && ok "changed PR snapshot records no misleading phase provenance" \
+  || fail "changed PR snapshot records no misleading phase provenance"
+unset ESR_TEST_REAL_RESOLVER ESR_TEST_PR_ADVANCE_FILE ESR_TEST_PR_HEAD_SHA ESR_TEST_PR_BASE_SHA
+unset ESR_TEST_PR_CHANGED_HEAD_SHA ESR_TEST_PR_CHANGED_BASE_SHA
+rm -rf "$repo"

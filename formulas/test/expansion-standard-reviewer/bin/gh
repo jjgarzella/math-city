@@ -4,6 +4,16 @@
 # canned file list for `--name-only`. Any other gh call is a hard error so the
 # tests never silently depend on real GitHub.
 set -u
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
+  head="${ESR_TEST_PR_HEAD_SHA:-1111111111111111111111111111111111111111}"
+  base="${ESR_TEST_PR_BASE_SHA:-2222222222222222222222222222222222222222}"
+  if [ -n "${ESR_TEST_PR_ADVANCE_FILE:-}" ] && [ -f "$ESR_TEST_PR_ADVANCE_FILE" ]; then
+    head="${ESR_TEST_PR_CHANGED_HEAD_SHA:-3333333333333333333333333333333333333333}"
+    base="${ESR_TEST_PR_CHANGED_BASE_SHA:-4444444444444444444444444444444444444444}"
+  fi
+  printf '%s\n' "{\"headRefOid\":\"$head\",\"baseRefOid\":\"$base\"}"
+  exit 0
+fi
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "diff" ]; then
   case " $* " in
     *" --name-only "*)

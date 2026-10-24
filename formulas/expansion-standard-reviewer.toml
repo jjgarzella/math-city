@@ -204,11 +204,115 @@ mkdir -p "$INPUTS_DIR"
 RESOLVER="${GC_CITY}/formulas/lib/resolve-diff.sh"
 [ -x "$RESOLVER" ] || { echo "ERROR: shared resolver missing or not executable at $RESOLVER" >&2; exit 2; }
 
+# Capture the effective source OIDs before producing the durable diff. The shared
+# resolver still owns target classification and transport, but symbolic range /
+# branch refs are replaced with these immutable OIDs so a moving ref cannot make
+# the recorded provenance describe a different snapshot from the saved diff.
+PROVENANCE_TARGET="{review_target}"
+[ -n "$PROVENANCE_TARGET" ] || PROVENANCE_TARGET="{base_branch}..HEAD"
+BASE_BRANCH_REF="{base_branch}"
+git -C "$WORK_DIR" rev-parse --verify "${BASE_BRANCH_REF}^{commit}" >/dev/null 2>&1 \
+  || BASE_BRANCH_REF="origin/{base_branch}"
+BASE_BRANCH_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${BASE_BRANCH_REF}^{commit}" 2>/dev/null)" \
+  || BASE_BRANCH_SHA=""
+INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify 'HEAD^{commit}' 2>/dev/null)" \
+  || INPUT_HEAD_SHA=""
+BASE_SHA="$BASE_BRANCH_SHA"
+RESOLVER_TARGET="$PROVENANCE_TARGET"
+RESOLVER_BASE="$BASE_BRANCH_REF"
+PR_TARGET=no
+PR_PROVENANCE_BEFORE=""
+
+# PR diffs are fetched by the shared resolver through gh pr diff, which accepts
+# a live PR identifier rather than immutable OIDs. Snapshot its effective refs
+# first and verify them again immediately after resolving; refuse a changed PR.
+if printf '%s' "$PROVENANCE_TARGET" | grep -Eq '^#?[0-9]+$|^https?://.*/pull/[0-9]+/?$'; then
+  PR_TARGET=yes
+  PR_PROVENANCE_BEFORE="$(cd "$WORK_DIR" && gh pr view "$PROVENANCE_TARGET" \
+    --json headRefOid,baseRefOid 2>/dev/null)" || {
+    echo "ERROR: cannot capture PR head/base provenance for $PROVENANCE_TARGET" >&2
+    exit 2
+  }
+  INPUT_HEAD_SHA="$(printf '%s' "$PR_PROVENANCE_BEFORE" | jq -r '.headRefOid // empty')"
+  BASE_SHA="$(printf '%s' "$PR_PROVENANCE_BEFORE" | jq -r '.baseRefOid // empty')"
+  [ -n "$INPUT_HEAD_SHA" ] && [ -n "$BASE_SHA" ] || {
+    echo "ERROR: PR head/base provenance is incomplete for $PROVENANCE_TARGET" >&2
+    exit 2
+  }
+elif [ "$PROVENANCE_TARGET" = "." ] || [ "$PROVENANCE_TARGET" = ".." ] \
+    || [ "$PROVENANCE_TARGET" = "./" ] || [ "$PROVENANCE_TARGET" = "../" ] \
+    || [[ "$PROVENANCE_TARGET" == ./* ]] || [[ "$PROVENANCE_TARGET" == ../* ]] \
+    || [[ "$PROVENANCE_TARGET" == /* ]]; then
+  # Preserve the resolver's whole-tree/path mode. The captured HEAD/base still
+  # describe the checked-out source snapshot associated with the audit.
+  RESOLVER_TARGET="$PROVENANCE_TARGET"
+elif [[ "$PROVENANCE_TARGET" == *...* ]] || [[ "$PROVENANCE_TARGET" == *..* ]]; then
+  # Pin each range endpoint before invoking the resolver. For omitted endpoints,
+  # git diff's default is HEAD; the empty review_target case above has already
+  # expanded to the formula's explicit base_branch..HEAD default.
+  RANGE_BASE_REF="${PROVENANCE_TARGET%%..*}"
+  if [[ "$PROVENANCE_TARGET" == *...* ]]; then
+    RANGE_BASE_REF="${PROVENANCE_TARGET%%...*}"
+    RANGE_HEAD_REF="${PROVENANCE_TARGET#*...}"
+    RANGE_SEPARATOR="..."
+  else
+    RANGE_HEAD_REF="${PROVENANCE_TARGET#*..}"
+    RANGE_SEPARATOR=".."
+  fi
+  [ -n "$RANGE_BASE_REF" ] || RANGE_BASE_REF="HEAD"
+  [ "$RANGE_BASE_REF" = "{base_branch}" ] && RANGE_BASE_REF="$BASE_BRANCH_REF"
+  [ -n "$RANGE_HEAD_REF" ] || RANGE_HEAD_REF="HEAD"
+  RANGE_BASE_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${RANGE_BASE_REF}^{commit}" 2>/dev/null)" \
+    || RANGE_BASE_SHA=""
+  INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${RANGE_HEAD_REF}^{commit}" 2>/dev/null)" \
+    || INPUT_HEAD_SHA=""
+  [ -n "$RANGE_BASE_SHA" ] && [ -n "$INPUT_HEAD_SHA" ] || {
+    echo "ERROR: cannot capture range provenance for $PROVENANCE_TARGET" >&2
+    exit 2
+  }
+  if [ "$RANGE_SEPARATOR" = "..." ]; then
+    BASE_SHA="$(git -C "$WORK_DIR" merge-base "$RANGE_BASE_SHA" "$INPUT_HEAD_SHA" 2>/dev/null)" \
+      || BASE_SHA=""
+  else
+    BASE_SHA="$RANGE_BASE_SHA"
+  fi
+  RESOLVER_TARGET="${RANGE_BASE_SHA}$RANGE_SEPARATOR${INPUT_HEAD_SHA}"
+  RESOLVER_BASE="$BASE_BRANCH_SHA"
+elif [ -e "$WORK_DIR/$PROVENANCE_TARGET" ]; then
+  # The resolver treats an existing bare target as a path, not a branch.
+  RESOLVER_TARGET="$PROVENANCE_TARGET"
+else
+  # Bare branch/ref targets use the resolver's three-dot merge-base semantics.
+  INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${PROVENANCE_TARGET}^{commit}" 2>/dev/null)" \
+    || INPUT_HEAD_SHA=""
+  [ -n "$BASE_BRANCH_SHA" ] && [ -n "$INPUT_HEAD_SHA" ] || {
+    echo "ERROR: cannot capture branch provenance for $PROVENANCE_TARGET" >&2
+    exit 2
+  }
+  BASE_SHA="$(git -C "$WORK_DIR" merge-base "$BASE_BRANCH_SHA" "$INPUT_HEAD_SHA" 2>/dev/null)" \
+    || BASE_SHA=""
+  RESOLVER_TARGET="$INPUT_HEAD_SHA"
+  RESOLVER_BASE="$BASE_BRANCH_SHA"
+fi
+
 # Resolve IN the work_dir under review (the checked-out change). stdout carries the
 # eval-able TARGET_KIND/DIFF_FILE/FILES_FILE (empty on an empty diff); stderr
-# narrates. Exit 2 = path/whole-tree, exit 3 = PR fetch failed. review_target and
-# base_branch are baked in at expansion (single-brace expansion vars).
-RESOLVED="$(cd "$WORK_DIR" && "$RESOLVER" "{review_target}" "{base_branch}")"; RC=$?
+# narrates. Exit 2 = path/whole-tree, exit 3 = PR fetch failed.
+RESOLVED="$(cd "$WORK_DIR" && "$RESOLVER" "$RESOLVER_TARGET" "$RESOLVER_BASE")"; RC=$?
+
+if [ "$PR_TARGET" = "yes" ] && [ "$RC" -eq 0 ]; then
+  PR_PROVENANCE_AFTER="$(cd "$WORK_DIR" && gh pr view "$PROVENANCE_TARGET" \
+    --json headRefOid,baseRefOid 2>/dev/null)" || {
+    echo "ERROR: cannot recheck PR head/base provenance for $PROVENANCE_TARGET" >&2
+    exit 2
+  }
+  PR_HEAD_AFTER="$(printf '%s' "$PR_PROVENANCE_AFTER" | jq -r '.headRefOid // empty')"
+  PR_BASE_AFTER="$(printf '%s' "$PR_PROVENANCE_AFTER" | jq -r '.baseRefOid // empty')"
+  if [ "$PR_HEAD_AFTER" != "$INPUT_HEAD_SHA" ] || [ "$PR_BASE_AFTER" != "$BASE_SHA" ]; then
+    echo "ERROR: PR refs changed while resolving $PROVENANCE_TARGET; refusing a mixed snapshot" >&2
+    exit 2
+  fi
+fi
 
 if [ "$RC" -eq 3 ]; then
   echo "ERROR: PR diff fetch failed for the review target; cannot review." >&2
@@ -246,51 +350,6 @@ bd update "$ROOT" --set-metadata gc.review.target_kind="$TARGET_KIND"
 
 # Provenance belongs to this analyze phase bead, so retries retain a separate
 # record for the exact source and durable diff each attempt reviewed.
-PROVENANCE_TARGET="{review_target}"
-[ -n "$PROVENANCE_TARGET" ] || PROVENANCE_TARGET="{base_branch}..HEAD"
-BASE_BRANCH_REF="{base_branch}"
-git -C "$WORK_DIR" rev-parse --verify "${BASE_BRANCH_REF}^{commit}" >/dev/null 2>&1 \
-  || BASE_BRANCH_REF="origin/{base_branch}"
-INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify 'HEAD^{commit}')"
-BASE_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${BASE_BRANCH_REF}^{commit}" 2>/dev/null)"
-
-# Keep the commit IDs aligned with resolve-diff.sh's target semantics.
-if [ "$TARGET_KIND" = "pr" ]; then
-  PR_PROVENANCE="$(cd "$WORK_DIR" && gh pr view "$PROVENANCE_TARGET" \
-    --json headRefOid,baseRefOid 2>/dev/null)" || {
-    echo "ERROR: cannot resolve PR head/base provenance for $PROVENANCE_TARGET" >&2
-    exit 2
-  }
-  INPUT_HEAD_SHA="$(printf '%s' "$PR_PROVENANCE" | jq -r '.headRefOid // empty')"
-  BASE_SHA="$(printf '%s' "$PR_PROVENANCE" | jq -r '.baseRefOid // empty')"
-else
-  case "$PROVENANCE_TARGET" in
-    *...*)
-      RANGE_BASE="${PROVENANCE_TARGET%%...*}"
-      RANGE_HEAD="${PROVENANCE_TARGET#*...}"
-      [ -n "$RANGE_BASE" ] || RANGE_BASE="$BASE_BRANCH_REF"
-      [ "$RANGE_BASE" = "{base_branch}" ] && RANGE_BASE="$BASE_BRANCH_REF"
-      [ -n "$RANGE_HEAD" ] || RANGE_HEAD="HEAD"
-      INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${RANGE_HEAD}^{commit}")"
-      BASE_SHA="$(git -C "$WORK_DIR" merge-base "$RANGE_BASE" "$RANGE_HEAD")"
-      ;;
-    *..*)
-      RANGE_BASE="${PROVENANCE_TARGET%%..*}"
-      RANGE_HEAD="${PROVENANCE_TARGET#*..}"
-      [ -n "$RANGE_BASE" ] || RANGE_BASE="$BASE_BRANCH_REF"
-      [ "$RANGE_BASE" = "{base_branch}" ] && RANGE_BASE="$BASE_BRANCH_REF"
-      [ -n "$RANGE_HEAD" ] || RANGE_HEAD="HEAD"
-      INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${RANGE_HEAD}^{commit}")"
-      BASE_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${RANGE_BASE}^{commit}")"
-      ;;
-    *)
-      if [ "$TARGET_KIND" = "branch" ]; then
-        INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${PROVENANCE_TARGET}^{commit}")"
-        BASE_SHA="$(git -C "$WORK_DIR" merge-base "$BASE_BRANCH_REF" "$PROVENANCE_TARGET")"
-      fi
-      ;;
-  esac
-fi
 [ -n "$INPUT_HEAD_SHA" ] && [ -n "$BASE_SHA" ] || {
   echo "ERROR: cannot resolve input head/base provenance for $PROVENANCE_TARGET" >&2
   exit 2

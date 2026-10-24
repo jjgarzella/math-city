@@ -230,7 +230,7 @@ class Images(unittest.TestCase):
             neutral.assert_called_once()
             positional, kwargs = neutral.call_args
             self.assertEqual(positional[0], "/original/julia")
-            self.assertIn("Pkg.instantiate(; io=devnull)", positional[1])
+            self.assertIn("Pkg.instantiate(; io=devnull, allow_autoprecomp=false)", positional[1])
             self.assertIn("cd(ARGS[1])", positional[1])
             self.assertEqual(positional[2], self.project)
             self.assertEqual(kwargs, {"project": self.project, "preserve_load_path": True})

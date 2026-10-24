@@ -419,9 +419,13 @@ keep the previous artifact/profile for rollback and re-run native acceptance
 before activating a replacement. Publication alone does not authorize a restart.
 
 For the exact repaired Kaimon 2.9.0 managed bootstrap, image launch first runs
-`Pkg.instantiate(; io=devnull)` in the original ordinary Julia process with the
+`Pkg.instantiate(; io=devnull, allow_autoprecomp=false)` in the original ordinary Julia process with the
 same target project, working directory, depot and caller/bootstrap load path.
 This keeps Pkg's dynamic artifact-selector children on Julia's base image.
+The supported Pkg option suppresses redundant ordinary-image cache warming;
+it retains resolution and artifact installation. Editable packages load normally
+in the actual image session. Other launch routes retain their original automatic
+precompilation behavior.
 Afterwards selection requires unchanged Project/Manifest bytes and repeats
 artifact, bootstrap dependency, path-source freshness, compat and preference
 validation. Only after these checks succeed does the image process replace the
@@ -480,7 +484,8 @@ package loading, math and collection of the native result.
 | Image 2 | 80.317 | 0.247 | 0.927 | 100.948 | 5.62 |
 
 **The repeated 60-second readiness gate failed.** Image 1 met that threshold
-but overlapped the Claude reviewer's finite configuration checks. Off 1's
+without overlap from the Claude reviewer. Off 1 overlapped that reviewer's
+finite configuration checks (03:41:36–03:43:24 UTC). Off 1's
 result delivery was interrupted and recovered later, so its full time is not
 a clean comparison. Off 2's full time includes delayed background-result
 collection; its package/math evaluation completed in 58.8 seconds after that

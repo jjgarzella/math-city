@@ -535,7 +535,7 @@ def neutral_managed_bootstrap(binary, project, script, info, metadata, artifact,
     files = (project / "Project.toml", manifest_path(project, info["version"]))
     before = {file: sha(file) for file in files}
     started = time.monotonic()
-    run_julia(binary, "cd(ARGS[1]); import Pkg; Pkg.instantiate(; io=devnull)", project,
+    run_julia(binary, "cd(ARGS[1]); import Pkg; Pkg.instantiate(; io=devnull, allow_autoprecomp=false)", project,
               project=project, preserve_load_path=True)
     print(f"[city-sysimage] neutral managed instantiation completed in {time.monotonic() - started:.3f}s",
           file=sys.stderr)

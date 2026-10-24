@@ -351,10 +351,26 @@ class Prepare(unittest.TestCase):
         self.assertEqual(self.snapshot(outside), before)
 
     def test_owned_root_must_be_task_scoped(self):
-        """Passing the whole city .gc as owner would cover other actors' worktrees."""
-        before = self.snapshot()
-        result = self.prepare(self.path_map({"CityDep": self.owned_dep}), owned_root=self.city / ".gc")
-        self.assert_refused_unchanged(result, before)
+        """A shared container as owner would cover other actors' worktrees.
+
+        The refusal must come from the ownership guard itself, before any backup or
+        Julia helper runs; an incidental downstream failure does not count.
+        """
+        backups = self.city / ".gc/kaimon-sysimages/prepare-backups"
+        for container in (".gc", ".gc/worktrees", "worktrees", ".gc/agents"):
+            with self.subTest(container=container):
+                root = self.city / container
+                target = root / "other-actor" / "Target"
+                if not target.exists():
+                    shutil.copytree(self.target, target)
+                before = self.snapshot(target)
+                existing = set(backups.glob("alignment-*")) if backups.is_dir() else set()
+                result = self.prepare(self.path_map({"CityDep": self.owned_dep}), project=target, owned_root=root)
+                self.assertNotEqual(result.returncode, 0, result.log)
+                self.assertIn("owned root", result.stderr.lower(), "refused for an unrelated reason:\n" + result.log)
+                self.assertEqual(self.snapshot(target), before)
+                after = set(backups.glob("alignment-*")) if backups.is_dir() else set()
+                self.assertEqual(after, existing, "guard ran after backup/helper work began")
 
     def test_runtime_mismatch_refused(self):
         stale = self.city / "union/Manifest-1.12.toml"
@@ -394,9 +410,22 @@ class Prepare(unittest.TestCase):
         staging.rename(root / identity)
         return root
 
+    def fixture_gate(self):
+        """Stand-in managed KaimonGate bootstrap env; its locked Primes overlap is validated."""
+        gate = self.city / "gate"
+        if not gate.is_dir():
+            gate.mkdir()
+            (gate / "Project.toml").write_text(
+                f'name = "KaimonGate"\nuuid = "{image.GATE_UUID}"\nversion = "0.0.0"\n\n'
+                f'[deps]\nPrimes = "{self.uuid["Primes"]}"\n')
+            write_manifest(gate / f"Manifest-v{self.series}.toml", self.julia_version,
+                           {n: self.locked[n] for n in ("Primes", "IntegerMathUtils")})
+        return gate
+
     def select(self, root):
         argv = [sys.executable, str(CLI), "select", "--project", str(self.target),
-                "--julia", str(JULIA), "--root", str(root)]
+                "--julia", str(JULIA), "--root", str(root),
+                "--bootstrap-project", str(self.fixture_gate())]
         result = subprocess.run(argv, capture_output=True, text=True, timeout=300,
                                 env=dict(os.environ, GC_CITY=str(self.city)))
         result.log = f"rc={result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"

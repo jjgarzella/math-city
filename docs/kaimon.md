@@ -538,6 +538,28 @@ the session key returned. A fresh DeRham compilation child occupied about
 caches retained, not a fair paired benchmark. Independent updated cold/warm
 measurements and review remain required before adoption.
 
+Further independent checks of the refined route remain failures or incomplete
+evidence. Codex's first image launch timed out at 120.325 seconds although its
+gate advertised; the gate's local connected banner is unconditional and proves
+no daemon adoption. The off-mode session delivered correct QQ math and state.
+A second image launch has a recorded 40.2-second daemon startup and later native
+provenance, but client interruption prevented a continuous full-readiness
+measurement. Claude's fresh edited-source image session returned a key in
+35.7 seconds; its first state assignment executed in the gate, while the reply
+timed out and later calls reported a stalled session. An earlier no-image
+session also lost replies. The exact transport failure remains under separate
+investigation; these observations do not attribute it to the image.
+
+The finite Claude review also found two image-initialization limits: starting
+it without an active project fails in Singular's `locate_libsingular` through
+`Pkg.dependencies()`, and a bare image process with an active project opens a
+localhost TCP listener at startup (8086, advancing to 8087 when occupied).
+The listener's caller is unidentified. Normal Polymake/GAP/Singular probes
+opened no listener; those controls do not establish the cause. Identification
+and the project contract are separate acceptance gates. No package, tree or
+builder input was changed based on this observation. Production remains
+inactive, with the 60-second requirement and native delivery gates unmet.
+
 Raw receipts are retained under
 `.gc/kaimon-sysimages/mc-xf9j5/acceptance-codex-mc-wisp-21fg9x/continuation-2jgcfx/`
 (`native-events.json`, `native-results/`, startup logs and RSS samples), with

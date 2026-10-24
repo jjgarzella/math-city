@@ -257,9 +257,10 @@ review_apply_fixes__append_test_tree() {
 
 # review_apply_fixes__append_related_tests <changed-path> <allow-file> — match
 # formula files to their suite and shared helpers to test suites that reference
-# them. Existing test files are listed exactly; the suite prefix covers new tests.
+# them. Also allow existing top-level test trees for source changes. Existing test
+# files are listed exactly; suite prefixes cover new tests.
 review_apply_fixes__append_related_tests() {
-  local path="$1" allow_file="$2" suite="" name hits_file test_path rest grep_status
+  local path="$1" allow_file="$2" suite="" name hits_file test_path rest grep_status root_suite
   case "$path" in
     formulas/*.toml)
       name="${path##*/}"
@@ -295,6 +296,15 @@ review_apply_fixes__append_related_tests() {
       rm -f "$hits_file"
       ;;
   esac
+
+  # Rigs commonly keep tests in one of the repository's top-level test trees.
+  # Allow those trees for any reviewed path, but only when they already exist;
+  # the reviewed source paths themselves remain the only non-test paths allowed.
+  for root_suite in test tests; do
+    if [ -d "$REVIEW_WORK_DIR/$root_suite" ]; then
+      review_apply_fixes__append_test_tree "$root_suite" "$allow_file" || return $?
+    fi
+  done
 }
 
 # review_apply_fixes_allowed_paths [newline-list] — print the effective allowlist.

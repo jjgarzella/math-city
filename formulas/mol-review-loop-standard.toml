@@ -407,19 +407,34 @@ GC_ALLOWED_PATHS_VALUE
 )
 export TEST_COMMAND ALLOWED_PATHS
 review_apply_fixes_load apply-fixes || exit $?
-review_apply_fixes_commit_and_push "fix: apply review findings on $REVIEW_ROOT"
+commit_error_file=$(mktemp) || exit 2
+review_apply_fixes_commit_and_push "fix: apply review findings on $REVIEW_ROOT" 2>"$commit_error_file"
 commit_status=$?
 if [ "$commit_status" -eq 10 ]; then
+  cat "$commit_error_file" >&2
+  rm -f "$commit_error_file"
   echo "test failure recorded as a finding; verdict is iterate; no commit was made"
   exit 0
 fi
+if [ "$commit_status" -eq 2 ] || [ "$commit_status" -eq 3 ]; then
+  commit_error=$(tail -n 20 "$commit_error_file" | tr '\n' ' ' | cut -c 1-2000)
+  cat "$commit_error_file" >&2
+  rm -f "$commit_error_file"
+  [ -n "$commit_error" ] || commit_error="no diagnostic captured"
+  review_apply_fixes_escalate "review_apply_fixes_commit_and_push returned status $commit_status: $commit_error" || exit $?
+  exit 0
+fi
+cat "$commit_error_file" >&2
+rm -f "$commit_error_file"
 [ "$commit_status" -eq 0 ] || exit "$commit_status"
 ```
 
 `allowed_paths` is an optional newline-separated list of repo-relative file
 paths; directory prefixes end in `/`. When empty, the helper derives the list
-from the reviewed diff and adds the matching test directories. out-of-scope
-changes stop before tests or commit. `test_command` defaults to the rig's
+from the reviewed diff and adds the matching formula or top-level `test/` and
+`tests/` directories that exist. out-of-scope changes (status 3) or inspection failures
+(status 2) escalates to a human with the captured diagnostic; a test failure
+(status 10) retains its iterate-and-stop behavior. `test_command` defaults to the rig's
 `formula_vars.test_command`; when empty, the commit test gate is skipped. A test
 failure is recorded as a durable testing finding, writes `review.verdict=iterate`,
 closes this bead, and returns status 10 so no commit or push happens. A push

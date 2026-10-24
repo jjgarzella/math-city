@@ -133,6 +133,12 @@ assert_contains "$FIX_DESC" "ZFC"             "apply-fixes attributes the fix-vs
 assert_contains "$FIX_DESC" "TEST_COMMAND"    "apply-fixes passes the rig test command to the guarded commit path"
 assert_contains "$FIX_DESC" "ALLOWED_PATHS"   "apply-fixes passes the allowed-path list to the scope guard"
 assert_contains "$FIX_DESC" "review_apply_fixes_commit_and_push" "apply-fixes uses one guarded test/scope/commit/push helper"
+assert_contains "$FIX_DESC" 'if [ "$commit_status" -eq 2 ] || [ "$commit_status" -eq 3 ]; then' \
+  "apply-fixes escalates inspection failures and scope refusals"
+assert_contains "$FIX_DESC" 'review_apply_fixes_escalate "review_apply_fixes_commit_and_push returned status $commit_status:' \
+  "apply-fixes escalation includes the helper status and captured diagnostic"
+assert_contains "$FIX_DESC" 'if [ "$commit_status" -eq 10 ]; then' \
+  "apply-fixes preserves the recorded test-failure terminal path"
 assert_contains "$FIX_DESC" "review.verdict=iterate" "test failure records iterate before stopping"
 assert_contains "$FIX_DESC" "test_command"   "test gate uses the configured rig test command"
 assert_contains "$FIX_DESC" "out-of-scope"    "apply-fixes refuses out-of-scope edits before commit"

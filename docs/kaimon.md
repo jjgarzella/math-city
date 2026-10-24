@@ -35,9 +35,9 @@ Workflow/formula migration is separate work (`mc-1xkm.2` and `.3`).
   retains its bundled stdlib sources and compiled images. `KAIMON_USER_DEPOT`
   can override the fallback path.
   It sets `JULIAUP_DEPOT_PATH` explicitly to the fallback depot's `juliaup`
-  directory so private HOME does not hide installed versions, and disables
-  automatic package precompilation. Explicit precompilation uses one task.
-  These values are inherited by managed gates.
+  directory so private HOME does not hide installed versions. Precompilation
+  and thread concurrency use Julia/project defaults or explicit task settings;
+  the service imposes no single-task precompile or auto-precompile override.
 - Socket-safe XDG cache: `/tmp/math-city-kaimon`. Override only with a similarly
   short `KAIMON_CANARY_CACHE_HOME`; long ZMQ Unix socket paths fail.
 - Kaimon's built-in managed launcher uses `--project=<exact-path>` and appends
@@ -60,6 +60,9 @@ Workflow/formula migration is separate work (`mc-1xkm.2` and `.3`).
   no installed package source or project manifest; revalidate it on upgrade.
   To roll back, remove its launcher include and restore the prior launcher
   environment, then restart only Kaimon after resolving live session state.
+  `commands/check-kaimon-bootstrap.jl` verifies generated scripts without
+  starting a service or gate. Run it with the installed Julia 1.13 binary,
+  repaired service project and combined runtime/user/bundled depot.
 - Service state: `.gc/services/kaimon-canary`, retained during the rename.
   The launcher bridges the supervisor's `GC_SERVICE_SOCKET` Unix socket to
   localhost TCP; `/svc/kaimon` is a private service mount. If either child or

@@ -1,14 +1,13 @@
 #!/usr/bin/env sh
 set -eu
 
-city="${GC_CITY:-/home/jjgarzella/Developer/ai/city/math-city}"
+city="${GC_CITY:-/Users/Shared/Developer/ai/city/math-city}"
 kaimon_root="$city/.gc/kaimon-canary"
 gate_src="$kaimon_root/julia_depot/packages/KaimonGate/YvD3m"
 kaimon_project="$kaimon_root/project"
 # Match the registered DeRham recipe's Julia 1.13 without invoking juliaup's
 # auto-installing shim under Kaimon's explicit registry-directory setting.
-julia_bin="${JULIA:-/home/jjgarzella/.julia/juliaup/julia-1.13.0+0.aarch64.linux.gnu/bin/julia}"
+julia_bin="${JULIA:-/Users/jj-agents/.julia/juliaup/julia-1.13.2+0.aarch64.apple.darwin14/Julia-1.13.app/Contents/Resources/julia/bin/julia}"
 
 export JULIA_LOAD_PATH="@:@v#.#:@stdlib:$gate_src:$kaimon_project"
-export JULIA_PKG_PRECOMPILE_AUTO=0
 exec "$julia_bin" "$@"

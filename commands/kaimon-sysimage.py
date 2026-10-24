@@ -524,6 +524,7 @@ def neutral_managed_bootstrap(binary, project, script, info, metadata, artifact,
     entire graph in every selector. Unknown caller scripts are never rewritten.
     """
     if "KaimonGate.serve(" not in script:
+        check_project_compat(binary, project, info, metadata, bootstrap)
         return script
     quote = json.dumps(str(Path(project).resolve()), ensure_ascii=False).replace("$", "\\$")
     prefix = (f"cd({quote})\nimport Pkg\ntry; using Revise; catch; end\n"
@@ -534,18 +535,13 @@ def neutral_managed_bootstrap(binary, project, script, info, metadata, artifact,
     project = Path(project).resolve()
     files = (project / "Project.toml", manifest_path(project, info["version"]))
     before = {file: sha(file) for file in files}
-    started = time.monotonic()
-    run_julia(binary, "cd(ARGS[1]); import Pkg; Pkg.instantiate(; io=devnull, allow_autoprecomp=false)", project,
-              project=project, preserve_load_path=True)
-    print(f"[city-sysimage] neutral managed instantiation completed in {time.monotonic() - started:.3f}s",
-          file=sys.stderr)
+    check_project_compat(binary, project, info, metadata, bootstrap, instantiate=True)
     if any(sha(file) != digest for file, digest in before.items()):
         raise Rejected("Project/Manifest changed during neutral instantiation; prepare again")
     # Do not trust the earlier selection across a stateful Pkg operation.
     _, fresh = validate_artifact(artifact, info, project, bootstrap)
     if fresh != metadata:
         raise Rejected("artifact metadata changed during neutral instantiation")
-    check_project_compat(binary, project, info, fresh, bootstrap)
     # This exact operation completed above against unchanged lock/source inputs.
     # Keep the original import order, gate attachment, restart flag and project.
     return script.replace("Pkg.instantiate(; io=devnull)\n",
@@ -608,12 +604,13 @@ def launch(args, execute=os.execv):
             if image is None:
                 raise Rejected("; ".join(failures) or "no published compatible dependency image")
             # Julia validates direct Project compat with its own version grammar.
-            check_project_compat(binary, project, info, metadata, stack_projects)
             if "-e" in flags:
                 index = flags.index("-e") + 1
                 rewritten = neutral_managed_bootstrap(binary, project, flags[index], info,
                                                       metadata, image.parent, stack_projects)
                 flags[index] = rewritten
+            else:
+                check_project_compat(binary, project, info, metadata, stack_projects)
             flags.insert(0, f"--sysimage={image}")
             status = metadata["id"]
             print(f"[city-sysimage] selected {metadata['id']} ({info['version']})", file=sys.stderr)
@@ -628,7 +625,7 @@ def launch(args, execute=os.execv):
     return 0
 
 
-def check_project_compat(binary, project, info, metadata=None, stack_projects=()):
+def check_project_compat(binary, project, info, metadata=None, stack_projects=(), *, instantiate=False):
     code = '''import Pkg, TOML, SHA
 Pkg.is_manifest_current(ARGS[1]) === true || error("stale Project/Manifest; prepare or resolve before image selection")
 manifest = TOML.parsefile(ARGS[2])
@@ -663,20 +660,73 @@ for file in unique(projects)
     end
 end'''
     arguments = [project, manifest_path(project, info["version"])]
-    if metadata is not None:
+    if metadata is not None and not instantiate:
         # Import Pkg safely first; preference resolution then uses the actual
         # caller/base-wrapper/bootstrap stacks in this same lightweight process.
         code += "\ntry; include(ARGS[3]); TOML.print(preference_audit(ARGS[4:end]);sorted=true); " \
                 "catch; error(\"cannot audit baked-package preferences\"); end"
+    if metadata is not None:
         arguments += [HERE / "kaimon-sysimage-preferences.jl",
                       *preference_arguments(metadata["packages"], preference_stacks(project, info, stack_projects))]
+    if instantiate:
+        if metadata is None:
+            raise Rejected("neutral instantiation requires image preference provenance")
+        # Run the same validation twice with fresh file reads, around Pkg, in
+        # one owned process. Reject the first preference audit BEFORE Pkg acts.
+        validation = code.removeprefix("import Pkg, TOML, SHA\n")
+        code = '''original_load_path = copy(LOAD_PATH)
+pushfirst!(LOAD_PATH, "@stdlib")
+import Pkg, TOML, SHA
+copy!(LOAD_PATH, original_load_path)
+Base.active_project() == joinpath(ARGS[1], "Project.toml") || error("neutral project substitution")
+include(ARGS[3])
+function city_preference_check()
+    audit = preference_audit(ARGS[4:end])
+    get(audit,"failed",false) && error("cannot audit baked-package preferences")
+    contexts = get(audit,"contexts",nothing)
+    contexts isa Vector && !isempty(contexts) || error("missing effective preference audit")
+    length(get(audit,"queried_extension_uuids",[])) == length(TOML.parse(ARGS[end])["extensions"]) ||
+        error("incomplete extension preference audit")
+    all(c -> get(c,"empty",false) === true && isempty(get(c,"nonempty_uuids",["unknown"])), contexts) ||
+        error("non-default preferences for baked package(s); use normal Julia")
+    return audit
+end
+before = Dict(file=>bytes2hex(SHA.sha256(read(file))) for file in (joinpath(ARGS[1],"Project.toml"),ARGS[2]))
+pre = let
+''' + validation + '''
+    city_preference_check()
+end
+cd(ARGS[1])
+started = time_ns()
+Pkg.instantiate(; io=devnull, allow_autoprecomp=false)
+neutral_seconds = (time_ns()-started)/1e9
+all(bytes2hex(SHA.sha256(read(file))) == digest for (file,digest) in before) ||
+    error("Project/Manifest changed during neutral instantiation; prepare again")
+post = let
+''' + validation + '''
+    city_preference_check()
+end
+map(c -> c["input_files"], pre["contexts"]) == map(c -> c["input_files"], post["contexts"]) ||
+    error("preference inputs changed during neutral instantiation; use normal Julia")
+TOML.print(Dict("pre"=>pre,"post"=>post,"neutral_seconds"=>neutral_seconds);sorted=true)
+'''
     try:
-        output = run_julia(binary, code, *arguments)
+        output = run_julia(binary, code, *arguments,
+                           **({"project": project, "preserve_load_path": True} if instantiate else {}))
     except subprocess.CalledProcessError as error:
         raise Rejected(error.stderr.strip()) from error
     if metadata is not None:
-        audit = dict(preference_identity(metadata["packages"]), **tomllib.loads(output))
-        require_empty_preferences(audit, metadata["packages"])
+        parsed = tomllib.loads(output)
+        if instantiate and "neutral_seconds" in parsed:
+            print(f"[city-sysimage] neutral managed instantiation completed in {parsed['neutral_seconds']:.3f}s",
+                  file=sys.stderr)
+        audits = [parsed["pre"], parsed["post"]] if instantiate else [parsed]
+        for value in audits:
+            audit = dict(preference_identity(metadata["packages"]), **value)
+            require_empty_preferences(audit, metadata["packages"])
+        if instantiate and ([c["input_files"] for c in parsed["pre"]["contexts"]] !=
+                            [c["input_files"] for c in parsed["post"]["contexts"]]):
+            raise Rejected("preference inputs changed during neutral instantiation; use normal Julia")
         return audit
 
 
@@ -989,11 +1039,12 @@ def main():
         image, metadata, failures = select_image(root, args.project, info, bootstrap, profile)
         if image is None:
             raise Rejected("; ".join(failures) or "no image available")
-        check_project_compat(args.julia, args.project, info, metadata, bootstrap)
         script = None
         if args.managed_script is not None:
             script = neutral_managed_bootstrap(args.julia, args.project, args.managed_script,
                                               info, metadata, image.parent, bootstrap)
+        else:
+            check_project_compat(args.julia, args.project, info, metadata, bootstrap)
         if args.command == "select":
             print(json.dumps({"image": str(image), "script": script}) if script is not None else image)
         else:

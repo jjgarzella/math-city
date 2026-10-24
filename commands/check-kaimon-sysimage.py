@@ -191,7 +191,7 @@ class Images(unittest.TestCase):
         with self.assertRaisesRegex(image.Rejected, "version mismatch"):
             self.validate()
 
-    def run_launch(self, mode="auto", compatible=True, extra=(), script=None):
+    def run_launch(self, mode="auto", compatible=True, extra=(), script=None, real_compat=False):
         recipe = self.project / "kaimon.toml"
         recipe.write_text('[launch]\nthreads = "2,1"\nextra_flags = ["--check-bounds=yes"]\n'
                           '[city_sysimage]\njulia_bin = "/original/julia"\n'
@@ -204,8 +204,8 @@ class Images(unittest.TestCase):
         def execute(binary, flags):
             calls.append((binary, flags))
             self.launch_status = os.environ.get("KAIMON_CITY_SYSIMAGE")
-        with patch.dict(os.environ, {"JULIA_LOAD_PATH": str(self.gate)}, clear=True), patch.object(image, "runtime", return_value=info), \
-             patch.object(image, "check_project_compat"):
+        compat = contextlib.nullcontext() if real_compat else patch.object(image, "check_project_compat")
+        with patch.dict(os.environ, {"JULIA_LOAD_PATH": str(self.gate)}, clear=True), patch.object(image, "runtime", return_value=info), compat:
             code = image.launch(argv, execute=execute)
         self.assertEqual(recipe.read_bytes(), before)
         return code, calls, argv
@@ -221,11 +221,15 @@ class Images(unittest.TestCase):
                 "using KaimonGate\nPkg.instantiate(; io=devnull)\n"
                 f'@async KaimonGate.serve(force=true, allow_mirror=true, allow_restart={restart}, spawned_by="agent")\n')
 
+    def empty_audits(self):
+        return ('[pre]\nqueried_extension_uuids = []\n[[pre.contexts]]\nempty = true\nnonempty_uuids = []\ninput_files = {}\n'
+                '[post]\nqueried_extension_uuids = []\n[[post.contexts]]\nempty = true\nnonempty_uuids = []\ninput_files = {}\n')
+
     def test_managed_neutral_instantiate_before_image_preserves_flags(self):
         for restart in ("false", "true"):
             script = self.managed_script(restart)
-            with patch.object(image, "run_julia") as neutral:
-                code, calls, original = self.run_launch(script=script)
+            with patch.object(image, "run_julia", return_value=self.empty_audits()) as neutral:
+                code, calls, original = self.run_launch(script=script, real_compat=True)
             self.assertEqual(code, 0)
             neutral.assert_called_once()
             positional, kwargs = neutral.call_args
@@ -254,7 +258,7 @@ class Images(unittest.TestCase):
         for mode in ("auto", "required"):
             failure = image.subprocess.CalledProcessError(1, ["julia"], stderr="missing artifact")
             with patch.object(image, "run_julia", side_effect=failure):
-                code, calls, argv = self.run_launch(mode=mode, script=self.managed_script())
+                code, calls, argv = self.run_launch(mode=mode, script=self.managed_script(), real_compat=True)
             if mode == "required":
                 self.assertEqual(code, 78)
                 self.assertEqual(calls, [])
@@ -266,8 +270,9 @@ class Images(unittest.TestCase):
             old = file.read_bytes()
             def change(*args, **kwargs):
                 file.write_bytes(old + b"\n# changed during instantiate\n")
+                return self.empty_audits()
             with patch.object(image, "run_julia", side_effect=change):
-                _, calls, argv = self.run_launch(script=self.managed_script())
+                _, calls, argv = self.run_launch(script=self.managed_script(), real_compat=True)
             self.assertEqual(calls[0][1], ["/original/julia", *argv])
             self.assertIn("changed during neutral instantiation", self.launch_status)
             file.write_bytes(old)
@@ -275,8 +280,9 @@ class Images(unittest.TestCase):
     def test_managed_revalidates_artifact_after_instantiate(self):
         def corrupt(*args, **kwargs):
             (self.artifact / "image.dylib").write_bytes(b"changed during instantiate")
+            return self.empty_audits()
         with patch.object(image, "run_julia", side_effect=corrupt):
-            _, calls, argv = self.run_launch(script=self.managed_script())
+            _, calls, argv = self.run_launch(script=self.managed_script(), real_compat=True)
         self.assertEqual(calls[0][1], ["/original/julia", *argv])
         self.assertIn("checksum mismatch", self.launch_status)
 
@@ -297,8 +303,26 @@ class Images(unittest.TestCase):
                 with self.assertRaisesRegex(image.Rejected, message):
                     image.neutral_managed_bootstrap("/original/julia", self.project, script,
                                                    self.info, self.meta, self.artifact, [self.gate])
-            neutral.assert_called_once()
-            check.assert_called_once_with("/original/julia", self.project, self.info, self.meta, [self.gate])
+            neutral.assert_not_called()
+            check.assert_called_once_with("/original/julia", self.project, self.info, self.meta, [self.gate], instantiate=True)
+
+    def test_combined_guard_rejects_each_audit_and_preserves_caller_stack(self):
+        for part in ("pre", "post"):
+            audit = self.empty_audits()
+            marker = f'[{part}]\nqueried_extension_uuids = []\n[[{part}.contexts]]\nempty = true\nnonempty_uuids = []'
+            audit = audit.replace(marker, marker.replace('empty = true', 'empty = false').replace('nonempty_uuids = []', f'nonempty_uuids = ["{UUID}"]'))
+            with patch.object(image, "run_julia", return_value=audit):
+                code, calls, original = self.run_launch(script=self.managed_script(), real_compat=True)
+            self.assertEqual(code, 0)
+            self.assertEqual(calls[0][1], ["/original/julia", *original])
+            self.assertIn("non-default preferences", self.launch_status)
+
+    def test_combined_guard_rejects_preference_file_drift_even_if_cached_empty(self):
+        audit = self.empty_audits().replace('input_files = {}', 'input_files = {file="before"}', 1)
+        with patch.object(image, "run_julia", return_value=audit):
+            _, calls, original = self.run_launch(script=self.managed_script(), real_compat=True)
+        self.assertEqual(calls[0][1], ["/original/julia", *original])
+        self.assertIn("preference inputs changed", self.launch_status)
 
     def test_fallback_and_required(self):
         code, calls, argv = self.run_launch(compatible=False)

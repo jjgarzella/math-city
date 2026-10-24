@@ -436,6 +436,23 @@ also rejects; auto mode retains the original ordinary Julia startup, while
 required mode fails. Off mode, explicit caller images, test scripts and cache
 policy bypasses retain their original bootstrap without this prelaunch step.
 
+The selected-image route performs both freshness/compat/preference audits and
+instantiation in one owned ordinary-Julia process. The first audit must pass
+before Pkg acts. The second audit rereads target and path-source inputs;
+Project/Manifest bytes and preference-file hashes must remain unchanged.
+Comparing preference input hashes also rejects drift if Julia has cached an
+earlier empty preference value. Artifact checksum and bootstrap provenance are
+revalidated after that process returns. This reduces repeated Pkg startup;
+it makes no change to caller flags or the readiness requirement.
+
+`commands/check-kaimon-neutral-bootstrap.py` exercises this route with actual
+ordinary-Julia processes and a copied owned DeRham fixture. It checks success,
+the pre-instantiation preference veto, Project/Manifest mutations, a post-audit
+preference veto, and preference-file drift with empty values. Supply the exact
+`--julia`, `--artifact`, prepared `--source-project`, `--bootstrap-project` and
+an explicit `--owned-root` for receipts. It loads no image, starts no gate and
+edits only its new test directory; native delivery remains a separate gate.
+
 After source/native review, create a frozen profile from the completed image,
 the full union lock and the explicit source map:
 

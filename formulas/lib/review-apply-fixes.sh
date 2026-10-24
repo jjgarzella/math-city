@@ -744,7 +744,7 @@ review_apply_fixes_test_before_commit() {
   }
   if ! printf '%s\n' "$head_failures" | sed '/^$/d' > "$head_file" ||
      ! printf '%s\n' "$base_failures" | sed '/^$/d' > "$base_file" ||
-     ! comm -23 "$head_file" "$base_file" > "$new_file"; then
+     ! LC_ALL=C comm -23 "$head_file" "$base_file" > "$new_file"; then
     base_error="could not compare normalized fix-head and immutable-base failure sets"
     rm -f "$head_file" "$base_file" "$new_file"
     review_apply_fixes__comparison_failure_iterate "$command_text" "$head_status" "$output_file" "$base_error"

@@ -491,6 +491,14 @@ class Prepare(unittest.TestCase):
         result = self.select(root)
         self.assertEqual(result.returncode, 0, result.log)
 
+    def test_selection_validates_bootstrap_gate_overlap(self):
+        """Negative control: the fixture gate is really checked, not a bypass."""
+        root = self.prepared_with_artifact()
+        manifest = self.fixture_gate() / f"Manifest-v{self.series}.toml"
+        manifest.write_text(manifest.read_text().replace(self.locked["Primes"]["git-tree-sha1"], "0" * 40))
+        self.assert_stale_rejected(root)
+        self.assertIn("bootstrap", self.select(root).stderr.lower(), "rejected for an unrelated reason")
+
     def test_selection_independent_of_unrelated_canonical_projects(self):
         """Edits in an unrelated canonical checkout must not invalidate an owned target."""
         root = self.prepared_with_artifact()

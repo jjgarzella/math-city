@@ -43,7 +43,35 @@ assert_eq "yes" "$(meta_val gc.review.eligible)" "root records gc.review.eligibl
   || fail "root records eligibility_reason"
 rm -rf "$repo"
 
-# --- scenario B: an empty diff -> TARGET_KIND=empty --------------------------
+# --- scenario B: PR provenance and diff share the captured immutable OIDs ----
+repo="$(new_git_repo)"
+pr_base_sha="$(git -C "$repo" rev-parse HEAD)"
+( cd "$repo"; printf 'package app\nfunc Snapshot() int { return 1 }\n' > app.go; git add app.go; git commit -q -m "PR snapshot" )
+pr_head_sha="$(git -C "$repo" rev-parse HEAD)"
+# Advance local HEAD after the mocked PR snapshot; a moving-target `gh pr diff`
+# would now produce different content from the OIDs returned by `gh pr view`.
+( cd "$repo"; printf 'package app\nfunc Snapshot() int { return 1 }\nfunc Later() int { return 2 }\n' > app.go; git add app.go; git commit -q -m "later PR update" )
+AB_CITY=""; AB_META_LOG=""; AB_PHASE_META_LOG=""; AB_ROOT="root-pr"
+AB_PHASE_BEAD="analyze-pr"; AB_ELIGIBLE="yes"; AB_REASON="eligible: PR snapshot"
+AB_GH_PR_HEAD_SHA="$pr_head_sha"; AB_GH_PR_BASE_SHA="$pr_base_sha"; AB_GH_API_FIXTURE="local"
+AB_GH_API_LOG="$(mktemp)"
+run_analyze_block 'resolve-diff.sh' "42" "$repo"
+assert_eq "0" "$AB_RC" "analyze resolves a PR using the mocked immutable compare"
+assert_eq "$pr_head_sha" "$(phase_meta_val analyze-pr input_head_sha)" \
+  "PR provenance records the head SHA captured by the resolver"
+assert_eq "$pr_base_sha" "$(phase_meta_val analyze-pr base_sha)" \
+  "PR provenance records the base SHA captured by the resolver"
+assert_eq "$(git -C "$repo" diff "$pr_base_sha...$pr_head_sha" | LC_ALL=C shasum -a 256 | awk '{print $1}')" \
+  "$(phase_meta_val analyze-pr diff_sha256)" \
+  "PR provenance hash matches the diff for the captured head/base snapshot"
+assert_contains "$(cat "$AB_INPUTS/diff")" "func Snapshot()" "pinned PR diff contains the captured snapshot"
+assert_not_contains "$(cat "$AB_INPUTS/diff")" "func Later()" \
+  "pinned PR diff excludes a later worktree commit"
+assert_contains "$(cat "$AB_GH_API_LOG")" "$pr_base_sha...$pr_head_sha" \
+  "PR compare request uses the captured immutable OIDs"
+rm -rf "$repo"
+
+# --- scenario C: an empty diff -> TARGET_KIND=empty --------------------------
 repo="$(new_git_repo)"   # HEAD == base, default target "" -> empty
 AB_CITY=""; AB_META_LOG=""; AB_PHASE_META_LOG=""; AB_ROOT="root-empty"
 AB_PHASE_BEAD="analyze-empty"; AB_ELIGIBLE="no"; AB_REASON="empty diff, nothing to review"
@@ -58,7 +86,7 @@ assert_eq "0" "$AB_RC" "empty-diff eligibility verdict persists successfully"
 assert_eq "no" "$(meta_val gc.review.eligible)" "empty diff remains ineligible"
 rm -rf "$repo"
 
-# --- scenario C: a path target -> whole-repo audit ---------------------------
+# --- scenario D: a path target -> whole-repo audit ---------------------------
 repo="$(new_git_repo)"
 AB_CITY=""; AB_META_LOG=""; AB_PHASE_META_LOG=""; AB_ROOT="root-path"
 AB_PHASE_BEAD="analyze-path"; AB_ELIGIBLE="yes"; AB_REASON="eligible: whole-repo audit"
@@ -70,7 +98,7 @@ run_analyze_block 'gc.review.eligible' "." "$repo"
 assert_eq "yes" "$(meta_val gc.review.eligible)" "whole-repo path audit remains eligible"
 rm -rf "$repo"
 
-# --- scenario D: changed-head retry with an existing findings container -------
+# --- scenario E: changed-head retry with an existing findings container -------
 repo="$(new_git_repo)"
 ( cd "$repo"; git checkout -q -b feature )
 ( cd "$repo"; printf 'package app\nfunc A() {}\n' > app.go; git add app.go; git commit -q -m "add A" )
@@ -140,7 +168,7 @@ assert_eq "0" "$LB_RC" "quality lane starts on the changed-head retry"
 assert_contains "$LB_OUT" "[quality] kind=range" "eligible retry reaches the lens review path"
 rm -rf "$repo"
 
-# --- scenario E: a non-empty but trivial diff remains ineligible --------------
+# --- scenario F: a non-empty but trivial diff remains ineligible --------------
 repo="$(new_git_repo)"
 ( cd "$repo"; printf 'package app\nfunc A() {}\n' > app.go; git add app.go; git commit -q -m "add app" )
 ( cd "$repo"; git checkout -q -b feature )

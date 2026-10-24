@@ -22,10 +22,12 @@
 #   stderr  human narration: the resolved kind, the touched files, the temp-file
 #           paths, and any rejection / empty-diff explanation.
 #   stdout  machine-readable result, emitted ONLY for a non-empty resolved diff —
-#           three shell assignments a caller can `eval` (or source):
+#           shell assignments a caller can `eval` (or source):
 #               TARGET_KIND=pr|branch|range
 #               DIFF_FILE=<path to the unified diff>
 #               FILES_FILE=<path to the newline-separated touched-file list>
+#               PR_HEAD_SHA=<captured PR head commit> (PR targets only)
+#               PR_BASE_SHA=<captured PR base commit> (PR targets only)
 #           On an empty diff stdout is empty: that emptiness IS the clean-stop
 #           signal (there is nothing to review).
 #
@@ -56,20 +58,55 @@ esac
 
 DIFF_FILE="$(mktemp)"
 FILES_FILE="$(mktemp)"
+PR_HEAD_SHA=""
+PR_BASE_SHA=""
 
 if printf '%s' "$TARGET" | grep -Eq '^#?[0-9]+$' \
    || printf '%s' "$TARGET" | grep -Eq '^https?://.*/pull/[0-9]+/?$'; then
-  # --- PR: a number, #number, or a PR URL -> gh pr diff ---
+  # --- PR: capture immutable OIDs, then compare those exact commits ---
   PR="${TARGET#\#}"
   TARGET_KIND="pr"
-  # Per-invocation temp for gh's stderr so concurrent reviewer lanes never
-  # collide on a shared path.
   GH_ERR="$(mktemp)"
-  if ! gh pr diff "$PR" > "$DIFF_FILE" 2> "$GH_ERR"; then
-    echo "ERROR: 'gh pr diff $PR' failed:" >&2; cat "$GH_ERR" >&2
+  if ! PR_JSON="$(gh pr view "$PR" --json headRefOid,baseRefOid,url 2> "$GH_ERR")"; then
+    echo "ERROR: 'gh pr view $PR' failed:" >&2; cat "$GH_ERR" >&2
     exit 3
   fi
-  gh pr diff "$PR" --name-only > "$FILES_FILE"
+  PR_HEAD_SHA="$(printf '%s' "$PR_JSON" | jq -r '.headRefOid // empty')"
+  PR_BASE_SHA="$(printf '%s' "$PR_JSON" | jq -r '.baseRefOid // empty')"
+  PR_URL="$(printf '%s' "$PR_JSON" | jq -r '.url // empty')"
+  for PR_SHA in "$PR_HEAD_SHA" "$PR_BASE_SHA"; do
+    if ! printf '%s' "$PR_SHA" | grep -Eq '^([0-9a-f]{40}|[0-9a-f]{64})$'; then
+      echo "ERROR: 'gh pr view $PR' returned an invalid head/base commit SHA" >&2
+      exit 3
+    fi
+  done
+  case "$PR_URL" in
+    https://*|http://*) ;;
+    *) echo "ERROR: 'gh pr view $PR' returned an invalid PR URL" >&2; exit 3 ;;
+  esac
+  PR_HOST="${PR_URL#*://}"
+  PR_HOST="${PR_HOST%%/*}"
+  PR_PATH="${PR_URL#*://$PR_HOST/}"
+  PR_REPO="${PR_PATH%%/pull/*}"
+  case "$PR_REPO" in
+    */*) ;;
+    *) echo "ERROR: cannot resolve base repository from PR URL $PR_URL" >&2; exit 3 ;;
+  esac
+
+  # Pin both the diff and file list to the captured commits. A moving PR ref
+  # cannot make the content disagree with the recorded provenance.
+  COMPARE_ENDPOINT="repos/${PR_REPO}/compare/${PR_BASE_SHA}...${PR_HEAD_SHA}"
+  if ! gh api --hostname "$PR_HOST" "$COMPARE_ENDPOINT" --header 'Accept: application/vnd.github.diff' \
+      > "$DIFF_FILE" 2> "$GH_ERR"; then
+    echo "ERROR: pinned PR diff fetch failed for $PR ($PR_BASE_SHA...$PR_HEAD_SHA):" >&2
+    cat "$GH_ERR" >&2
+    exit 3
+  fi
+  if ! gh api --hostname "$PR_HOST" "$COMPARE_ENDPOINT" --jq '.files[].filename' > "$FILES_FILE" 2> "$GH_ERR"; then
+    echo "ERROR: pinned PR file-list fetch failed for $PR ($PR_BASE_SHA...$PR_HEAD_SHA):" >&2
+    cat "$GH_ERR" >&2
+    exit 3
+  fi
 elif printf '%s' "$TARGET" | grep -q '\.\.'; then
   # --- commit-range or base_ref..HEAD -> git diff <range> (verbatim) ---
   TARGET_KIND="range"
@@ -103,4 +140,5 @@ fi
 } >&2
 
 # Machine result -> stdout (eval / source-able by the caller).
-printf 'TARGET_KIND=%s\nDIFF_FILE=%s\nFILES_FILE=%s\n' "$TARGET_KIND" "$DIFF_FILE" "$FILES_FILE"
+printf 'TARGET_KIND=%s\nDIFF_FILE=%s\nFILES_FILE=%s\nPR_HEAD_SHA=%s\nPR_BASE_SHA=%s\n' \
+  "$TARGET_KIND" "$DIFF_FILE" "$FILES_FILE" "${PR_HEAD_SHA:-}" "${PR_BASE_SHA:-}"

@@ -72,4 +72,5 @@ the deterministic transport that frames them is. Those are a dogfood concern
   `bd create` / `bd update` to `BD_CREATE_LOG` / `BD_UPDATE_LOG`. Never touches
   Dolt.
 - `gc` — no-op success (the blocks only call `gc bd heartbeat`).
-- `gh` — canned `gh pr diff` so the resolver's PR branch is testable offline.
+- `gh` — canned PR metadata and immutable compare responses so the resolver's PR
+  branch is testable offline.

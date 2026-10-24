@@ -154,6 +154,10 @@ run_analyze_block() {
     BD_PHASE_META_LOG="$AB_PHASE_META_LOG" \
     BD_FINDINGS="${AB_FINDINGS:-${AB_ROOT}.findings}" \
     BD_CANDIDATES_FILE="${AB_CANDIDATES_FILE:-}" \
+    GH_PR_HEAD_SHA="${AB_GH_PR_HEAD_SHA:-}" \
+    GH_PR_BASE_SHA="${AB_GH_PR_BASE_SHA:-}" \
+    GH_API_FIXTURE="${AB_GH_API_FIXTURE:-}" \
+    GH_API_LOG="${AB_GH_API_LOG:-}" \
     PATH="$SUITE_DIR/bin:$PATH" \
     bash -c "$script" 2>&1
   )"

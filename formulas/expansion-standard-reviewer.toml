@@ -205,9 +205,10 @@ RESOLVER="${GC_CITY}/formulas/lib/resolve-diff.sh"
 [ -x "$RESOLVER" ] || { echo "ERROR: shared resolver missing or not executable at $RESOLVER" >&2; exit 2; }
 
 # Resolve IN the work_dir under review (the checked-out change). stdout carries the
-# eval-able TARGET_KIND/DIFF_FILE/FILES_FILE (empty on an empty diff); stderr
-# narrates. Exit 2 = path/whole-tree, exit 3 = PR fetch failed. review_target and
-# base_branch are baked in at expansion (single-brace expansion vars).
+# eval-able TARGET_KIND/DIFF_FILE/FILES_FILE plus pinned PR_HEAD_SHA/PR_BASE_SHA
+# for PR targets (empty on an empty diff); stderr narrates. Exit 2 = path/whole-tree,
+# exit 3 = PR fetch failed. review_target and base_branch are baked in at expansion
+# (single-brace expansion vars).
 RESOLVED="$(cd "$WORK_DIR" && "$RESOLVER" "{review_target}" "{base_branch}")"; RC=$?
 
 if [ "$RC" -eq 3 ]; then
@@ -256,13 +257,12 @@ BASE_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${BASE_BRANCH_REF}^{commit}" 
 
 # Keep the commit IDs aligned with resolve-diff.sh's target semantics.
 if [ "$TARGET_KIND" = "pr" ]; then
-  PR_PROVENANCE="$(cd "$WORK_DIR" && gh pr view "$PROVENANCE_TARGET" \
-    --json headRefOid,baseRefOid 2>/dev/null)" || {
-    echo "ERROR: cannot resolve PR head/base provenance for $PROVENANCE_TARGET" >&2
+  INPUT_HEAD_SHA="${PR_HEAD_SHA:-}"
+  BASE_SHA="${PR_BASE_SHA:-}"
+  [ -n "$INPUT_HEAD_SHA" ] && [ -n "$BASE_SHA" ] || {
+    echo "ERROR: resolver omitted pinned PR head/base provenance for $PROVENANCE_TARGET" >&2
     exit 2
   }
-  INPUT_HEAD_SHA="$(printf '%s' "$PR_PROVENANCE" | jq -r '.headRefOid // empty')"
-  BASE_SHA="$(printf '%s' "$PR_PROVENANCE" | jq -r '.baseRefOid // empty')"
 else
   case "$PROVENANCE_TARGET" in
     *...*)

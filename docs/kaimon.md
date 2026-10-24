@@ -442,6 +442,65 @@ RSS. Existing depots and OS caches remain intact: these are process-cold tests,
 not claims of OS-cold caches or clean depots. Record the first launch separately,
 report the actual 60-second result, and retain the prescribed independent gates.
 
+### Native acceptance results (2026-10-24, rollout pending)
+
+The completed current-Mac image is
+`be6cc6b35c11eef2b1077e5e0b0d3874f540d2a6872f2253f7ed2eb329487640`,
+SHA256 `fb46d195e7392f87a1a262149cb6c420dd05ee67702f637bedebd729672fb2a9`.
+It contains 32 external roots and 253 dependency graph entries, occupies
+1,818,498,328 bytes and took 1,637 seconds to build with Julia 1.13.2 and
+PackageCompiler 2.4.3. Publication of profile `ceb668e8...` is inactive;
+production adoption remains pending independent acceptance and readiness.
+
+Independent Codex native calls used the same owned DeRham worktree, exact
+runtime, prepared lock, managed depot and default `auto` threads (14+1).
+Each row starts a fresh process; OS caches and existing depots were retained.
+Full delivery includes startup, native call handling, provenance checks,
+package loading, math and collection of the native result.
+
+| Run | `start_session` seconds | Package load seconds | First math seconds | Full native delivery seconds | Peak aggregate RSS, GB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Image 1 | 34.128 | 0.179 | 0.138 | 54.558 | 5.67 |
+| Off 1 | 48.137 | 52.474 | 0.792 | 168.621 | 2.87 |
+| Off 2 | 18.129 | 54.927 | 1.146 | 104.883 | 2.95 |
+| Image 2 | 80.317 | 0.247 | 0.927 | 100.948 | 5.62 |
+
+**The repeated 60-second readiness gate failed.** Image 1 met that threshold
+but overlapped the Claude reviewer's finite configuration checks. Off 1's
+result delivery was interrupted and recovered later, so its full time is not
+a clean comparison. Off 2's full time includes delayed background-result
+collection; its package/math evaluation completed in 58.8 seconds after that
+evaluation began. Off 2 and Image 2 ran after the reviewer stopped Julia work.
+Fast image imports establish a package-load improvement; these measurements
+do not establish a large improvement in total native readiness.
+
+A subsequent source-edit acceptance attempt timed out at 120.332 seconds;
+its late gate stalled and refused evaluation. After owned shutdown, a fresh
+follow-up returned in 104.284 seconds and delivered package/math results in
+126.141 seconds. That follow-up saw the source-only probe return 42, retained
+Project/Manifest hashes and the correct editable source, and verified the
+actual CUDA source tree. Revise was absent; this proves a fresh-session edit,
+without establishing live reload or passing readiness.
+
+The finite startup investigation first located Image 2's actual image process
+about 5.3 seconds after invocation, followed by serial child processes until
+about 74 seconds. Historical RSS samples record descendant IDs and root
+commands, so they cannot identify those children. Installed Julia Pkg code
+launches dynamic artifact selectors through `Base.julia_cmd()`, which inherits
+the current image; this is a candidate source of repeated initialization
+overhead. Separate first-image cache compilation was also reported by the
+Claude reviewer. Full child commands and timestamped bootstrap phases are
+being collected on owned acceptance fixtures to distinguish those costs.
+No cause, fix, readiness waiver or production activation is inferred from
+the import timings.
+
+Raw receipts are retained under
+`.gc/kaimon-sysimages/mc-xf9j5/acceptance-codex-mc-wisp-21fg9x/continuation-2jgcfx/`
+(`native-events.json`, `native-results/`, startup logs and RSS samples), with
+finite diagnostic receipts under the same task's `readiness-diagnostic/` and
+`full-retry-e8be927/` directories. Preserve the failed attempts when adding
+later acceptance or fix results.
+
 ## Rollback
 
 The former default Claude user-scoped Julia server command is exactly:

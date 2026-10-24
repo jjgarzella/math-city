@@ -157,6 +157,12 @@ open(mfile,"w") do io
     TOML.print(io,m;sorted=true)
 end
 before_boot = bytes2hex(SHA.sha256(read(mfile)))
+# Pkg's artifact-selector subprocess inherits Base.active_project(), even
+# when instantiate receives an explicit Context. Activate only now, after the
+# broken/foreign manifest has been replaced and Pkg loaded from stdlib safely.
+Pkg.activate(project;io=devnull)
+"@" in LOAD_PATH || pushfirst!(LOAD_PATH,"@")
+@assert Base.active_project() == pfile
 Pkg.instantiate(Pkg.Types.Context(env=Pkg.Types.EnvCache(pfile));allow_autoprecomp=false)
 @assert Pkg.is_manifest_current(project) === true
 @assert bytes2hex(SHA.sha256(read(mfile))) == before_boot "Instantiation changed the prepared closure lock"

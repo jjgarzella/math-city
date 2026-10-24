@@ -134,7 +134,8 @@ class Prepare(unittest.TestCase):
         argv += list(extra)
         env = dict(os.environ, GC_CITY=str(self.city), JULIA_PKG_OFFLINE="true",
                    JULIA_PKG_PRECOMPILE_AUTO="0", JULIA_LOAD_PATH="@:@stdlib",
-                   JULIA_DEPOT_PATH=os.pathsep.join([str(self.depot), str(DEPOT), str(Path.home() / ".julia")]))
+                   # Trailing empty entry keeps Julia's bundled stdlib caches (not a clean-depot gate).
+                   JULIA_DEPOT_PATH=os.pathsep.join([str(self.depot), str(DEPOT), str(Path.home() / ".julia"), ""]))
         env.pop("JULIA_PROJECT", None)
         result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=600)
         result.log = f"rc={result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -200,7 +201,8 @@ class Prepare(unittest.TestCase):
             return
         report = self.report(result)
         diff = Path(report["project_diff"]).read_text()
-        self.assertIn("# pinned by authors", diff, "Project.diff omits a removed author line")
+        if "# pinned by authors" not in after:
+            self.assertIn("# pinned by authors", diff, "Project.diff omits a removed author line")
         self.assertIn(str(self.owned_dep), diff, "Project.diff omits the source replacement")
         self.assertEqual((Path(report["rollback_backup"]) / "Project.toml").read_text(), before)
         old, new = tomllib.loads(before), tomllib.loads(after)

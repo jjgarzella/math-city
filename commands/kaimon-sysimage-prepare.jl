@@ -115,6 +115,7 @@ for name in ("project_hash","city_path_project_hashes","city_workspace_project_h
     delete!(m,name)
 end
 if p != original_project
+  let
     # Preserve unrelated text, comments and table order. Only replace source
     # tables; unusual TOML syntax falls back to serialization with an exact diff.
     original_text = read(pfile,String)
@@ -138,6 +139,7 @@ if p != original_project
     matches = try TOML.parse(proposal) == p catch; false end
     matches || (proposal = sprint(io->TOML.print(io,p;sorted=true)))
     write(pfile,proposal)
+  end
 end
 series = "$(VERSION.major).$(VERSION.minor)"
 mfile = joinpath(project,"Manifest-v$series.toml")

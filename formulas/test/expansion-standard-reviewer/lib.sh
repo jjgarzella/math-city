@@ -108,6 +108,7 @@ $STEP0_STDOUT"
 #   AB_OUT       combined stdout+stderr
 #   AB_INPUTS    the durable inputs dir ($GC_CITY/.gc/review-inputs/$AB_ROOT)
 #   AB_META_LOG  file of recorded `key=value` --set-metadata pairs
+#   AB_PHASE_META_LOG  file of recorded phase-bead-id + metadata pairs
 #   AB_CITY      the sandbox GC_CITY
 # Re-uses AB_ROOT/AB_CITY/AB_META_LOG across calls in the same scenario when the
 # caller pre-sets them; otherwise fresh ones are minted.
@@ -115,6 +116,7 @@ AB_RC=0
 AB_OUT=""
 AB_INPUTS=""
 AB_META_LOG=""
+AB_PHASE_META_LOG=""
 AB_CITY=""
 AB_ROOT=""
 run_analyze_block() {
@@ -127,21 +129,31 @@ run_analyze_block() {
     chmod +x "$AB_CITY/formulas/lib/resolve-diff.sh"
   fi
   [ -z "${AB_META_LOG:-}" ] && AB_META_LOG="$(mktemp)"
+  [ -z "${AB_PHASE_META_LOG:-}" ] && AB_PHASE_META_LOG="$(mktemp)"
   AB_INPUTS="$AB_CITY/.gc/review-inputs/$AB_ROOT"
 
   script="$(RENDER_REVIEW_TARGET="$rtarget" RENDER_BASE_BRANCH="${RENDER_BASE_BRANCH:-main}" \
     formula_py block '{target}.analyze' "$sig")" || {
       AB_RC=99; AB_OUT="render failed: no block with signature [$sig]"; return 1; }
+  if [ -n "${AB_ELIGIBLE:-}" ]; then
+    script="$(printf '%s\n' "$script" | sed "s/^ELIGIBLE=\"yes\"/ELIGIBLE=\"$AB_ELIGIBLE\"/")"
+  fi
+  if [ -n "${AB_REASON:-}" ]; then
+    script="$(printf '%s\n' "$script" | sed "s/^REASON=\"eligible: non-trivial change under review\"/REASON=\"$AB_REASON\"/")"
+  fi
 
   local out
   out="$(
     cd "$workdir" 2>/dev/null || cd "${TMPDIR:-/tmp}"
     GC_CITY="$AB_CITY" \
-    GC_BEAD_ID="analyze-bead-1" \
+    GC_BEAD_ID="${AB_PHASE_BEAD:-analyze-bead-1}" \
     GC_AGENT="gascity/test.polecat" \
     BD_ROOT="$AB_ROOT" \
     BD_WORKDIR="$workdir" \
     BD_META_LOG="$AB_META_LOG" \
+    BD_PHASE_META_LOG="$AB_PHASE_META_LOG" \
+    BD_FINDINGS="${AB_FINDINGS:-${AB_ROOT}.findings}" \
+    BD_CANDIDATES_FILE="${AB_CANDIDATES_FILE:-}" \
     PATH="$SUITE_DIR/bin:$PATH" \
     bash -c "$script" 2>&1
   )"
@@ -153,6 +165,15 @@ run_analyze_block() {
 meta_val() {
   [ -f "${AB_META_LOG:-/nonexistent}" ] || { printf ''; return; }
   grep "^$1=" "$AB_META_LOG" | tail -1 | sed "s/^$1=//"
+}
+
+# phase_meta_val <bead-id> <key> — last recorded value for one metadata key on
+# a specific analyze phase bead.
+phase_meta_val() {
+  [ -f "${AB_PHASE_META_LOG:-/nonexistent}" ] || { printf ''; return; }
+  awk -F '\t' -v id="id=$1" -v key="$2" \
+    '$1 == id && index($2, key "=") == 1 { value=substr($2, length(key)+2) } END { print value }' \
+    "$AB_PHASE_META_LOG"
 }
 
 # --- review-lane (lib + lane) runners ----------------------------------------
@@ -200,6 +221,8 @@ lane_env() {
   BD_REVIEW_TARGET_KIND="$LB_TARGET_KIND" \
   BD_REVIEW_ELIGIBLE="$LB_ELIGIBLE" \
   BD_REVIEW_ELIGIBILITY_REASON="$LB_REASON" \
+  BD_FINDINGS="${LB_FINDINGS:-${LB_ROOT}.findings}" \
+  BD_CANDIDATES_FILE="${LB_CANDIDATES_FILE:-}" \
   PATH="$SUITE_DIR/bin:$PATH" \
   "$@"
 }

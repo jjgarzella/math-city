@@ -243,6 +243,67 @@ fi
 # bead-natively. (eligibility + summary are recorded in step 3, after the gate.)
 bd update "$ROOT" --set-metadata gc.review.inputs_dir="$INPUTS_DIR"
 bd update "$ROOT" --set-metadata gc.review.target_kind="$TARGET_KIND"
+
+# Provenance belongs to this analyze phase bead, so retries retain a separate
+# record for the exact source and durable diff each attempt reviewed.
+PROVENANCE_TARGET="{review_target}"
+[ -n "$PROVENANCE_TARGET" ] || PROVENANCE_TARGET="{base_branch}..HEAD"
+BASE_BRANCH_REF="{base_branch}"
+git -C "$WORK_DIR" rev-parse --verify "${BASE_BRANCH_REF}^{commit}" >/dev/null 2>&1 \
+  || BASE_BRANCH_REF="origin/{base_branch}"
+INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify 'HEAD^{commit}')"
+BASE_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${BASE_BRANCH_REF}^{commit}" 2>/dev/null)"
+
+# Keep the commit IDs aligned with resolve-diff.sh's target semantics.
+if [ "$TARGET_KIND" = "pr" ]; then
+  PR_PROVENANCE="$(cd "$WORK_DIR" && gh pr view "$PROVENANCE_TARGET" \
+    --json headRefOid,baseRefOid 2>/dev/null)" || {
+    echo "ERROR: cannot resolve PR head/base provenance for $PROVENANCE_TARGET" >&2
+    exit 2
+  }
+  INPUT_HEAD_SHA="$(printf '%s' "$PR_PROVENANCE" | jq -r '.headRefOid // empty')"
+  BASE_SHA="$(printf '%s' "$PR_PROVENANCE" | jq -r '.baseRefOid // empty')"
+else
+  case "$PROVENANCE_TARGET" in
+    *...*)
+      RANGE_BASE="${PROVENANCE_TARGET%%...*}"
+      RANGE_HEAD="${PROVENANCE_TARGET#*...}"
+      [ -n "$RANGE_BASE" ] || RANGE_BASE="$BASE_BRANCH_REF"
+      [ "$RANGE_BASE" = "{base_branch}" ] && RANGE_BASE="$BASE_BRANCH_REF"
+      [ -n "$RANGE_HEAD" ] || RANGE_HEAD="HEAD"
+      INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${RANGE_HEAD}^{commit}")"
+      BASE_SHA="$(git -C "$WORK_DIR" merge-base "$RANGE_BASE" "$RANGE_HEAD")"
+      ;;
+    *..*)
+      RANGE_BASE="${PROVENANCE_TARGET%%..*}"
+      RANGE_HEAD="${PROVENANCE_TARGET#*..}"
+      [ -n "$RANGE_BASE" ] || RANGE_BASE="$BASE_BRANCH_REF"
+      [ "$RANGE_BASE" = "{base_branch}" ] && RANGE_BASE="$BASE_BRANCH_REF"
+      [ -n "$RANGE_HEAD" ] || RANGE_HEAD="HEAD"
+      INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${RANGE_HEAD}^{commit}")"
+      BASE_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${RANGE_BASE}^{commit}")"
+      ;;
+    *)
+      if [ "$TARGET_KIND" = "branch" ]; then
+        INPUT_HEAD_SHA="$(git -C "$WORK_DIR" rev-parse --verify "${PROVENANCE_TARGET}^{commit}")"
+        BASE_SHA="$(git -C "$WORK_DIR" merge-base "$BASE_BRANCH_REF" "$PROVENANCE_TARGET")"
+      fi
+      ;;
+  esac
+fi
+[ -n "$INPUT_HEAD_SHA" ] && [ -n "$BASE_SHA" ] || {
+  echo "ERROR: cannot resolve input head/base provenance for $PROVENANCE_TARGET" >&2
+  exit 2
+}
+DIFF_SHA256="$(LC_ALL=C shasum -a 256 "$INPUTS_DIR/diff" | awk '{print $1}')" || {
+  echo "ERROR: cannot hash durable diff $INPUTS_DIR/diff" >&2
+  exit 2
+}
+bd update "$GC_BEAD_ID" \
+  --set-metadata input_head_sha="$INPUT_HEAD_SHA" \
+  --set-metadata base_sha="$BASE_SHA" \
+  --set-metadata diff_sha256="$DIFF_SHA256"
+echo "[analyze] phase provenance input_head_sha=$INPUT_HEAD_SHA base_sha=$BASE_SHA diff_sha256=$DIFF_SHA256"
 echo "[analyze] INPUTS_DIR=$INPUTS_DIR  TARGET_KIND=$TARGET_KIND  ROOT=$ROOT  WORK_DIR=$WORK_DIR"
 ```
 
@@ -266,8 +327,12 @@ This is cheap auxiliary reasoning at the `{aux_model}` tier. Decide two things:
       bump, or a generated-file-only change;
     * the change is clearly automated (a dependency-bump or codegen commit) and
       obviously fine;
-    * this exact change has already been reviewed by this formula (a findings
-      container under `$ROOT` already exists).
+  Every other nontrivial changed-source attempt is ELIGIBLE, including retries
+  when a findings container under `$ROOT` already exists. The container's
+  existence only says findings were recorded; it does not prove this input
+  received a completed clean review. An analyze-only stamp is not proof that all
+  lenses ran and synthesis completed. This fragment does not deduplicate exact
+  inputs.
   Otherwise mark ELIGIBLE. (Anthropic's "PR closed/draft" clauses are dropped: a
   resolved diff has no open/closed state.)
 

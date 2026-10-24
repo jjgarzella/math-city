@@ -15,6 +15,7 @@
 #                    pass's durable-input handles the review lenses read)
 #   BD_CREATE_LOG    file: one tab-separated record per `bd create` (id/parent/labels/ephemeral/title/body1)
 #   BD_UPDATE_LOG    file: one tab-separated record per `bd update` (id/status/notes)
+#   BD_PHASE_META_LOG file: one tab-separated record per `--set-metadata`, including the updated bead id
 set -u
 
 sub="${1:-}"
@@ -132,6 +133,7 @@ case "$sub" in
     for a in "$@"; do
       if [ "$prev" = "--set-metadata" ]; then
         printf '%s\n' "$a" >> "${BD_META_LOG:?BD_META_LOG must be set}"
+        [ -z "${BD_PHASE_META_LOG:-}" ] || printf 'id=%s\t%s\n' "$bid" "$a" >> "$BD_PHASE_META_LOG"
       elif [ "$prev" = "--notes" ]; then
         notes="$a"
       fi

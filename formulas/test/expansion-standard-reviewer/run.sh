@@ -34,7 +34,7 @@ done
 # run-scoped dir, removed on exit.
 export TMPDIR="$(mktemp -d "${TMPDIR:-/tmp}/esr-test.XXXXXX")"
 trap 'rm -rf "$TMPDIR"' EXIT
-for tool in python3 git jq bash; do
+for tool in python3 git jq bash shasum; do
   command -v "$tool" >/dev/null 2>&1 || { echo "FATAL: missing required tool: $tool" >&2; exit 2; }
 done
 

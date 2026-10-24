@@ -81,10 +81,9 @@ source = "packs/gasvillage"
 # funsearch — agentic FunSearch pack (epic mc-h4zx)
 [rigs.imports.funsearch]
 source = "packs/funsearch"
-# Lab Tech is temporarily disabled. Restore this import to re-enable its
-# recurring experiment order and dedicated tick worker.
-# [rigs.imports.labtech]
-# source = "packs/labtech"
+# George is the persistent lab technician; starting him does not resume old runs.
+[rigs.imports.labtech]
+source = "packs/labtech"
 
 [[rigs]]
 name = "gascity"

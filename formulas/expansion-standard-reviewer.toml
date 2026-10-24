@@ -223,6 +223,9 @@ RESOLVER_BASE="$BASE_BRANCH_REF"
 PR_TARGET=no
 PR_PROVENANCE_BEFORE=""
 
+# This dispatch intentionally mirrors resolve-diff.sh's PR/path/range/branch
+# grammar so refs are pinned before the resolver runs. Keep the cases aligned;
+# lifecycle tests exercise each target kind.
 # PR diffs are fetched by the shared resolver through gh pr diff, which accepts
 # a live PR identifier rather than immutable OIDs. Snapshot its effective refs
 # first and verify them again immediately after resolving; refuse a changed PR.
@@ -243,8 +246,9 @@ elif [ "$PROVENANCE_TARGET" = "." ] || [ "$PROVENANCE_TARGET" = ".." ] \
     || [ "$PROVENANCE_TARGET" = "./" ] || [ "$PROVENANCE_TARGET" = "../" ] \
     || [[ "$PROVENANCE_TARGET" == ./* ]] || [[ "$PROVENANCE_TARGET" == ../* ]] \
     || [[ "$PROVENANCE_TARGET" == /* ]]; then
-  # Preserve the resolver's whole-tree/path mode. The captured HEAD/base still
-  # describe the checked-out source snapshot associated with the audit.
+  # Preserve the resolver's whole-tree/path mode. A path audit has no diff base;
+  # when its configured base ref is absent, use HEAD for both provenance ends.
+  [ -n "$BASE_SHA" ] || BASE_SHA="$INPUT_HEAD_SHA"
   RESOLVER_TARGET="$PROVENANCE_TARGET"
 elif [[ "$PROVENANCE_TARGET" == *...* ]] || [[ "$PROVENANCE_TARGET" == *..* ]]; then
   # Pin each range endpoint before invoking the resolver. For omitted endpoints,

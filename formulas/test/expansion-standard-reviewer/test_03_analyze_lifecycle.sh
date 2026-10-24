@@ -62,12 +62,20 @@ rm -rf "$repo"
 repo="$(new_git_repo)"
 AB_CITY=""; AB_META_LOG=""; AB_PHASE_META_LOG=""; AB_ROOT="root-path"
 AB_PHASE_BEAD="analyze-path"; AB_ELIGIBLE="yes"; AB_REASON="eligible: whole-repo audit"
+path_test_base="${RENDER_BASE_BRANCH:-main}"
+RENDER_BASE_BRANCH="__esr_missing_base__"
 run_analyze_block 'resolve-diff.sh' "." "$repo"
 assert_eq "0" "$AB_RC" "analyze step 1 exits 0 on a path target (whole-repo audit)"
 assert_eq "path" "$(meta_val gc.review.target_kind)" "path target -> gc.review.target_kind = path"
 assert_contains "$(cat "$AB_INPUTS/diff" 2>/dev/null)" "whole-repo audit" "durable diff marks the whole-repo audit"
+path_head="$(git -C "$repo" rev-parse HEAD)"
+assert_eq "$path_head" "$(phase_meta_val analyze-path input_head_sha)" \
+  "path audit records the checked-out head"
+assert_eq "$path_head" "$(phase_meta_val analyze-path base_sha)" \
+  "path audit uses its checked-out head when the configured base ref is absent"
 run_analyze_block 'gc.review.eligible' "." "$repo"
 assert_eq "yes" "$(meta_val gc.review.eligible)" "whole-repo path audit remains eligible"
+RENDER_BASE_BRANCH="$path_test_base"
 rm -rf "$repo"
 
 # --- scenario D: changed-head retry with an existing findings container -------
@@ -267,4 +275,43 @@ assert_contains "$AB_OUT" "PR refs changed while resolving" "changed PR snapshot
   || fail "changed PR snapshot records no misleading phase provenance"
 unset ESR_TEST_REAL_RESOLVER ESR_TEST_PR_ADVANCE_FILE ESR_TEST_PR_HEAD_SHA ESR_TEST_PR_BASE_SHA
 unset ESR_TEST_PR_CHANGED_HEAD_SHA ESR_TEST_PR_CHANGED_BASE_SHA
+rm -rf "$repo"
+
+# --- scenario I: an explicit three-dot range pins both endpoints --------------
+range_base_ref="${RENDER_BASE_BRANCH:-main}"
+repo="$(new_git_repo)"
+( cd "$repo"; git checkout -q -b feature; printf 'feature\n' > feature.txt; git add feature.txt; git commit -q -m "feature change" )
+feature_head="$(git -C "$repo" rev-parse feature)"
+( cd "$repo"; git checkout -q "$range_base_ref"; printf 'base\n' > base.txt; git add base.txt; git commit -q -m "base change" )
+range_base_head="$(git -C "$repo" rev-parse "$range_base_ref")"
+expected_merge_base="$(git -C "$repo" merge-base "$range_base_head" "$feature_head")"
+expected_range_diff="$(mktemp)"
+git -C "$repo" diff "$range_base_head...$feature_head" > "$expected_range_diff"
+AB_CITY="$(mktemp -d "$TMPDIR/esr-city-three-dot.XXXXXX")"
+mkdir -p "$AB_CITY/formulas/lib"
+ESR_TEST_REAL_RESOLVER="$RESOLVER"
+ESR_TEST_RESOLVER_ARGS="$AB_CITY/resolver.args"
+export ESR_TEST_REAL_RESOLVER ESR_TEST_RESOLVER_ARGS
+cat > "$AB_CITY/formulas/lib/resolve-diff.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\t%s\n' "$1" "$2" > "$ESR_TEST_RESOLVER_ARGS"
+exec "$ESR_TEST_REAL_RESOLVER" "$@"
+SH
+chmod +x "$AB_CITY/formulas/lib/resolve-diff.sh"
+AB_META_LOG=""; AB_PHASE_META_LOG=""; AB_ROOT="root-three-dot"; AB_PHASE_BEAD="analyze-three-dot"
+AB_FINDINGS=""; AB_CANDIDATES_FILE=""
+run_analyze_block 'resolve-diff.sh' "$range_base_ref...feature" "$repo"
+assert_eq "0" "$AB_RC" "analyze succeeds on an explicit three-dot range"
+assert_eq "range" "$(meta_val gc.review.target_kind)" "three-dot target remains a range"
+assert_eq "$range_base_head...$feature_head $range_base_head" "$(tr '\t' ' ' < "$ESR_TEST_RESOLVER_ARGS")" \
+  "resolver receives the pinned three-dot endpoints"
+assert_eq "$feature_head" "$(phase_meta_val analyze-three-dot input_head_sha)" \
+  "three-dot provenance records its pinned head"
+assert_eq "$expected_merge_base" "$(phase_meta_val analyze-three-dot base_sha)" \
+  "three-dot provenance records the actual merge base"
+cmp -s "$expected_range_diff" "$AB_INPUTS/diff" \
+  && ok "saved three-dot diff matches the captured endpoints" \
+  || fail "saved three-dot diff matches the captured endpoints"
+unset ESR_TEST_REAL_RESOLVER ESR_TEST_RESOLVER_ARGS
 rm -rf "$repo"

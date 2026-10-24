@@ -73,11 +73,27 @@ review_phase_resolve() {
     return 2
   fi
 
-  # Phase beads in the current graph carry no gc.kind. Permit explicit phase
-  # kinds, and fail closed on every other kind so workflow/scope/control beads
-  # can never be mistaken for a phase terminal.
+  # Initial phases may omit gc.kind. Native repeated iterations emit task
+  # members instead; require their complete scope identity before accepting
+  # them. A task/control bead with only a phase-looking suffix is insufficient.
   case "$kind" in
     ''|step|phase) ;;
+    task)
+      if ! printf '%s\n' "$payload" | jq -e '
+        (if type == "array" then .[0] else . end) as $bead |
+        $bead.metadata as $m |
+        ($m["gc.root_bead_id"] // "") != "" and
+        $m["gc.root_bead_id"] != $bead.id and
+        $m["gc.scope_role"] == "member" and
+        ($m["gc.scope_ref"] // "") != "" and
+        $m["gc.step_ref"] == ($m["gc.scope_ref"] + "." + $m["gc.step_id"]) and
+        ($m["gc.control_for"] // "") == "" and
+        ($m["gc.logical_bead_id"] // "") == ""
+      ' >/dev/null 2>&1; then
+        echo "ERROR: review_phase_resolve: task '$bead_id' lacks a native phase member identity" >&2
+        return 2
+      fi
+      ;;
     *)
       echo "ERROR: review_phase_resolve: refusing to mutate bead '$bead_id' with control gc.kind='$kind' (phase '$expected_suffix')" >&2
       return 2
@@ -111,6 +127,12 @@ review_phase_resolve() {
   fi
   if [ "$root_actual_id" != "$root_id" ]; then
     echo "ERROR: review_phase_resolve: gc.root_bead_id '$root_id' did not resolve to that root bead" >&2
+    return 2
+  fi
+  if [ "$kind" = task ] && ! printf '%s\n' "$root_payload" | jq -e '
+    (if type == "array" then .[0] else . end).metadata["gc.kind"] == "workflow"
+  ' >/dev/null 2>&1; then
+    echo "ERROR: review_phase_resolve: native task phase '$bead_id' requires a workflow root '$root_id'" >&2
     return 2
   fi
   REVIEW_PHASE_BEAD_ID="$bead_id"

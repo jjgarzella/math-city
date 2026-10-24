@@ -452,6 +452,10 @@ preference veto, and preference-file drift with empty values. Supply the exact
 `--julia`, `--artifact`, prepared `--source-project`, `--bootstrap-project` and
 an explicit `--owned-root` for receipts. It loads no image, starts no gate and
 edits only its new test directory; native delivery remains a separate gate.
+The cold `check-kaimon-sysimages.jl` command test can additionally exercise the
+real selected-image JSON/script path by setting `KAIMON_TEST_PROFILE`,
+`KAIMON_TEST_PROJECT` and `KAIMON_TEST_OWNED_ROOT`. It constructs the command
+against a copied target without executing the image or starting a gate.
 
 After source/native review, create a frozen profile from the completed image,
 the full union lock and the explicit source map:

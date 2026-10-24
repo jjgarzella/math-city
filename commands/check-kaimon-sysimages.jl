@@ -62,4 +62,53 @@ mktempdir() do temporary
     old_mode === nothing ? delete!(ENV,"KAIMON_SYSIMAGE_MODE") : (ENV["KAIMON_SYSIMAGE_MODE"] = old_mode)
     old_root === nothing ? delete!(ENV,"KAIMON_SYSIMAGE_ROOT") : (ENV["KAIMON_SYSIMAGE_ROOT"] = old_root)
 end
+
+# Optional real-artifact success path. It constructs a command without running
+# the image or starting a gate; all Pkg work targets a new owned copy.
+if haskey(ENV, "KAIMON_TEST_PROFILE") || haskey(ENV, "KAIMON_TEST_PROJECT")
+    profile_file = ENV["KAIMON_TEST_PROFILE"]
+    source_project = ENV["KAIMON_TEST_PROJECT"]
+    owner = ENV["KAIMON_TEST_OWNED_ROOT"]
+    profile = Kaimon.JSON.parsefile(profile_file)
+    include(joinpath(@__DIR__, "kaimon-managed-bootstrap.jl"))
+    mkpath(owner)
+    mktempdir(owner; prefix="selected-hook-") do scratch
+        project = realpath(scratch)
+        for name in readdir(source_project)
+            if name == "Project.toml" || (startswith(name,"Manifest") && endswith(name,".toml"))
+                cp(joinpath(source_project,name),joinpath(project,name))
+            end
+        end
+        cp(joinpath(source_project,"src"),joinpath(project,"src"))
+        saved = Dict(key=>get(ENV,key,nothing) for key in
+                     ("KAIMON_SYSIMAGE_MODE","KAIMON_SYSIMAGE_ROOT","KAIMON_SYSIMAGE_PROFILE"))
+        try
+            ENV["KAIMON_SYSIMAGE_MODE"] = "required"
+            ENV["KAIMON_SYSIMAGE_PROFILE"] = profile_file
+            delete!(ENV,"KAIMON_SYSIMAGE_ROOT")
+            julia = realpath(joinpath(Sys.BINDIR,"julia"))
+            lc = Kaimon.LaunchConfig("2,1", "2", "3G", ["--check-bounds=yes"],
+                                    "", julia, false, string(VERSION))
+            script = Kaimon._build_session_script(project; allow_restart=false)
+            before = Dict(name=>read(joinpath(project,name)) for name in readdir(project)
+                          if name == "Project.toml" || startswith(name,"Manifest"))
+            cmd = Base.invokelatest(Kaimon._build_julia_cmd, lc, script; project)
+            @testset "real selected image command and bootstrap" begin
+                @test first(cmd) == julia
+                @test cmd[2] == "--sysimage=$(joinpath(profile["artifact"],"image.dylib"))"
+                @test cmd[3:end-1] == ["-i","-t","2,1","--gcthreads=2","--heap-size-hint=3G",
+                                      "--check-bounds=yes","--project=$project","--startup-file=no","-e"]
+                @test startswith(cmd[end], "ENV[\"KAIMON_CITY_SYSIMAGE\"] = $(repr(profile["artifact_id"]))\n")
+                original = split(cmd[end], '\n';limit=2)[2]
+                @test replace(original,"# Pkg.instantiate completed in neutral prelaunch Julia."=>
+                              "Pkg.instantiate(; io=devnull)") == script
+                @test all(read(joinpath(project,name)) == content for (name,content) in before)
+            end
+        finally
+            for (key,value) in saved
+                value === nothing ? delete!(ENV,key) : (ENV[key] = value)
+            end
+        end
+    end
+end
 println("CITY_SYSIMAGE_COMMAND_PASS")

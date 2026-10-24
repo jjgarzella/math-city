@@ -11,7 +11,8 @@ section "02 apply-fixes lib (verdict->severity->fix transport)"
   || fail "shared apply-fixes lib present" "missing $APPLY_FIXES_SH"
 
 # --- A. the synthesis verdict -> review.verdict map (pure, no bd) ------------
-# pass->done; pass_with_findings->iterate iff fixes applied else done;
+# pass->done only after the caller also verifies the test gate;
+# pass_with_findings always remains actionable; fail->iterate;
 # fail->iterate (blocker fixed, re-review); blocked->done (caller escalates);
 # unknown->iterate (conservative re-review, never a silent stop).
 MV="$(. "$APPLY_FIXES_SH"; for sv in pass pass_with_findings fail blocked weird; do
@@ -21,7 +22,7 @@ done)"
 assert_contains "$MV" "pass/yes=done"               "map: pass -> done (applied)"
 assert_contains "$MV" "pass/no=done"                "map: pass -> done (not applied)"
 assert_contains "$MV" "pass_with_findings/yes=iterate" "map: pass_with_findings + applied -> iterate (re-review)"
-assert_contains "$MV" "pass_with_findings/no=done"  "map: pass_with_findings + nothing applied -> done (converge)"
+assert_contains "$MV" "pass_with_findings/no=iterate" "map: pass_with_findings remains actionable when no fix was applied"
 assert_contains "$MV" "fail/yes=iterate"            "map: fail + applied -> iterate (blocker fixed, re-review)"
 assert_contains "$MV" "fail/no=iterate"             "map: fail -> iterate (loop re-tries; agent escalates an unfixable blocker)"
 assert_contains "$MV" "blocked/yes=done"            "map: blocked -> done (terminate; caller escalates)"

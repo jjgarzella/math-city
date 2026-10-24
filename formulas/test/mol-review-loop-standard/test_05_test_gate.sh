@@ -48,6 +48,7 @@ read_root_meta() {
 # comparison permits the commit, writes root metadata, records the set in the
 # apply-fixes note, and removes its temporary base worktree.
 AFX_ROOT="root-test-gate-existing"; AFX_VERDICT="pass_with_findings"
+AFX_ITERATION=1
 AFX_WORKDIR="$(afx_git_repo)"; AFX_BASE_SHA="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 AFX_ALLOWED_PATHS="app.txt"; AFX_ROOT_TEST_COMMAND=""
 AFX_TEST_GATE="no-new-failures"; AFX_TEST_FAILURE_PATTERN='^CASE: (.+)$'
@@ -64,6 +65,8 @@ assert_not_contains "$before" "$after" "allowed pre-existing failures still crea
 assert_eq "fix: allow existing test failures" "$(git -C "$AFX_WORKDIR" log -1 --format=%s)" "commit uses the guarded commit path"
 assert_eq '["T_OLD"]' "$(read_root_meta "$AFX_ROOT" gc.review.preexisting_test_failures)" "immutable-base failure identifiers are recorded on the root"
 assert_eq "no-new-failures" "$(read_root_meta "$AFX_ROOT" gc.review.test_gate_mode)" "root metadata records the active gate mode"
+assert_eq "pass" "$(read_root_meta "$AFX_ROOT" gc.review.test_result)" "pre-existing-only failures count as a passing gate result"
+assert_eq "1" "$(read_root_meta "$AFX_ROOT" gc.review.test_attempt)" "the passing result is tied to this attempt"
 updates="$(cat "$AFX_UPDATE_LOG")"
 assert_contains "$updates" 'pre-existing failures=["T_OLD"]' "apply-fixes note records the pre-existing failure set"
 assert_eq "2" "$(wc -l < "$run_log" | tr -d ' ')" "the test command runs once on fix-head and once on the immutable base"
@@ -74,6 +77,7 @@ assert_eq "removed" "$([ -d "$base_pwd" ] && echo present || echo removed)" "dis
 # A new identifier on the fix-head is recorded as a testing finding and stops
 # before commit; the old identifier remains documented as pre-existing.
 AFX_ROOT="root-test-gate-new-failure"; AFX_VERDICT="pass_with_findings"
+AFX_ITERATION=2
 AFX_WORKDIR="$(afx_git_repo)"; AFX_BASE_SHA="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 AFX_ALLOWED_PATHS="app.txt"; AFX_ROOT_TEST_COMMAND=""; AFX_TEST_GATE="no-new-failures"
 AFX_TEST_FAILURE_PATTERN=""; AFX_CREATE_LOG="$(mktemp)"; AFX_META_LOG="$(mktemp)"; AFX_UPDATE_LOG="$(mktemp)"; AFX_NUDGE_LOG="$(mktemp)"
@@ -85,6 +89,9 @@ afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply
 after="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 assert_eq "10" "$AFX_RC" "new failure returns the recorded-failure status"
 assert_eq "$before" "$after" "new failure refuses to create a commit"
+assert_eq "fail" "$(read_root_meta "$AFX_ROOT" gc.review.test_result)" "new failures are recorded as a failed gate result"
+assert_eq "2" "$(read_root_meta "$AFX_ROOT" gc.review.test_attempt)" "failed test result is associated with attempt two"
+assert_eq "2" "$(read_root_meta "$AFX_ROOT" gc.review.test_failure_attempt)" "test finding records the attempt that found it"
 assert_eq '["FAIL T_OLD"]' "$(read_root_meta "$AFX_ROOT" gc.review.preexisting_test_failures)" "fallback parser records the base failure line"
 assert_contains "$(cat "$AFX_CREATE_LOG")" "new failure identifiers: FAIL T_NEW" "finding explains which failure was introduced"
 assert_contains "$(cat "$AFX_META_LOG")" "$AFX_ROOT	gc.review.test_gate_error=" "successful base comparison records no gate error"
@@ -139,6 +146,40 @@ afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; printf "GATE
 assert_contains "$AFX_OUT" "GATE=strict" "test_gate falls back to the rig value recorded on the root"
 assert_contains "$AFX_OUT" "PATTERN=^FAIL (.+)$" "failure pattern falls back to the rig value recorded on the root"
 
+# A failed test step records the durable finding and per-attempt result without
+# writing the loop verdict or closing itself as an apply-fixes step.
+AFX_ROOT="root-test-gate-test-step"; AFX_VERDICT="pass"; AFX_ITERATION=2
+AFX_STEP_ID=test; AFX_BEAD_ID="test-phase-bead"
+AFX_WORKDIR="$(afx_git_repo)"; AFX_BASE_SHA="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
+AFX_ALLOWED_PATHS="app.txt"; AFX_ROOT_TEST_COMMAND=""; AFX_TEST_GATE="strict"; AFX_TEST_FAILURE_PATTERN=""
+AFX_CREATE_LOG="$(mktemp)"; AFX_META_LOG="$(mktemp)"; AFX_UPDATE_LOG="$(mktemp)"; AFX_NUDGE_LOG="$(mktemp)"
+run_log="$(mktemp)"; runner="$(make_runner strict "$run_log")"; AFX_TEST_COMMAND="$runner"
+printf 'head\n' > "$AFX_WORKDIR/app.txt"
+afx_sandbox
+afx_run 'review_apply_fixes_load test >/dev/null || exit $?; review_apply_fixes_test_before_commit "$REVIEW_TEST_COMMAND"'
+assert_eq "10" "$AFX_RC" "test step returns the expected recorded-failure signal"
+assert_eq "fail" "$(read_root_meta "$AFX_ROOT" gc.review.test_result)" "test step records its failed result on the root"
+assert_eq "2" "$(read_root_meta "$AFX_ROOT" gc.review.test_attempt)" "test step ties its result to the current attempt"
+assert_not_contains "$(cat "$AFX_META_LOG")" 'test-phase-bead	review.verdict=' "test step does not write review.verdict"
+assert_not_contains "$(cat "$AFX_UPDATE_LOG")" 'id=test-phase-bead	status=closed' "test step leaves its close to the formula block"
+assert_contains "$(cat "$AFX_CREATE_LOG")" "parent=$AFX_ROOT.findings" "test step records the failure under durable findings"
+
+# A commit-time failure on the third regular attempt terminates to the human
+# gate instead of spending the one final-verification attempt.
+AFX_ROOT="root-test-gate-at-cap"; AFX_VERDICT="pass_with_findings"; AFX_ITERATION=3
+AFX_STEP_ID=apply-fixes; AFX_BEAD_ID="apply-fixes-bead"
+AFX_WORKDIR="$(afx_git_repo)"; AFX_BASE_SHA="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
+AFX_ALLOWED_PATHS="app.txt"; AFX_ROOT_TEST_COMMAND=""; AFX_TEST_GATE="strict"; AFX_TEST_FAILURE_PATTERN=""
+AFX_CREATE_LOG="$(mktemp)"; AFX_META_LOG="$(mktemp)"; AFX_UPDATE_LOG="$(mktemp)"; AFX_NUDGE_LOG="$(mktemp)"
+run_log="$(mktemp)"; runner="$(make_runner strict "$run_log")"; AFX_TEST_COMMAND="$runner"
+printf 'head\n' > "$AFX_WORKDIR/app.txt"
+afx_sandbox
+afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_test_before_commit "$REVIEW_TEST_COMMAND"'
+assert_eq "10" "$AFX_RC" "third-attempt test failure returns its recorded-failure signal"
+assert_contains "$(cat "$AFX_META_LOG")" "$AFX_ROOT	gc.review.loop_outcome=blocked-needs-human" "third-attempt test failure escalates"
+assert_contains "$(cat "$AFX_META_LOG")" "$AFX_BEAD_ID	review.verdict=done" "third-attempt test failure stops the loop"
+assert_contains "$(cat "$AFX_UPDATE_LOG")" "id=$AFX_BEAD_ID	status=closed" "escalation closes the apply-fixes bead"
+
 # The fallback parser canonicalizes volatile addresses/timings before comparing
 # lines, so the same failure remains one identifier across runs.
 afx_run 'input_file=$(mktemp); printf "ERROR runner at 0xABCDEF took 12ms\\nERROR runner at 0x123456 took 15ms\\n" > "$input_file"; review_apply_fixes__failure_set "$input_file"; result=$?; rm -f "$input_file"; exit "$result"'
@@ -147,3 +188,4 @@ assert_eq "ERROR runner at <ADDR> took <TIME>" "$AFX_OUT" "fallback parser strip
 unset AFX_ROOT AFX_VERDICT AFX_WORKDIR AFX_BASE_SHA AFX_ALLOWED_PATHS AFX_ROOT_TEST_COMMAND
 unset AFX_ROOT_TEST_GATE AFX_ROOT_TEST_FAILURE_PATTERN
 unset AFX_TEST_GATE AFX_TEST_FAILURE_PATTERN AFX_TEST_COMMAND AFX_CREATE_LOG AFX_META_LOG AFX_UPDATE_LOG AFX_NUDGE_LOG
+unset AFX_ITERATION AFX_STEP_ID AFX_BEAD_ID

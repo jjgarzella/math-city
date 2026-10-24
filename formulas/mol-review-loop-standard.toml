@@ -17,27 +17,31 @@ this exact machinery, swapping only the reviewer fragment.
 
 Shape (mirrors mol-review-loop / mol-review-loop-smoke):
   workspace-setup -> review-loop (ralph [steps.check])
-  review-loop body children = [review-pipeline (compose.expand'd) -> apply-fixes]
+  review-loop body children = [review-pipeline (compose.expand'd) -> test -> apply-fixes]
 
-Each ralph iteration:
+Each ralph attempt:
   1. review-pipeline runs the standard reviewer — analyze (resolve the diff via
      the shared resolve-diff.sh) -> six lenses (quality / security / performance /
      architecture / testing / docs) -> synthesis. Synthesis dedup-merges, assigns
      severity, promotes the survivors to DURABLE findings under <root>.findings,
      and records gc.review.synthesis_verdict (pass / pass_with_findings / fail /
      blocked) + counts on the molecule root.
-  2. apply-fixes (pool-dispatched, gc.run_target={{review_worker_target}} — a fresh
-     polecat context per iteration) resumes the branch under review, reads the
-     synthesis verdict + the durable findings, applies the fixes per the
-     severity-threshold fix policy, and maps the synthesis verdict onto the loop's
-     done/iterate review.verdict. The verdict->severity->fix mapping is the SHARED,
+  2. test runs the configured test_command through the same shared
+     review-apply-fixes.sh gate used before commits. Strict mode requires exit 0;
+     the temporary no-new-failures mode requires the fix-head failure set to be a
+     subset of the immutable review base. The result is recorded for this attempt.
+  3. apply-fixes (pool-dispatched, gc.run_target={{review_worker_target}} — a fresh
+     polecat context per attempt) resumes the branch under review, reads the
+     synthesis verdict, test result, and durable findings, applies fixes under the
+     severity-threshold policy, then sets the loop's done/iterate verdict. The
+     verdict->severity->fix mapping is the SHARED,
      reviewer-agnostic formulas/lib/review-apply-fixes.sh (the codex-independent
      half of gcs-f4j.5); the per-finding fix-vs-surface call is the agent's
      judgment (ZFC), not Go logic.
-  3. The controller runs the SHARED verdict-glue check (formulas/lib/review-verdict.sh,
+  4. The controller runs the SHARED verdict-glue check (formulas/lib/review-verdict.sh,
      installed into work_dir at setup — the exact same check the base loop uses):
-     review.verdict=done -> exit 0 (converged, stop, clean pass); iterate -> exit 1
-     (next attempt, bounded by the cap).
+     only synthesis pass plus test-gate pass converges. Otherwise iterate within
+     the bounded attempt budget or escalate to the human gate.
 
 Why EXPAND, not pour: the controller schedules the fragment's beads directly as
 flat graph children inside the ralph iteration body, so at gascity polecat pool=1
@@ -51,10 +55,10 @@ the burned tally is the "surfaced but sub-threshold" count apply-fixes reports) 
 into apply-fixes as the fix threshold the agent applies per finding. Ranking, never
 category suppression.
 
-Synthesis verdict -> review.verdict mapping (formulas/lib/review-apply-fixes.sh):
-  pass               -> done     (no actionable finding; converge)
-  pass_with_findings -> iterate when fixes were applied, else done
-  fail               -> iterate  (a blocker was fixed; re-review)
+Convergence and retry policy (formulas/lib/review-apply-fixes.sh):
+  pass + test result pass -> done (the only clean convergence)
+  pass_with_findings      -> iterate (actionable findings remain or were fixed)
+  fail                    -> iterate (a blocker was fixed; re-review)
   blocked            -> done + ESCALATE (terminate-to-human: synthesis could not
                         run, or a blocker is genuinely unfixable; the loop stops
                         instead of spinning to the cap, and gc.review.loop_outcome
@@ -63,12 +67,14 @@ Synthesis verdict -> review.verdict mapping (formulas/lib/review-apply-fixes.sh)
 Termination — NO abort_scope. Both terminals are clean (same as the base loop):
   • converged: a done verdict makes the check exit 0; the ralph control bead closes
     gc.outcome=pass.
-  • capped: the verdict never converges, the loop iterates to the cap
-    (max_attempts = 3) and the ralph control bead closes gc.outcome=fail, no spin.
+  • bounded: attempts 1–3 may apply fixes. If attempt 3 commits fixes, attempt 4 is
+    the single final verification; it cannot apply or commit fixes, and any
+    actionable finding or failed test gate escalates to a human. If attempt 3 has
+    unresolved work but made no commit, it escalates without using that extra
+    verification. No path can start attempt 5.
 
-The iteration cap is 3 (literal max_attempts — the compiler parses it as an int
-before variable substitution, so it cannot be templated; a variant needing a
-different cap sets its own literal).
+The total cap is 4 (literal max_attempts — the compiler parses it as an int
+before variable substitution): three regular attempts plus at most one verification.
 
 Optional fire-and-forget notify: pass --var notify_target=<session id-or-alias> and
 the verdict check sends a best-effort `gc session nudge` on the terminal transition
@@ -279,17 +285,17 @@ Standard-reviewer ralph review->fix loop. There is no agent action on this contr
 step itself — after each iteration body closes, the controller runs the relative
 exec check (.gc-review-verdict.sh, installed at workspace-setup) and either stops
 (verdict converged) or spawns the next attempt, up to the cap. The iteration body
-(children below) is [review-pipeline -> apply-fixes]; review-pipeline is expanded
-via compose.expand into the expansion-standard-reviewer fragment, and apply-fixes
-maps the reviewer's synthesis verdict onto the loop's review.verdict.
+(children below) is [review-pipeline -> test -> apply-fixes]; review-pipeline is
+expanded via compose.expand into the expansion-standard-reviewer fragment, test
+runs the shared configured test gate, and apply-fixes requires both a synthesis
+pass and a passing test result to converge.
 '''
 
 [steps.check]
-# Iteration cap = 3 (literal; max_attempts is parsed as an int before variable
-# substitution, so it cannot be templated — a variant needing a different cap sets
-# its own literal). On cap exhaustion the control bead closes gc.outcome=fail with
-# no spin and no abort_scope.
-max_attempts = 3
+# Three regular attempts plus exactly one final verification. The apply-fixes
+# step permits attempt four only as a read-only verification and escalates any
+# new findings/test failures, so this total cap cannot become an unbounded retry.
+max_attempts = 4
 
 [steps.check.check]
 mode = "exec"
@@ -310,23 +316,82 @@ molecule root, which apply-fixes (next) consumes.
 '''
 
 [[steps.children]]
-id = "apply-fixes"
-title = "Apply fixes + map synthesis verdict -> review.verdict"
+id = "test"
+title = "Run the configured test gate for this attempt"
 needs = ["review-pipeline"]
+metadata = { "gc.run_target" = "{{review_worker_target}}" }
+description = '''
+Run the deterministic test gate after review and before apply-fixes on every
+attempt. This uses the same test_command, test_gate, failure pattern, immutable
+base comparison, and failure-finding code as the guarded commit path in
+formulas/lib/review-apply-fixes.sh. A test failure records a durable testing
+finding and result=fail, then closes this step normally so apply-fixes can address
+it; this step never writes review.verdict. A passing result means strict mode
+passed, or (under the temporary no-new-failures mode) fix-head failures are a
+subset of the immutable review base's failures.
+
+Run exactly:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-apply-fixes.sh"
+TEST_COMMAND=$(cat <<'GC_TEST_COMMAND_VALUE'
+{{test_command}}
+GC_TEST_COMMAND_VALUE
+)
+TEST_GATE=$(cat <<'GC_TEST_GATE_VALUE'
+{{test_gate}}
+GC_TEST_GATE_VALUE
+)
+TEST_FAILURE_PATTERN=$(cat <<'GC_TEST_FAILURE_PATTERN_VALUE'
+{{test_failure_pattern}}
+GC_TEST_FAILURE_PATTERN_VALUE
+)
+export TEST_COMMAND TEST_GATE TEST_FAILURE_PATTERN
+review_apply_fixes_load test || exit $?
+
+[ -n "$REVIEW_WORK_DIR" ] && cd "$REVIEW_WORK_DIR"
+START_HEAD=$(git rev-parse HEAD) || exit 2
+bd update "$REVIEW_ROOT" \
+  --set-metadata gc.review.iteration_start_head="$START_HEAD" \
+  --set-metadata gc.review.test_result=running \
+  --set-metadata gc.review.test_attempt="$REVIEW_ATTEMPT" || exit 2
+
+test_status=0
+review_apply_fixes_test_before_commit "$REVIEW_TEST_COMMAND" || test_status=$?
+case "$test_status" in
+  0) result=pass ;;
+  10) result=fail ;; # durable testing finding recorded; continue to apply-fixes
+  *) exit "$test_status" ;;
+esac
+bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
+  --notes "test: attempt=$REVIEW_ATTEMPT result=$result under $REVIEW_TEST_GATE policy"
+```
+
+Exit criteria: the configured test gate ran (or was explicitly skipped because
+test_command is empty), its result is recorded on the root for this attempt, and
+this step is closed pass.
+'''
+
+[[steps.children]]
+id = "apply-fixes"
+title = "Apply fixes + require synthesis and test pass to converge"
+needs = ["test"]
 metadata = { "gc.run_target" = "{{review_worker_target}}" }
 description = '''
 Pool-dispatched to a FRESH polecat each iteration (gc.run_target={{review_worker_target}}),
 so every attempt starts with clean context. You resume the branch under review,
 consume the standard reviewer's synthesis output (the verdict + the durable
-findings it just promoted), apply the fixes per the severity-threshold fix policy,
-and write the review.verdict the loop's check reads.
+findings it just promoted) and this attempt's deterministic test result, apply the
+fixes per the severity-threshold policy, and write the review.verdict the loop's
+check reads. Convergence requires synthesis=pass AND test_result=pass.
 
 The verdict->severity->fix TRANSPORT is the shared, reviewer-agnostic
 formulas/lib/review-apply-fixes.sh (the codex-independent half of gcs-f4j.5,
 reused unchanged by the quorum variant). It reads the synthesis output,
 enumerates durable findings, maps the verdict vocabulary, and safely gates the
 fix commit: only the reviewed paths and their tests may change, the configured
-test command is checked before commit, and a successful commit is pushed. The
+test command is checked again before commit, and a successful commit is pushed. The
 temporary `test_gate=no-new-failures` policy permits a failing fix-head run only
 when its extracted failure identifiers are a subset of failures from one run at
 the immutable review base in a disposable worktree. This default is temporary;
@@ -339,10 +404,10 @@ root and in the apply-fixes note. WHICH
 findings you fix vs surface, whether a blocker is fixable, and whether you
 actually changed the branch are YOUR judgment (ZFC).
 
-## 1. Load the run, branch on the verdict, enumerate findings (run verbatim)
+## 1. Load the run, validate this attempt's test result, and branch on the verdict
 
-Load the run and decide the terminal cases in ONE block, so the synthesis output
-is in scope where you branch on it:
+Load the run and decide the terminal cases in ONE block, so the synthesis and
+test outputs are in scope where you branch on them:
 
 ```bash
 set -uo pipefail
@@ -369,7 +434,15 @@ review_apply_fixes_load apply-fixes || exit $?  # sets REVIEW_ROOT/SYNTHESIS_VER
 
 # cwd does NOT persist between steps — resume the branch under review.
 [ -n "$REVIEW_WORK_DIR" ] && cd "$REVIEW_WORK_DIR"
-echo "[apply-fixes] verdict=$REVIEW_SYNTHESIS_VERDICT promoted=$REVIEW_SYNTHESIS_PROMOTED burned(surfaced sub-threshold)=$REVIEW_SYNTHESIS_BURNED at $PWD"
+REVIEW_SYNTHESIS_VERDICT=$(review_apply_fixes_synthesis_for_attempt \
+  "$REVIEW_SYNTHESIS_VERDICT" "$REVIEW_TEST_RESULT" \
+  "$REVIEW_TEST_FAILURE_ATTEMPT" "$REVIEW_ATTEMPT") || exit $?
+echo "[apply-fixes] attempt=$REVIEW_ATTEMPT verdict=$REVIEW_SYNTHESIS_VERDICT test=$REVIEW_TEST_RESULT/$REVIEW_TEST_ATTEMPT promoted=$REVIEW_SYNTHESIS_PROMOTED burned(surfaced sub-threshold)=$REVIEW_SYNTHESIS_BURNED at $PWD"
+
+if [ "$REVIEW_TEST_ATTEMPT" != "$REVIEW_ATTEMPT" ] || [ -z "$REVIEW_TEST_RESULT" ] || [ "$REVIEW_TEST_RESULT" = running ]; then
+  review_apply_fixes_escalate "missing or stale test-gate result for attempt $REVIEW_ATTEMPT" || exit $?
+  exit 0
+fi
 
 # blocked / no verdict — synthesis could not run (ineligible / missing inputs) and
 # iterating cannot help. TERMINATE-TO-HUMAN: stop the loop and flag a human.
@@ -378,14 +451,28 @@ if [ -z "$REVIEW_SYNTHESIS_VERDICT" ] || [ "$REVIEW_SYNTHESIS_VERDICT" = "blocke
   exit 0
 fi
 
-# pass — no finding survived at or above the threshold; the branch is clean.
-if [ "$REVIEW_SYNTHESIS_VERDICT" = "pass" ]; then
-  review_apply_fixes_set_verdict done "clean: synthesis pass, no findings at/above $FIX_THRESHOLD (surfaced sub-threshold: ${REVIEW_SYNTHESIS_BURNED:-0})" || exit $?
+# Attempt four is the one finite verification allowed after fixes on attempt 3.
+# It must not edit, commit, or start another iteration.
+if [ "$REVIEW_ATTEMPT" -ge 4 ] 2>/dev/null; then
+  action=$(review_apply_fixes_iteration_action "$REVIEW_SYNTHESIS_VERDICT" "$REVIEW_TEST_RESULT" no "$REVIEW_ATTEMPT") || exit $?
+  if [ "$action" = done ]; then
+    review_apply_fixes_set_verdict done "final verification passed: synthesis=pass and test gate passed on attempt $REVIEW_ATTEMPT" || exit $?
+  else
+    review_apply_fixes_escalate "final verification attempt $REVIEW_ATTEMPT found synthesis=$REVIEW_SYNTHESIS_VERDICT test=$REVIEW_TEST_RESULT; fixes are not applied in verification" || exit $?
+  fi
+  exit 0
+fi
+
+# A failed test gate is a durable major/testing finding created by the test step.
+# If synthesis itself was clean, surface it to apply-fixes as actionable work.
+# This is the only clean convergence point in regular attempts.
+if [ "$REVIEW_SYNTHESIS_VERDICT" = pass ] && [ "$REVIEW_TEST_RESULT" = pass ]; then
+  review_apply_fixes_set_verdict done "clean: synthesis pass and test gate pass on attempt $REVIEW_ATTEMPT (surfaced sub-threshold: ${REVIEW_SYNTHESIS_BURNED:-0})" || exit $?
   exit 0
 fi
 
 # pass_with_findings / fail — there are durable findings to address. Enumerate
-# them ranked must-fix first, then read each one's full body below.
+# them ranked must-fix first, including any testing finding from this attempt.
 review_apply_fixes_findings            # TSV: id  severity  category  title (blocker -> nit)
 ```
 
@@ -413,8 +500,9 @@ exit 0
 ```
 
 Otherwise apply the fixes and commit with a descriptive body. If you changed no
-files (for example, every finding was below the fix threshold), skip the commit
-helper and set APPLIED=no in section 3. This fix-mode
+files, skip the commit helper and set APPLIED=no in section 3; actionable findings
+still cannot converge, and the third regular attempt will escalate if it makes no
+new commit. This fix-mode
 behavior — resume branch + apply findings + commit — is the mol-polecat-base
 implement lifecycle running in fix mode. Before committing, run the guarded
 commit helper below; do not run `git commit` or `git push` directly:
@@ -460,6 +548,7 @@ fi
 cat "$commit_error_file" >&2
 rm -f "$commit_error_file"
 [ "$commit_status" -eq 0 ] || exit "$commit_status"
+
 ```
 
 `allowed_paths` is an optional newline-separated list of repo-relative file
@@ -467,7 +556,8 @@ paths; directory prefixes end in `/`. When empty, the helper derives the list
 from the reviewed diff and adds the matching formula or top-level `test/` and
 `tests/` directories that exist. An out-of-scope refusal (status 3) or inspection
 failure (status 2) escalates to a human with the captured diagnostic; a test failure
-(status 10) retains its iterate-and-stop behavior. `test_command` defaults to the rig's
+(status 10) returns before commit and lets the current attempt decide whether to
+iterate or escalate. `test_command` defaults to the rig's
 `formula_vars.test_command`; when empty, the commit test gate is skipped. The
 temporary `test_gate` default is `no-new-failures`: when fix-head tests fail, the
 same command runs once at the immutable review base in a disposable worktree.
@@ -477,15 +567,16 @@ permanent target. Rigs may set `test_failure_pattern` to a Bash ERE with one
 capture group for stable failure identifiers; the fallback compares normalized
 FAIL/ERROR lines. A failed or impossible base comparison fails closed. Base
 failures are stored in `gc.review.preexisting_test_failures` on the root and
-reported in the apply-fixes note. A new test failure is recorded as a durable
-testing finding, writes `review.verdict=iterate`, closes this bead, and returns
-status 10 so no commit or push happens. A push failure returns non-zero after
-the local commit and is reported as an error.
+reported in the apply-fixes note. A test-gate failure records a durable testing
+finding and returns status 10 before commit or push; apply-fixes or the final
+verification decides whether to iterate or escalate. A push failure returns
+non-zero after the local commit and is reported as an error.
 
-## 3. Map the verdict + write it (run verbatim)
+## 3. Require synthesis + tests, record whether this attempt committed, and write the verdict
 
-Tell the lib whether you changed the branch this round; it maps the synthesis
-verdict onto the loop's done/iterate review.verdict and closes this bead:
+Re-read durable state because this block may run in a fresh shell. Compare the
+current head with the head recorded by this attempt's test step, record a new fix
+commit when present, then require both synthesis and test gates to converge:
 
 ```bash
 set -uo pipefail
@@ -509,16 +600,56 @@ GC_ALLOWED_PATHS_VALUE
 export TEST_COMMAND TEST_GATE TEST_FAILURE_PATTERN ALLOWED_PATHS
 review_apply_fixes_load apply-fixes || exit $?
 
-APPLIED=yes   # set to "no" ONLY if you changed nothing (e.g. all findings were sub-threshold nits you surfaced)
-VERDICT=$(review_apply_fixes_map_verdict "$REVIEW_SYNTHESIS_VERDICT" "$APPLIED")
-review_apply_fixes_set_verdict "$VERDICT" "synthesis=$REVIEW_SYNTHESIS_VERDICT applied=$APPLIED -> $VERDICT" || exit $?
+REVIEW_SYNTHESIS_VERDICT=$(review_apply_fixes_synthesis_for_attempt \
+  "$REVIEW_SYNTHESIS_VERDICT" "$REVIEW_TEST_RESULT" \
+  "$REVIEW_TEST_FAILURE_ATTEMPT" "$REVIEW_ATTEMPT") || exit $?
+if [ "$REVIEW_TEST_ATTEMPT" != "$REVIEW_ATTEMPT" ] || [ -z "$REVIEW_TEST_RESULT" ] || [ "$REVIEW_TEST_RESULT" = running ]; then
+  review_apply_fixes_escalate "missing or stale test-gate result for attempt $REVIEW_ATTEMPT" || exit $?
+  exit 0
+fi
+START_HEAD=$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.review.iteration_start_head')
+CURRENT_HEAD=$(git -C "$REVIEW_WORK_DIR" rev-parse HEAD) || {
+  review_apply_fixes_escalate "cannot read branch HEAD after the guarded commit" || exit $?
+  exit 0
+}
+if [ -z "$START_HEAD" ]; then
+  review_apply_fixes_escalate "missing attempt $REVIEW_ATTEMPT start commit; cannot determine whether fixes were applied" || exit $?
+  exit 0
+fi
+APPLIED=no
+if [ "$CURRENT_HEAD" != "$START_HEAD" ]; then
+  APPLIED=yes
+  bd update "$REVIEW_ROOT" \
+    --set-metadata gc.review.last_fix_attempt="$REVIEW_ATTEMPT" \
+    --set-metadata gc.review.last_fix_head="$CURRENT_HEAD" || {
+      review_apply_fixes_escalate "could not record the fix commit for attempt $REVIEW_ATTEMPT" || exit $?
+      exit 0
+    }
+fi
+
+ACTION=$(review_apply_fixes_iteration_action \
+  "$REVIEW_SYNTHESIS_VERDICT" "$REVIEW_TEST_RESULT" "$APPLIED" "$REVIEW_ATTEMPT") || exit $?
+case "$ACTION" in
+  done)
+    review_apply_fixes_set_verdict done "synthesis=$REVIEW_SYNTHESIS_VERDICT tests=$REVIEW_TEST_RESULT applied=$APPLIED attempt=$REVIEW_ATTEMPT" || exit $?
+    ;;
+  iterate)
+    review_apply_fixes_set_verdict iterate "synthesis=$REVIEW_SYNTHESIS_VERDICT tests=$REVIEW_TEST_RESULT applied=$APPLIED attempt=$REVIEW_ATTEMPT; re-review required" || exit $?
+    ;;
+  escalate)
+    review_apply_fixes_escalate "attempt $REVIEW_ATTEMPT ended without clean synthesis/test pass and without a new fix commit" || exit $?
+    ;;
+  *) echo "ERROR: unknown loop action '$ACTION'" >&2; exit 2 ;;
+esac
 ```
 
 Exit criteria: either review_apply_fixes_escalate ran (blocked / unfixable -> done
 + gc.review.loop_outcome=blocked-needs-human on the root) or review.verdict
-(done|iterate) is set on this bead and it is closed pass. The controller then runs
+(done|iterate) is set on this bead and it is closed pass. Only synthesis pass plus
+test-gate pass converges; a third attempt without a fix commit or a failed final
+verification escalates. The controller then runs
 .gc-review-verdict.sh: review.verdict=done -> exit 0 (converged, stop);
-iterate -> exit 1 (next attempt or cap).
+iterate -> exit 1 (next regular attempt or the one final verification).
 '''
 
 # --------------------------------------------------------------------------

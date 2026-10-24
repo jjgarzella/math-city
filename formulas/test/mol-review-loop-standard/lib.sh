@@ -111,9 +111,10 @@ afx_sandbox() {
 afx_env() {
   GC_CITY="$AFX_CITY" \
   GC_BEAD_ID="${AFX_BEAD_ID:-apply-fixes-bead}" \
+  GC_ITERATION="${AFX_ITERATION:-1}" \
   GC_AGENT="gascity/test.polecat" \
   BD_PHASE_BEAD_ID="${AFX_BEAD_ID:-apply-fixes-bead}" \
-  BD_STEP_ID="test.apply-fixes" \
+  BD_STEP_ID="test.${AFX_STEP_ID:-apply-fixes}" \
   BD_ROOT_STEP_ID="test" \
   FIX_THRESHOLD="${FIX_THRESHOLD:-minor}" \
   BD_ROOT="$AFX_ROOT" \

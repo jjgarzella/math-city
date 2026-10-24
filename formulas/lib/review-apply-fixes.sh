@@ -33,6 +33,7 @@
 #   review_apply_fixes_load <phase-suffix>                # sets REVIEW_* + heartbeats
 #   review_apply_fixes_findings                          # TSV: id \t severity \t category \t title
 #   review_apply_fixes_map_verdict <synth_verdict> <applied yes|no>   # -> done|iterate
+#   review_apply_fixes_iteration_action <synth> <test> <applied> <attempt> # -> done|iterate|escalate
 #   review_apply_fixes_set_verdict <done|iterate> "<note>"            # write review.verdict + close
 #   review_apply_fixes_escalate "<reason>"               # blocked / unfixable -> terminate-to-human
 #   review_apply_fixes_check_allowed_paths [newline-list]  # refuse out-of-scope edits
@@ -59,8 +60,8 @@
 # THE OUTPUT CONTRACT (consumed by review-verdict.sh, the loop's ralph check):
 #   review.verdict on THIS apply-fixes bead — done (converge, stop) | iterate
 #   (re-review the fixes). The mapping:
-#     synthesis pass               -> done     (nothing actionable; converge)
-#     synthesis pass_with_findings -> iterate when fixes were applied, else done
+#     synthesis pass + passing test gate -> done (the only clean convergence)
+#     synthesis pass_with_findings -> iterate (actionable work remains or changed)
 #     synthesis fail               -> iterate  (blocker fixed; re-review)
 #     synthesis blocked            -> done + escalate (terminate-to-human; the
 #                                     loop cannot make progress, so stop rather
@@ -155,11 +156,19 @@ review_apply_fixes_load() {
   [ -z "$REVIEW_ALLOWED_PATHS" ] && REVIEW_ALLOWED_PATHS="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.var.allowed_paths')"
   REVIEW_FINDINGS="${REVIEW_ROOT}.findings"
   REVIEW_FIX_THRESHOLD="${FIX_THRESHOLD:-minor}"
+  REVIEW_ATTEMPT="${GC_ITERATION:-}"
+  [ -z "$REVIEW_ATTEMPT" ] && REVIEW_ATTEMPT="$(review_apply_fixes__meta "$GC_BEAD_ID" 'gc.attempt')"
+  [ -n "$REVIEW_ATTEMPT" ] || REVIEW_ATTEMPT=0
+  REVIEW_TEST_RESULT="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.review.test_result')"
+  REVIEW_TEST_ATTEMPT="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.review.test_attempt')"
+  REVIEW_TEST_FINDING="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.review.test_failure_finding')"
+  REVIEW_TEST_FAILURE_ATTEMPT="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.review.test_failure_attempt')"
 
   export REVIEW_ROOT REVIEW_SYNTHESIS_VERDICT REVIEW_SYNTHESIS_PROMOTED \
     REVIEW_SYNTHESIS_BURNED REVIEW_WORK_DIR REVIEW_BASE_SHA REVIEW_BASE_BRANCH \
     REVIEW_TEST_COMMAND REVIEW_TEST_GATE REVIEW_TEST_FAILURE_PATTERN \
-    REVIEW_ALLOWED_PATHS REVIEW_FINDINGS REVIEW_FIX_THRESHOLD
+    REVIEW_ALLOWED_PATHS REVIEW_FINDINGS REVIEW_FIX_THRESHOLD REVIEW_ATTEMPT \
+    REVIEW_TEST_RESULT REVIEW_TEST_ATTEMPT REVIEW_TEST_FINDING REVIEW_TEST_FAILURE_ATTEMPT
   echo "[review-apply-fixes] root=$REVIEW_ROOT verdict=${REVIEW_SYNTHESIS_VERDICT:-<none>} promoted=${REVIEW_SYNTHESIS_PROMOTED:-0} burned=${REVIEW_SYNTHESIS_BURNED:-0} fix_threshold=$REVIEW_FIX_THRESHOLD work_dir=${REVIEW_WORK_DIR:-<unset>}"
 }
 
@@ -486,6 +495,43 @@ review_apply_fixes__record_test_gate_state() {
     }
 }
 
+# Record the latest deterministic test result on the loop root. The iteration
+# number makes a missing/stale result detectable by apply-fixes; its meaning is
+# the shared test_gate policy, not merely the shell command's exit status.
+review_apply_fixes__record_test_result() {
+  local result="$1" finding_id="${2:-}" attempt="${REVIEW_ATTEMPT:-${GC_ITERATION:-0}}"
+  local -a metadata_args
+  : "${REVIEW_ROOT:?call review_apply_fixes_load first}"
+  [[ "$attempt" =~ ^[0-9]+$ ]] || attempt=0
+  metadata_args=(
+    --set-metadata gc.review.test_result="$result" \
+    --set-metadata gc.review.test_attempt="$attempt" \
+  )
+  if [ "$result" = fail ]; then
+    metadata_args+=(
+      --set-metadata gc.review.test_failure_finding="$finding_id"
+      --set-metadata gc.review.test_failure_attempt="$attempt"
+    )
+  fi
+  bd update "$REVIEW_ROOT" "${metadata_args[@]}" >/dev/null || {
+      echo "ERROR: could not record test result on $REVIEW_ROOT" >&2
+      return 2
+    }
+  if [ "$result" = pass ] && [ -n "${REVIEW_TEST_FINDING:-}" ]; then
+    bd update "$REVIEW_TEST_FINDING" --status=closed \
+      --notes "test gate passed in attempt $attempt" >/dev/null || {
+        echo "ERROR: could not close resolved test finding $REVIEW_TEST_FINDING" >&2
+        return 2
+      }
+  fi
+  REVIEW_TEST_RESULT="$result"
+  REVIEW_TEST_ATTEMPT="$attempt"
+  [ -n "$finding_id" ] && REVIEW_TEST_FINDING="$finding_id"
+  [ -n "$REVIEW_TEST_FAILURE_ATTEMPT" ] || REVIEW_TEST_FAILURE_ATTEMPT=""
+  [ "$result" = fail ] && REVIEW_TEST_FAILURE_ATTEMPT="$attempt"
+  export REVIEW_TEST_RESULT REVIEW_TEST_ATTEMPT REVIEW_TEST_FINDING REVIEW_TEST_FAILURE_ATTEMPT
+}
+
 # review_apply_fixes__record_test_failure <command> <status> <output> [details] —
 # create a durable major/testing finding under the review findings container.
 review_apply_fixes__record_test_failure() {
@@ -509,12 +555,24 @@ review_apply_fixes__record_test_failure() {
   printf '%s\n' "$finding_id"
 }
 
-# Record a failed test run, set review.verdict=iterate, and return the existing
-# status 10 terminal so the caller makes no commit or push.
+# Record a failed test run and return status 10 so the caller makes no commit or
+# push. The standalone test step leaves verdict handling to apply-fixes; a test
+# failure on the third regular attempt escalates instead of using verification.
 review_apply_fixes__test_failure_iterate() {
   local command_text="$1" status="$2" output_file="$3" details="$4" output finding_id
   output="$(tail -n 100 "$output_file")"
   finding_id="$(review_apply_fixes__record_test_failure "$command_text" "$status" "$output" "$details")" || return 2
+  review_apply_fixes__record_test_result fail "$finding_id" || return 2
+  if [ "${REVIEW_PHASE_SUFFIX:-}" = "test" ]; then
+    echo "ERROR: test_command failed (exit $status); finding=$finding_id; apply-fixes will handle this attempt" >&2
+    return 10
+  fi
+  if [ "${REVIEW_PHASE_SUFFIX:-}" = "apply-fixes" ] && [ "${REVIEW_ATTEMPT:-0}" -ge 3 ] 2>/dev/null; then
+    review_apply_fixes_escalate \
+      "test gate failed on the final regular attempt (${REVIEW_ATTEMPT}); finding=$finding_id" || return 2
+    echo "ERROR: test_command failed on the final regular attempt; finding=$finding_id" >&2
+    return 10
+  fi
   review_apply_fixes_set_verdict iterate \
     "test_command failed with exit $status; failure recorded as finding $finding_id; no commit made" || return 2
   echo "ERROR: test_command failed (exit $status); finding=$finding_id; refusing to commit" >&2
@@ -533,8 +591,8 @@ review_apply_fixes__comparison_failure_iterate() {
 # review_apply_fixes_test_before_commit [command] — run the rig test command in
 # the review worktree. `strict` preserves the original any-failure gate;
 # `no-new-failures` compares a failing fix-head run with one disposable run at
-# the immutable review base. Return 10 only after a failure was recorded and
-# review.verdict=iterate closed this apply-fixes bead.
+# the immutable review base. Return 10 only after the failure is durable; the
+# caller owns phase-specific iterate/escalate handling.
 review_apply_fixes_test_before_commit() {
   local command_text="${1:-${REVIEW_TEST_COMMAND:-}}" gate="${REVIEW_TEST_GATE:-no-new-failures}"
   local pattern="${REVIEW_TEST_FAILURE_PATTERN:-}" output_file status head_status parse_status
@@ -550,6 +608,7 @@ review_apply_fixes_test_before_commit() {
   esac
   if [ -z "$command_text" ]; then
     review_apply_fixes__record_test_gate_state "$gate" null "test command skipped; baseline not evaluated" || return 2
+    review_apply_fixes__record_test_result pass "" || return 2
     echo "[review-apply-fixes] no test_command configured; skipping test gate"
     return 0
   fi
@@ -567,6 +626,7 @@ review_apply_fixes_test_before_commit() {
     else
       review_apply_fixes__record_test_gate_state "$gate" null "strict mode; baseline not compared" || { rm -f "$output_file"; return 2; }
     fi
+    review_apply_fixes__record_test_result pass "" || { rm -f "$output_file"; return 2; }
     rm -f "$output_file"
     echo "[review-apply-fixes] test_command passed"
     return 0
@@ -765,6 +825,7 @@ review_apply_fixes_test_before_commit() {
   }
   review_apply_fixes__record_test_gate_state "$gate" "$base_json" "" || { rm -f "$output_file"; return 2; }
   if [ -z "$new_failures" ]; then
+    review_apply_fixes__record_test_result pass "" || { rm -f "$output_file"; return 2; }
     rm -f "$output_file"
     echo "[review-apply-fixes] fix-head failures are a subset of the immutable-base failures; commit allowed"
     return 0
@@ -795,8 +856,8 @@ review_apply_fixes_push_branch() {
 }
 
 # review_apply_fixes_commit_and_push <message> — the only supported commit path:
-# scope check, test gate, commit, then push. A test failure returns 10 after it
-# has written iterate and closed the bead; no git add/commit/push has run.
+# scope check, test gate, commit, then push. A test failure returns 10 after the
+# finding is written; no git add/commit/push has run.
 review_apply_fixes_commit_and_push() {
   local message="${1:-}" status
   [ -n "$message" ] || { echo "ERROR: commit message is required" >&2; return 2; }
@@ -828,10 +889,10 @@ review_apply_fixes_commit_and_push() {
 }
 
 # review_apply_fixes_map_verdict <synthesis_verdict> <applied yes|no> — map the
-# synthesis verdict onto the loop's review.verdict. Pure lookup; the `applied`
-# flag is the agent's report of whether this round changed the branch.
+# synthesis verdict onto a preliminary loop verdict. `pass_with_findings` is
+# always actionable; the attempt policy decides when the loop stops.
 #   pass               -> done    (nothing actionable)
-#   pass_with_findings -> iterate when fixes were applied, else done
+#   pass_with_findings -> iterate (actionable findings remain or were fixed)
 #   fail               -> iterate (a blocker was surfaced and fixed; re-review)
 #   blocked            -> done    (terminate; the caller must also escalate)
 #   anything else      -> iterate (conservative: re-review rather than silently stop)
@@ -841,11 +902,68 @@ review_apply_fixes_map_verdict() {
   local sv="$1" applied="${2:-no}"
   case "$sv" in
     pass)               echo done ;;
-    pass_with_findings) [ "$applied" = yes ] && echo iterate || echo done ;;
+    pass_with_findings) echo iterate ;;
     fail)               echo iterate ;;
     blocked)            echo done ;;
     *)                  echo iterate ;;
   esac
+}
+
+# Convert a clean synthesis verdict into actionable work when this attempt's
+# test gate failed, or when fixes followed an earlier test failure this attempt.
+# The synthesis ran before apply-fixes, so a clean review of the pre-fix branch
+# cannot certify fixes made afterward.
+review_apply_fixes_synthesis_for_attempt() {
+  local synthesis="${1:-}" test_result="${2:-}" test_failure_attempt="${3:-}" attempt="${4:-0}"
+  if [ "$synthesis" = pass ] && { [ "$test_result" != pass ] || [ "$test_failure_attempt" = "$attempt" ]; }; then
+    echo pass_with_findings
+  else
+    echo "$synthesis"
+  fi
+}
+
+# review_apply_fixes_iteration_action <synthesis> <test-result> <applied> <attempt>
+# is the standard loop's convergence and finite-retry policy. The first three
+# attempts may apply fixes; attempt four is exactly one verification-only pass.
+# It never accepts pass_with_findings as convergence, and it never loops after
+# the verification attempt. At the third regular attempt, unresolved work with
+# no new commit terminates to a human rather than consuming the verification
+# budget without progress.
+review_apply_fixes_iteration_action() {
+  local synthesis="${1:-}" test_result="${2:-}" applied="${3:-no}" attempt="${4:-0}"
+  local verdict
+  case "$attempt" in
+    ''|*[!0-9]*) echo "ERROR: invalid review attempt '$attempt'" >&2; return 2 ;;
+  esac
+
+  if [ "$synthesis" = "blocked" ]; then
+    echo escalate
+    return 0
+  fi
+  if [ "$attempt" -ge 4 ]; then
+    if [ "$synthesis" = "pass" ] && [ "$test_result" = "pass" ]; then
+      echo done
+    else
+      echo escalate
+    fi
+    return 0
+  fi
+  if [ "$synthesis" = "pass" ] && [ "$test_result" = "pass" ]; then
+    if [ "$applied" = yes ]; then echo iterate; else echo done; fi
+    return 0
+  fi
+  if [ "$attempt" -ge 3 ]; then
+    if [ "$test_result" = "pass" ] && [ "$applied" = "yes" ]; then
+      echo iterate
+    else
+      echo escalate
+    fi
+    return 0
+  fi
+
+  verdict="$(review_apply_fixes_map_verdict "$synthesis" "$applied")" || return $?
+  [ "$test_result" = "pass" ] || verdict=iterate
+  echo "$verdict"
 }
 
 # review_apply_fixes_set_verdict <done|iterate> <note> — write review.verdict

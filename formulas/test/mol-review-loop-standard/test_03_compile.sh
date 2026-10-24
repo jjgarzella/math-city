@@ -28,6 +28,7 @@ for lens in quality security performance architecture testing docs; do
   assert_contains "$SHOW" "$PIPE.$lens" "{target}.$lens -> review-pipeline.$lens"
 done
 assert_contains "$SHOW" "$PIPE.synthesis" "{target}.synthesis -> review-pipeline.synthesis"
+assert_contains "$SHOW" "$ITER.test" "the configured test gate runs once in the iteration body"
 assert_contains "$SHOW" "$ITER.apply-fixes" "apply-fixes runs in the iteration body after the reviewer"
 assert_contains "$SHOW" "mol-review-loop-standard.review-loop:" "review-loop ralph control bead present"
 assert_contains "$SHOW" "workflow-finalize" "clean graph.v2 terminal (workflow-finalize) appended"
@@ -47,14 +48,17 @@ for line in sys.stdin:
 lenses=["quality","security","performance","architecture","testing","docs"]
 lens_on_analyze=all(PIPE+"analyze-scope-check" in needs.get(PIPE+l,set()) for l in lenses)
 synth_on_all=needs.get(PIPE+"synthesis",set())>={PIPE+l+"-scope-check" for l in lenses}
-fix_on_synth=(PIPE+"synthesis-scope-check") in needs.get(ITER+"apply-fixes",set())
+test_on_synth=(PIPE+"synthesis-scope-check") in needs.get(ITER+"test",set())
+fix_on_test=(ITER+"test-scope-check") in needs.get(ITER+"apply-fixes",set())
 print("LENSES_NEED_ANALYZE="+("yes" if lens_on_analyze else "no"))
 print("SYNTH_NEEDS_ALL_SIX="+("yes" if synth_on_all else "no"))
-print("FIX_NEEDS_SYNTH="+("yes" if fix_on_synth else "no"))
+print("TEST_NEEDS_SYNTH="+("yes" if test_on_synth else "no"))
+print("FIX_NEEDS_TEST="+("yes" if fix_on_test else "no"))
 ')"
 assert_contains "$WIRING" "LENSES_NEED_ANALYZE=yes" "each lens needs the analyze pass"
 assert_contains "$WIRING" "SYNTH_NEEDS_ALL_SIX=yes" "synthesis needs all six lenses"
-assert_contains "$WIRING" "FIX_NEEDS_SYNTH=yes"     "apply-fixes needs synthesis (review -> fix ordering)"
+assert_contains "$WIRING" "TEST_NEEDS_SYNTH=yes" "test gate runs after synthesis"
+assert_contains "$WIRING" "FIX_NEEDS_TEST=yes" "apply-fixes needs this attempt's test gate"
 
 # --- DEFAULT var propagation: no leftover fragment braces; the resolver sees the
 #     default target ("") + base_branch (main); each lens opt_model tiers; the

@@ -32,7 +32,8 @@ DEPOT = Path(os.environ.get("KAIMON_UNION_DEPOT", TASK / "union-depot"))
 TARGET_UUID = "0b7c3a59-5f0e-4d58-9a43-2a6f0c9e1d01"
 CITY_DEP_UUID = "0b7c3a59-5f0e-4d58-9a43-2a6f0c9e1d02"
 OTHER_DEP_UUID = "0b7c3a59-5f0e-4d58-9a43-2a6f0c9e1d03"
-EXTERNALS = ["Primes", "Combinatorics"]
+# CUDA_Driver_jll carries .pkg/select_artifacts.jl: exercises Pkg's artifact-selector subprocess.
+EXTERNALS = ["Primes", "Combinatorics", "CUDA_Driver_jll"]
 
 spec = importlib.util.spec_from_file_location("sysimage", CLI)
 image = importlib.util.module_from_spec(spec)
@@ -556,6 +557,31 @@ class Prepare(unittest.TestCase):
         member = self.target / "test/Project.toml"
         member.write_text(member.read_text() + '\n[compat]\nCombinatorics = "1.1"\n')
         self.assert_stale_rejected(root)
+
+    def test_artifact_selector_dependency_prepares(self):
+        """Pkg runs .pkg/select_artifacts.jl in a child inheriting the ACTIVE project;
+        preparation must succeed with such a dependency (real DeRham/MMP regression)."""
+        project = self.target / "Project.toml"
+        project.write_text(project.read_text().replace(
+            "[deps]\n", f'[deps]\nCUDA_Driver_jll = "{self.uuid["CUDA_Driver_jll"]}"\n', 1))
+        result = self.prepare(self.path_map({"CityDep": self.owned_dep}))
+        self.assertEqual(result.returncode, 0, result.log)
+        pins = self.output()
+        self.assertIn("CUDA_Driver_jll", pins)
+        self.assert_pinned_to_lock(pins)
+
+    def test_artifact_selector_with_broken_existing_manifest(self):
+        """Safe bootstrap before repair and target activation after it, together."""
+        project = self.target / "Project.toml"
+        project.write_text(project.read_text().replace(
+            "[deps]\n", f'[deps]\nCUDA_Driver_jll = "{self.uuid["CUDA_Driver_jll"]}"\n', 1))
+        broken = self.target / f"Manifest-v{self.series}.toml"
+        write_manifest(broken, self.julia_version, {k: v for k, v in self.locked.items() if k == "Combinatorics"})
+        before = self.snapshot()
+        result = self.prepare(self.path_map({"CityDep": self.owned_dep}), extra=["--replace-existing"])
+        self.assertEqual(result.returncode, 0, result.log)
+        self.assertEqual((Path(self.report(result)["rollback_backup"]) / broken.name).read_bytes(), before[broken.name])
+        self.assertIn("CUDA_Driver_jll", self.output())
 
     def test_new_dependency_outside_lock_refused(self):
         project = self.target / "Project.toml"

@@ -41,7 +41,7 @@ assert_contains "$PIPE_DESC" "synthesis"      "review-pipeline notes the expande
 
 # --- vars: fragment contract (target<-review_target rename) + loop knobs ------
 host_vars="$(formula_py defined-vars | tr '\n' ' ')"
-expected_host="$( { fragment_vars | sed 's/^review_target$/target/'; echo notify_target; echo work_dir; echo branch; echo base_sha; echo test_command; echo allowed_paths; } | sort | tr '\n' ' ')"
+expected_host="$( { fragment_vars | sed 's/^review_target$/target/'; echo notify_target; echo work_dir; echo branch; echo base_sha; echo test_command; echo test_gate; echo test_failure_pattern; echo allowed_paths; } | sort | tr '\n' ' ')"
 assert_eq "$expected_host" "$host_vars" \
   "loop declares the fragment contract plus explicit work_dir/branch/base_sha context and notify_target"
 
@@ -53,6 +53,8 @@ assert_eq ""      "$(formula_py var-default work_dir)"         "work_dir default
 assert_eq ""      "$(formula_py var-default branch)"          "branch default = empty (use root metadata when available)"
 assert_eq ""      "$(formula_py var-default base_sha)"        "base_sha default = empty (use root metadata when available)"
 assert_eq ""      "$(formula_py var-default test_command)"  "test_command default = empty (rig formula_vars supplies it when configured)"
+assert_eq "no-new-failures" "$(formula_py var-default test_gate)" "test_gate defaults to the temporary no-new-failures policy"
+assert_eq ""      "$(formula_py var-default test_failure_pattern)" "test_failure_pattern default = empty (use normalized FAIL/ERROR lines)"
 assert_eq ""      "$(formula_py var-default allowed_paths)" "allowed_paths default = empty (derive reviewed diff + tests)"
 
 # every {{template ref}} points at a defined var
@@ -131,6 +133,10 @@ assert_contains "$FIX_DESC" "blocked"         "apply-fixes documents the blocked
 assert_contains "$FIX_DESC" "TERMINATE-TO-HUMAN" "apply-fixes documents blocked -> terminate-to-human"
 assert_contains "$FIX_DESC" "ZFC"             "apply-fixes attributes the fix-vs-surface decision to the agent (ZFC)"
 assert_contains "$FIX_DESC" "TEST_COMMAND"    "apply-fixes passes the rig test command to the guarded commit path"
+assert_contains "$FIX_DESC" "TEST_GATE" "apply-fixes passes the test-gate mode to the guarded commit path"
+assert_contains "$FIX_DESC" "TEST_FAILURE_PATTERN" "apply-fixes passes the optional failure identifier pattern"
+assert_contains "$FIX_DESC" "permanent target" "apply-fixes documents strict mode as the permanent target"
+assert_contains "$FIX_DESC" "gc.review.preexisting_test_failures" "apply-fixes documents durable baseline failure metadata"
 assert_contains "$FIX_DESC" "ALLOWED_PATHS"   "apply-fixes passes the allowed-path list to the scope guard"
 assert_contains "$FIX_DESC" "review_apply_fixes_commit_and_push" "apply-fixes uses one guarded test/scope/commit/push helper"
 assert_contains "$FIX_DESC" 'if [ "$commit_status" -eq 2 ] || [ "$commit_status" -eq 3 ]; then' \

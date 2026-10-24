@@ -12,7 +12,8 @@
 # against canned bead JSON (stub bd/gc, no Dolt) to pin the verdict->severity->fix
 # mapping + the blocked terminate-to-human escalation; test_03 compiles the loop
 # through the live gc binary and asserts the reviewer passes materialize inside
-# the ralph iteration body; test_04 covers commit, push, and allowed-path gates.
+# the ralph iteration body; test_04 covers commit, push, and allowed-path gates;
+# test_05 covers the pre-existing-failure comparison and strict test-gate mode.
 # What the model actually
 # finds + fixes on a real diff is the dogfood's job; this suite locks the wiring.
 set -uo pipefail

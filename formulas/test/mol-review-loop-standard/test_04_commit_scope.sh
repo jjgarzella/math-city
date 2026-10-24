@@ -7,6 +7,7 @@ section "04 commit, test, push, and scope gates"
 AFX_ROOT="root-test-failure"; AFX_VERDICT="pass_with_findings"; AFX_WORKDIR="$(afx_git_repo)"
 AFX_BASE_SHA="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 AFX_ALLOWED_PATHS="app.txt"
+AFX_TEST_GATE="strict" # this legacy case pins the original any-nonzero-fails behavior
 AFX_TEST_COMMAND='printf "fixture failing output\n"; exit 42'
 AFX_ROOT_TEST_COMMAND=""
 AFX_CREATE_LOG="$(mktemp)"
@@ -27,6 +28,7 @@ meta="$(cat "$AFX_META_LOG")"; updates="$(cat "$AFX_UPDATE_LOG")"
 assert_contains "$meta" "apply-fixes-bead	review.verdict=iterate" "failed tests write review.verdict=iterate"
 assert_contains "$updates" "status=closed" "test-failure path closes the apply-fixes bead"
 assert_contains "$AFX_ERR" "refusing to commit" "failed test emits a commit refusal"
+unset AFX_TEST_GATE
 
 # --- I. commit succeeds locally, then a failed push is returned loudly -------
 AFX_ROOT="root-push-failure"; AFX_VERDICT="pass_with_findings"; AFX_WORKDIR="$(afx_git_repo)"

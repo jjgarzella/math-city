@@ -125,6 +125,14 @@ default = ""
 description = "Rig test command. The rig's formula_vars value is used by default; an explicit review-loop var overrides it. Empty skips the commit gate."
 default = ""
 
+[vars.test_gate]
+description = "Temporary test-gate policy: no-new-failures compares a failing fix-head run with the immutable review base; strict rejects every non-zero run and is the permanent target."
+default = "no-new-failures"
+
+[vars.test_failure_pattern]
+description = "Optional per-rig Bash ERE used to extract failure identifiers; it must contain exactly one capture group. Empty uses normalized output lines containing FAIL or ERROR."
+default = ""
+
 [vars.allowed_paths]
 description = "Optional newline-separated repo-relative allowed paths (directory prefixes end in /). Empty allows the reviewed diff and its related tests."
 default = ""
@@ -318,7 +326,16 @@ formulas/lib/review-apply-fixes.sh (the codex-independent half of gcs-f4j.5,
 reused unchanged by the quorum variant). It reads the synthesis output,
 enumerates durable findings, maps the verdict vocabulary, and safely gates the
 fix commit: only the reviewed paths and their tests may change, the configured
-test command must pass before commit, and a successful commit is pushed. WHICH
+test command is checked before commit, and a successful commit is pushed. The
+temporary `test_gate=no-new-failures` policy permits a failing fix-head run only
+when its extracted failure identifiers are a subset of failures from one run at
+the immutable review base in a disposable worktree. This default is temporary;
+`test_gate=strict` (any non-zero test result blocks commit) is the permanent
+target. A rig may set `test_failure_pattern` to a Bash ERE with exactly one
+capture group for a stable failure identifier; otherwise normalized output
+lines containing FAIL or ERROR are compared. An unavailable base run or
+unreadable failure set fails closed. The pre-existing set is recorded on the
+root and in the apply-fixes note. WHICH
 findings you fix vs surface, whether a blocker is fixable, and whether you
 actually changed the branch are YOUR judgment (ZFC).
 
@@ -335,11 +352,19 @@ TEST_COMMAND=$(cat <<'GC_TEST_COMMAND_VALUE'
 {{test_command}}
 GC_TEST_COMMAND_VALUE
 )
+TEST_GATE=$(cat <<'GC_TEST_GATE_VALUE'
+{{test_gate}}
+GC_TEST_GATE_VALUE
+)
+TEST_FAILURE_PATTERN=$(cat <<'GC_TEST_FAILURE_PATTERN_VALUE'
+{{test_failure_pattern}}
+GC_TEST_FAILURE_PATTERN_VALUE
+)
 ALLOWED_PATHS=$(cat <<'GC_ALLOWED_PATHS_VALUE'
 {{allowed_paths}}
 GC_ALLOWED_PATHS_VALUE
 )
-export TEST_COMMAND ALLOWED_PATHS
+export TEST_COMMAND TEST_GATE TEST_FAILURE_PATTERN ALLOWED_PATHS
 review_apply_fixes_load apply-fixes || exit $?  # sets REVIEW_ROOT/SYNTHESIS_VERDICT/FINDINGS/WORK_DIR/FIX_THRESHOLD + heartbeats
 
 # cwd does NOT persist between steps — resume the branch under review.
@@ -401,11 +426,19 @@ TEST_COMMAND=$(cat <<'GC_TEST_COMMAND_VALUE'
 {{test_command}}
 GC_TEST_COMMAND_VALUE
 )
+TEST_GATE=$(cat <<'GC_TEST_GATE_VALUE'
+{{test_gate}}
+GC_TEST_GATE_VALUE
+)
+TEST_FAILURE_PATTERN=$(cat <<'GC_TEST_FAILURE_PATTERN_VALUE'
+{{test_failure_pattern}}
+GC_TEST_FAILURE_PATTERN_VALUE
+)
 ALLOWED_PATHS=$(cat <<'GC_ALLOWED_PATHS_VALUE'
 {{allowed_paths}}
 GC_ALLOWED_PATHS_VALUE
 )
-export TEST_COMMAND ALLOWED_PATHS
+export TEST_COMMAND TEST_GATE TEST_FAILURE_PATTERN ALLOWED_PATHS
 review_apply_fixes_load apply-fixes || exit $?
 commit_error_file=$(mktemp) || exit 2
 review_apply_fixes_commit_and_push "fix: apply review findings on $REVIEW_ROOT" 2>"$commit_error_file"
@@ -435,10 +468,19 @@ from the reviewed diff and adds the matching formula or top-level `test/` and
 `tests/` directories that exist. An out-of-scope refusal (status 3) or inspection
 failure (status 2) escalates to a human with the captured diagnostic; a test failure
 (status 10) retains its iterate-and-stop behavior. `test_command` defaults to the rig's
-`formula_vars.test_command`; when empty, the commit test gate is skipped. A test
-failure is recorded as a durable testing finding, writes `review.verdict=iterate`,
-closes this bead, and returns status 10 so no commit or push happens. A push
-failure returns non-zero after the local commit and is reported as an error.
+`formula_vars.test_command`; when empty, the commit test gate is skipped. The
+temporary `test_gate` default is `no-new-failures`: when fix-head tests fail, the
+same command runs once at the immutable review base in a disposable worktree.
+The commit is allowed only when every fix-head failure identifier also appears
+at the base. `strict` preserves the any-nonzero-fails behavior and is the
+permanent target. Rigs may set `test_failure_pattern` to a Bash ERE with one
+capture group for stable failure identifiers; the fallback compares normalized
+FAIL/ERROR lines. A failed or impossible base comparison fails closed. Base
+failures are stored in `gc.review.preexisting_test_failures` on the root and
+reported in the apply-fixes note. A new test failure is recorded as a durable
+testing finding, writes `review.verdict=iterate`, closes this bead, and returns
+status 10 so no commit or push happens. A push failure returns non-zero after
+the local commit and is reported as an error.
 
 ## 3. Map the verdict + write it (run verbatim)
 
@@ -452,11 +494,19 @@ TEST_COMMAND=$(cat <<'GC_TEST_COMMAND_VALUE'
 {{test_command}}
 GC_TEST_COMMAND_VALUE
 )
+TEST_GATE=$(cat <<'GC_TEST_GATE_VALUE'
+{{test_gate}}
+GC_TEST_GATE_VALUE
+)
+TEST_FAILURE_PATTERN=$(cat <<'GC_TEST_FAILURE_PATTERN_VALUE'
+{{test_failure_pattern}}
+GC_TEST_FAILURE_PATTERN_VALUE
+)
 ALLOWED_PATHS=$(cat <<'GC_ALLOWED_PATHS_VALUE'
 {{allowed_paths}}
 GC_ALLOWED_PATHS_VALUE
 )
-export TEST_COMMAND ALLOWED_PATHS
+export TEST_COMMAND TEST_GATE TEST_FAILURE_PATTERN ALLOWED_PATHS
 review_apply_fixes_load apply-fixes || exit $?
 
 APPLIED=yes   # set to "no" ONLY if you changed nothing (e.g. all findings were sub-threshold nits you surfaced)

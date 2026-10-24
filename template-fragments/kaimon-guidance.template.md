@@ -29,7 +29,7 @@ touch "$scratch/Project.toml"
 printf '%s\n' "$scratch"
 ```
 
-Default sessions use the daemon's Julia 1.13. Installed Julia 1.12 is also
+Default sessions use the daemon's Julia 1.13.2 on the current Mac. Installed Julia 1.12.7 is also
 available. To select it, merge this into the owned project's `kaimon.toml`
 before launching, preserving other launch settings:
 
@@ -41,6 +41,57 @@ julia_version = "1.12"
 An explicit `julia_bin` overrides `julia_version`; check existing recipes. Kaimon may substitute the daemon version if a requested version is
 missing. Confirm `VERSION` and `Base.active_project()` with native `ex(q=false)`;
 a substituted version does not satisfy a version-specific task.
+
+The CURRENT shared-image route is the exact untracked per-worktree `julia_bin`
+wrapper recipe in `docs/kaimon.md` (`commands/kaimon-sysimage-julia`, with your
+original exact binary in `[city_sysimage]`). The live daemon has NOT loaded the
+managed selection hook: a compatible Manifest alone does NOT select the image.
+Agents do not need manual `-J` flags. Use a new owned session and confirm the
+actual child image and status; profile activation and guidance do not load the
+hook or change existing gates. No service restart, live patch or transport
+observer integration is part of this wrapper route.
+Before launching a task-owned worktree whose old Manifest differs from the
+published common lock, prepare it explicitly:
+
+```sh
+"{{ .CityRoot }}/commands/kaimon-sysimage.py" prepare \
+  --project "$task_worktree" --owned-root "$task_owned_root" \
+  --path-map "{{ .CityRoot }}/.gc/kaimon-sysimages/current/source-paths.toml"
+```
+
+Preparation announces and backs up exact target source/lockfile changes; never
+apply it to a canonical or foreign checkout. An existing versioned Manifest
+requires a matching tool receipt or explicit `--replace-existing`. A rejected
+preparation restores original files. Existing caller flags/images remain intact.
+The published source map points at retained shared reference worktrees, not
+canonical repositories. For dependencies you will edit, pass your own path map
+with exact owned source paths. Never edit those reference copies or another
+task's worktree; retain city artifact/profile/source paths after worker drain.
+Stale/incompatible images fall back to normal Julia with a diagnostic; check
+`ENV["KAIMON_CITY_SYSIMAGE"]` and
+`unsafe_string(Base.JLOptions().image_file)` along with version/project/source.
+The current image is specific to Julia1.13.2/macOS aarch64; it does not cover
+Julia1.12, another host, GPU numerical work, or development of a baked dependency.
+Keep Nemo and other local source work editable; a Nemo development context must
+use normal Julia when Nemo is baked for Oscar. Never rely on `Pkg.develop` to
+replace an already baked package in a running image session.
+
+For prescribed cold/clean-depot/default-image tests or rollback, preserve the
+recipe and set `[city_sysimage] mode = "off"` before launching a new owned
+session. Kaimon's test runner retains its original image resolver and isolated
+environment; this wrapper does not inject the shared image into that path.
+`mode = "required"` makes compatibility failure explicit. Never restart
+the shared service merely to change your worktree's mode. Follow the artifact,
+rebuild, receipt rollback and verified deployment instructions in the city docs;
+guidance or a saved profile alone does not prove an image was actually selected.
+
+The current image requires empty effective preferences for every baked package
+UUID. The selector checks exported/local preferences with Julia's ordered
+caller/base-wrapper/bootstrap resolution; a current Manifest alone is
+insufficient. A mismatch falls back, or errors in required mode. Use `mode =
+"off"` in a new owned session for custom baked-package preferences. Images
+without recorded build preference provenance require a rebuild. Preference
+changes cannot replace code already baked into a running session.
 
 Before evaluating changed package code, confirm the **exact project/worktree**
 and loaded package source (`pathof(Package)` after loading it). Editing files

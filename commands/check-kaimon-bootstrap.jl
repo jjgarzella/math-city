@@ -1,5 +1,5 @@
-# Run with the installed Julia 1.13 binary, the repaired service project/depot,
-# and a task-specific memory/time guard. Does not start a server or gate.
+# Run with the installed Julia 1.13 binary and repaired service project/depot.
+# Does not start a server or gate.
 using Kaimon
 
 include(joinpath(@__DIR__, "kaimon-managed-bootstrap.jl"))

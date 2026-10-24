@@ -2,7 +2,7 @@
 provider = "claude"
 
 [agent_defaults]
-append_fragments = ["pr-guidance", "kaimon-guidance"]
+append_fragments = ["pr-guidance", "kaimon-guidance", "execution-policy"]
 
 [providers]
 [providers.claude]
@@ -41,7 +41,7 @@ mode = "always"
 template = "peter"
 scope = "rig"
 dir = "gascity"
-mode = "always"
+mode = "on_demand"
 
 [[named_session]]
 template = "bryan"
@@ -62,7 +62,7 @@ mode = "always"
 template = "walter"
 scope = "rig"
 dir = "reporter"
-mode = "always"
+mode = "on_demand"
 
 [[rigs]]
 name = "math-experiments"
@@ -71,8 +71,8 @@ default_branch = "main"
 # Lab Tech's rig-specific wiring. The labtech pack ships NO defaults for these three
 # (they name one rig's filesystem and one rig's lab-book bead), so they live here.
 [rigs.formula_vars]
-labtech_home = "/home/jjgarzella/Developer/ai/city/math-experiments/labtech"
-labtech_pack = "/home/jjgarzella/Developer/ai/city/math-city/packs/labtech"
+labtech_home = "/Users/Shared/Developer/ai/city/math-experiments/labtech"
+labtech_pack = "/Users/Shared/Developer/ai/city/math-city/packs/labtech"
 lab_book = "mx-p03"
 review_worker_target = "gasvillage.polecat"
 [rigs.imports]
@@ -110,9 +110,9 @@ prefix = "mcp"
 default_branch = "main"
 [rigs.formula_vars]
 review_worker_target = "gasvillage.polecat"
-typecheck_command = "/home/jjgarzella/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); using EdgeIdeals'"
-test_command = "/home/jjgarzella/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'"
-lint_command = "PATH=/home/jjgarzella/.juliaup/bin:$PATH /home/jjgarzella/Developer/ai/city/math-city/packs/julia-tools/lib/no-code-comments.sh"
+typecheck_command = "/Users/jj-agents/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); using EdgeIdeals'"
+test_command = "/Users/jj-agents/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'"
+lint_command = "PATH=/Users/jj-agents/.juliaup/bin:$PATH /Users/Shared/Developer/ai/city/math-city/packs/julia-tools/lib/no-code-comments.sh"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "packs/gasvillage"
@@ -159,6 +159,9 @@ name = "bryan"
 model = "gpt-6.1-sol"
 
 [[patches.agent]]
+name = "anatoly"
+
+[[patches.agent]]
 name = "david"
 [patches.agent.option_defaults]
 model = "gpt-6.1-sol"
@@ -166,6 +169,8 @@ model = "gpt-6.1-sol"
 [[patches.agent]]
 name = "gasvillage.mayor"
 provider = "codex"
+[patches.agent.env]
+AUTONOMOUS_MODE = "1"
 [patches.agent.option_defaults]
 model = "gpt-6.1-sol"
 effort = "high"
@@ -200,9 +205,9 @@ prefix = "gfm"
 default_branch = "main"
 [rigs.formula_vars]
 review_worker_target = "gasvillage.polecat"
-typecheck_command = "/home/jjgarzella/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); using GPUFiniteFieldMatrices'"
-test_command = "/home/jjgarzella/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'"
-lint_command = "PATH=/home/jjgarzella/.juliaup/bin:$PATH /home/jjgarzella/Developer/ai/city/math-city/packs/julia-tools/lib/no-code-comments.sh"
+typecheck_command = "/Users/jj-agents/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); using GPUFiniteFieldMatrices'"
+test_command = "/Users/jj-agents/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'"
+lint_command = "PATH=/Users/jj-agents/.juliaup/bin:$PATH /Users/Shared/Developer/ai/city/math-city/packs/julia-tools/lib/no-code-comments.sh"
 [rigs.imports]
 [rigs.imports.basic-code-tools]
 source = "./packs/basic-code-tools"
@@ -215,11 +220,89 @@ prefix = "dr"
 default_branch = "main"
 [rigs.formula_vars]
 review_worker_target = "gasvillage.polecat"
-typecheck_command = "/home/jjgarzella/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); using DeRham'"
-test_command = "/home/jjgarzella/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'"
-lint_command = "PATH=/home/jjgarzella/.juliaup/bin:$PATH /home/jjgarzella/Developer/ai/city/math-city/packs/julia-tools/lib/no-code-comments.sh"
+typecheck_command = "/Users/jj-agents/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); using DeRham'"
+test_command = "/Users/jj-agents/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'"
+lint_command = "PATH=/Users/jj-agents/.juliaup/bin:$PATH /Users/Shared/Developer/ai/city/math-city/packs/julia-tools/lib/no-code-comments.sh"
+# Comment lint enforced only on new changes (overseer decision, bead dr-to77):
+# template-fragments/derham-lint-policy.template.md
+[[rigs.patches]]
+agent = "polecat"
+append_fragments = ["derham-lint-policy"]
 [rigs.imports]
 [rigs.imports.basic-code-tools]
 source = "./packs/basic-code-tools"
+[rigs.imports.gasvillage]
+source = "./packs/gasvillage"
+
+[[rigs]]
+name = "rforest"
+prefix = "rf"
+default_branch = "main"
+# Publication policy for all rforest work, including crew coordination:
+# template-fragments/rforest-git-policy.template.md
+# Append this fragment to any additional coding/review agent imported here.
+[[rigs.patches]]
+agent = "polecat"
+append_fragments = ["rforest-git-policy"]
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "./packs/gasvillage"
+
+[[rigs]]
+name = "average-polynomial-time-L-polynomials"
+prefix = "apt"
+default_branch = "main"
+[rigs.formula_vars]
+review_worker_target = "gasvillage.polecat"
+build_command = "/Users/jj-agents/miniforge3/envs/sage/bin/python -m compileall -q src"
+test_command = "/Users/jj-agents/miniforge3/envs/sage/bin/python -m pytest tests/ -q"
+[rigs.imports]
+[rigs.imports.basic-code-tools]
+source = "/Users/Shared/Developer/ai/city/math-city/packs/basic-code-tools"
+[rigs.imports.gasvillage]
+source = "/Users/Shared/Developer/ai/city/math-city/packs/gasvillage"
+
+[[rigs]]
+name = "pyrforest"
+prefix = "pyr"
+default_branch = "main"
+[rigs.imports]
+[rigs.imports.basic-code-tools]
+source = "/Users/Shared/Developer/ai/city/math-city/packs/basic-code-tools"
+[rigs.imports.gasvillage]
+source = "/Users/Shared/Developer/ai/city/math-city/packs/gasvillage"
+
+[[rigs]]
+name = "NewtonExperiments"
+prefix = "ne"
+default_branch = "main"
+[rigs.formula_vars]
+review_worker_target = "gasvillage.polecat"
+typecheck_command = "/Users/jj-agents/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); using NewtonExperiments'"
+test_command = "/Users/jj-agents/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'"
+lint_command = "PATH=/Users/jj-agents/.juliaup/bin:$PATH /Users/Shared/Developer/ai/city/math-city/packs/julia-tools/lib/no-code-comments.sh"
+[rigs.imports]
+[rigs.imports.basic-code-tools]
+source = "./packs/basic-code-tools"
+[rigs.imports.gasvillage]
+source = "./packs/gasvillage"
+
+[[rigs]]
+name = "all-heights-k3-surfaces"
+prefix = "k3"
+default_branch = "main"
+[rigs.formula_vars]
+review_worker_target = "gasvillage.polecat"
+[rigs.imports]
+[rigs.imports.gasvillage]
+source = "./packs/gasvillage"
+[rigs.imports.latex-utils]
+source = "./packs/latex-utils"
+
+[[rigs]]
+name = "trick-library"
+prefix = "trick"
+default_branch = "main"
+[rigs.imports]
 [rigs.imports.gasvillage]
 source = "./packs/gasvillage"

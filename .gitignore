@@ -35,3 +35,9 @@ mimocode.json
 
 # Private production Kaimon bearer catalog
 mcp/kaimon.toml
+
+# Local workstation caches and independently managed rig checkouts
+.DS_Store
+/.sage/
+/commands/__pycache__/
+/rigs/

@@ -61,6 +61,26 @@ assert_eq "0" "$STEP0_RC" "PR target resolves via gh stub (exit 0)"
 assert_contains "$STEP0_STDOUT" "TARGET_KIND=pr" "PR target -> TARGET_KIND=pr"
 rm -rf "$repo"
 
+# PR with more than the compare API's 300-file JSON cap -> complete list parsed
+# from the pinned diff payload.
+repo="$(new_git_repo)"
+for i in $(seq 1 305); do
+  printf 'package pkg\n' > "$repo/pkg-file-$i.go"
+done
+( cd "$repo"; git add .; git commit -q -m "large PR" )
+pr_base_sha="$(git -C "$repo" rev-parse HEAD~1)"
+pr_head_sha="$(git -C "$repo" rev-parse HEAD)"
+pr_stdout="$(cd "$repo" && GH_PR_BASE_SHA="$pr_base_sha" GH_PR_HEAD_SHA="$pr_head_sha" \
+  GH_API_FIXTURE=local PATH="$SUITE_DIR/bin:$PATH" bash "$RESOLVER" 42 2>/dev/null)"
+pr_rc=$?
+assert_eq "0" "$pr_rc" "large PR target resolves"
+eval "$pr_stdout"
+assert_eq "305" "$(wc -l < "$FILES_FILE" | tr -d '[:space:]')" \
+  "large PR file list includes every file beyond GitHub's 300-file JSON cap"
+assert_contains "$(cat "$FILES_FILE")" "pkg-file-305.go" \
+  "large PR file list includes a path after the API's first 300 entries"
+rm -rf "$repo"
+
 # --- no-drift: the analyze step wires to the shared resolver + passes both vars
 section "02b analyze -> resolver wiring (no drift)"
 RAW="$(formula_py desc '{target}.analyze')"

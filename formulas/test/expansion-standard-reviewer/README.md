@@ -31,17 +31,19 @@ Requires `python3`, `git`, `jq`, `bash`. `gc` is optional — the compile test
   self-rating, and self-skips cleanly with zero findings.
 - **test_02_resolver** — the shared `lib/resolve-diff.sh` contract the analyze
   step delegates to, exercised directly against throwaway git repos (the
-  range/branch/pr/empty/path classifications the analyze branches key on), plus
-  the no-drift wiring: the analyze prompt calls the shared resolver via
-  `$GC_CITY`, passes both vars, does not inline the git logic, and branches on
-  the resolver's exit codes (2/3) and empty stdout.
+  range/branch/pr/empty/path classifications the analyze branches key on, a PR
+  with more than 300 changed files, plus the no-drift wiring: the analyze prompt
+  calls the shared resolver via `$GC_CITY`, passes both vars, does not inline
+  the git logic, and branches on the resolver's exit codes (2/3) and empty
+  stdout.
 - **test_03_analyze_lifecycle** — the analyze bash run end-to-end against a
   recording stub `bd`/`gc` (`bin/`) and the REAL resolver: a real range diff
   produces durable `diff`/`files`/`summary.md` under
   `$GC_CITY/.gc/review-inputs/<root>` and records `gc.review.inputs_dir`,
   `gc.review.target_kind`, `work_dir`, `gc.review.eligible`, and
   `gc.review.eligibility_reason` on the molecule root; the empty-diff and
-  whole-repo-audit (`path`) branches set the right `target_kind`.
+  whole-repo-audit (`path`) branches set the right `target_kind`; and a
+  diverged bare-branch case pins provenance to the exact head/merge-base diff.
 - **test_04_compile** — `gc formula show` materializes the expansion (synthetic
   target `main`), proving the fragment EXPANDS into the analyze pass + all six
   lenses + a clean `workflow-finalize` terminal, that var substitution leaves no

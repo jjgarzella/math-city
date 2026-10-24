@@ -182,3 +182,27 @@ run_analyze_block 'gc.review.eligible' "main..HEAD" "$repo"
 assert_eq "0" "$AB_RC" "trivial-diff eligibility verdict persists successfully"
 assert_eq "no" "$(meta_val gc.review.eligible)" "trivial comment-only diff remains ineligible"
 rm -rf "$repo"
+
+# --- scenario G: diverged bare-branch target uses one pinned diff snapshot ----
+repo="$(new_git_repo)"
+( cd "$repo"; git checkout -q -b feature )
+( cd "$repo"; printf 'feature snapshot\n' > feature.go; git add feature.go; git commit -q -m "feature change" )
+feature_sha="$(git -C "$repo" rev-parse HEAD)"
+( cd "$repo"; git checkout -q main; printf 'base advanced\n' > base-only.go; git add base-only.go; git commit -q -m "advance base" )
+expected_base="$(git -C "$repo" merge-base main feature)"
+AB_CITY=""; AB_META_LOG=""; AB_PHASE_META_LOG=""; AB_ROOT="root-branch"
+AB_FINDINGS=""; AB_CANDIDATES_FILE=""; AB_PHASE_BEAD="analyze-branch"
+AB_ELIGIBLE="yes"; AB_REASON="eligible: bare branch snapshot"
+run_analyze_block 'resolve-diff.sh' "feature" "$repo"
+assert_eq "0" "$AB_RC" "analyze resolves a bare branch target"
+assert_eq "branch" "$(meta_val gc.review.target_kind)" "bare branch target kind is recorded"
+assert_eq "$feature_sha" "$(phase_meta_val analyze-branch input_head_sha)" \
+  "bare-branch provenance records the resolved feature head"
+assert_eq "$expected_base" "$(phase_meta_val analyze-branch base_sha)" \
+  "bare-branch provenance records the merge-base used for its diff"
+expected_branch_diff_sha="$(git -C "$repo" diff "$expected_base" "$feature_sha" | LC_ALL=C shasum -a 256 | awk '{print $1}')"
+assert_eq "$expected_branch_diff_sha" "$(phase_meta_val analyze-branch diff_sha256)" \
+  "bare-branch provenance hash matches the exact resolved head/merge-base diff"
+assert_not_contains "$(cat "$AB_INPUTS/diff")" "base advanced" \
+  "bare-branch diff excludes the base-only commit after divergence"
+rm -rf "$repo"

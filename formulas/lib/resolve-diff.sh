@@ -64,6 +64,38 @@ PR_BASE_SHA=""
 RESOLVED_HEAD_SHA=""
 RESOLVED_BASE_SHA=""
 
+# GitHub's compare endpoint caps its JSON `files` list at 300 entries for the
+# whole comparison. Parse filenames from the exact diff blob instead, so large
+# PRs keep a complete changed-file list. `git apply --numstat -z` handles quoted
+# paths and rename records without applying the patch.
+files_from_diff() {
+  local patch_file="$1" files_file="$2" numstat_file record old_path new_path path
+  numstat_file="$(mktemp)"
+  : > "$files_file"
+  if ! git apply --numstat -z "$patch_file" > "$numstat_file" 2>/dev/null; then
+    rm -f "$numstat_file"
+    return 1
+  fi
+  while IFS= read -r -d '' record; do
+    IFS=$'\t' read -r _ _ path <<< "$record"
+    if [ -n "$path" ]; then
+      printf '%s\n' "$path" >> "$files_file"
+    else
+      # With -z, a rename's numstat record has an empty path field followed by
+      # the old and new path as separate NUL-terminated fields. The compare API
+      # reports `filename` as the new path, so preserve that contract.
+      if ! IFS= read -r -d '' old_path || ! IFS= read -r -d '' new_path; then
+        rm -f "$numstat_file"
+        return 1
+      fi
+      printf '%s\n' "$new_path" >> "$files_file"
+    fi
+  done < "$numstat_file"
+  rm -f "$numstat_file"
+  [ -s "$files_file" ] || return 1
+  LC_ALL=C sort -u "$files_file" -o "$files_file"
+}
+
 if printf '%s' "$TARGET" | grep -Eq '^#?[0-9]+$' \
    || printf '%s' "$TARGET" | grep -Eq '^https?://.*/pull/[0-9]+/?$'; then
   # --- PR: capture immutable OIDs, then compare those exact commits ---
@@ -107,9 +139,8 @@ if printf '%s' "$TARGET" | grep -Eq '^#?[0-9]+$' \
     cat "$GH_ERR" >&2
     exit 3
   fi
-  if ! gh api --hostname "$PR_HOST" "$COMPARE_ENDPOINT" --jq '.files[].filename' > "$FILES_FILE" 2> "$GH_ERR"; then
-    echo "ERROR: pinned PR file-list fetch failed for $PR ($PR_BASE_SHA...$PR_HEAD_SHA):" >&2
-    cat "$GH_ERR" >&2
+  if ! files_from_diff "$DIFF_FILE" "$FILES_FILE"; then
+    echo "ERROR: cannot extract changed-file list from pinned PR diff for $PR ($PR_BASE_SHA...$PR_HEAD_SHA)" >&2
     exit 3
   fi
 elif printf '%s' "$TARGET" | grep -q '\.\.'; then

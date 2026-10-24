@@ -99,12 +99,12 @@ this block, then stop:
 ```bash
 set -uo pipefail
 json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh"
+review_phase_resolve workspace-setup || exit $?
 echo "[workspace-setup] GC_AGENT=${GC_AGENT:-} GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
 
 # Resolve the molecule ROOT so the ralph control bead inherits work_dir.
-ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
-  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
-[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"   # single-bead molecule: the bead is its own root
+ROOT="$REVIEW_PHASE_ROOT_ID"
 gc bd heartbeat "$GC_BEAD_ID" || true
 
 # Explicit context from the implementation trigger is authoritative. Direct
@@ -203,6 +203,8 @@ Base-loop behavior — run exactly this block, then stop:
 
 ```bash
 set -uo pipefail
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh"
+review_phase_resolve review-pipeline || exit $?
 echo "[review-pipeline] placeholder reviewer (no-op) GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
 gc bd heartbeat "$GC_BEAD_ID" || true
 bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
@@ -248,6 +250,8 @@ base loop the placeholder reviewer surfaces no findings, so VERDICT=done:
 ```bash
 set -uo pipefail
 VERDICT=done   # set to "iterate" when this round applied fixes needing re-review
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh"
+review_phase_resolve apply-fixes || exit $?
 echo "[apply-fixes] GC_BEAD_ID=${GC_BEAD_ID:-} -> review.verdict=$VERDICT"
 gc bd heartbeat "$GC_BEAD_ID" || true
 

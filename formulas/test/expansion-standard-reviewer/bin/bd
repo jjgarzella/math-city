@@ -41,8 +41,10 @@ case "$sub" in
       fi
     fi
     if has_flag --json "$@"; then
-      if [ "$target" = "${GC_BEAD_ID:-}" ]; then
-        printf '[{"id":"%s","metadata":{"gc.root_bead_id":"%s"}}]\n' "$target" "${BD_ROOT:-}"
+      if [ "$target" = "${BD_PHASE_BEAD_ID:-${GC_BEAD_ID:-}}" ]; then
+        jq -nc --arg id "$target" --arg root "${BD_ROOT:-}" \
+          --arg step "${BD_STEP_ID:-test.quality}" --arg kind "${BD_KIND:-}" \
+          '[{id:$id,metadata:({"gc.root_bead_id":$root,"gc.step_id":$step} + (if $kind!="" then {"gc.kind":$kind} else {} end))}]'
       elif [ "$target" = "${BD_ROOT:-}" ]; then
         # Root bead: work_dir, plus the analyze pass's durable-input handles when
         # the test populated them. Built with jq so optional fields stay valid JSON.
@@ -53,7 +55,9 @@ case "$sub" in
           --arg target_kind "${BD_REVIEW_TARGET_KIND:-}" \
           --arg eligible "${BD_REVIEW_ELIGIBLE:-}" \
           --arg reason "${BD_REVIEW_ELIGIBILITY_REASON:-}" \
+          --arg step "${BD_ROOT_STEP_ID:-test}" \
           '{id:$id, metadata: ({"work_dir":$work_dir}
+             + {"gc.step_id":$step}
              + (if $inputs_dir  != "" then {"gc.review.inputs_dir":$inputs_dir} else {} end)
              + (if $target_kind != "" then {"gc.review.target_kind":$target_kind} else {} end)
              + (if $eligible    != "" then {"gc.review.eligible":$eligible} else {} end)

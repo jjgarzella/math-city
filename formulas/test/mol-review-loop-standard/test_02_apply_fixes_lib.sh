@@ -51,7 +51,7 @@ AFX_ROOT="root-load"; AFX_VERDICT="fail"; AFX_PROMOTED="2"; AFX_BURNED="1"
 AFX_WORKDIR="/tmp/feature-wt"; FIX_THRESHOLD="major"; AFX_FINDINGS_JSON='[]'
 afx_sandbox
 afx_run '
-  review_apply_fixes_load >/dev/null
+  review_apply_fixes_load apply-fixes >/dev/null || exit $?
   echo "ROOT=$REVIEW_ROOT"
   echo "VERDICT=$REVIEW_SYNTHESIS_VERDICT"
   echo "PROMOTED=$REVIEW_SYNTHESIS_PROMOTED"
@@ -84,7 +84,7 @@ AFX_FINDINGS_JSON='[
  {"id":"f-nolabel","title":"no severity","status":"open","labels":["category:architecture"]}
 ]'
 afx_sandbox
-afx_run 'review_apply_fixes_load >/dev/null; review_apply_fixes_findings'
+afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_findings'
 TSV="$AFX_OUT"
 assert_eq "0" "$AFX_RC" "findings exits 0"
 nlines="$(printf '%s\n' "$TSV" | grep -c .)"
@@ -105,7 +105,7 @@ AFX_META_LOG=""; AFX_UPDATE_LOG=""; AFX_NUDGE_LOG=""; AFX_FINDINGS_FILE=""
 AFX_ROOT="root-setv"; AFX_VERDICT="pass_with_findings"; AFX_PROMOTED=""; AFX_BURNED=""; AFX_WORKDIR=""
 AFX_FINDINGS_JSON='[]'
 afx_sandbox
-afx_run 'review_apply_fixes_load >/dev/null; review_apply_fixes_set_verdict iterate "applied 2 fixes"'
+afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_set_verdict iterate "applied 2 fixes"'
 assert_eq "0" "$AFX_RC" "set_verdict iterate exits 0"
 meta="$(cat "$AFX_META_LOG")"; upd="$(cat "$AFX_UPDATE_LOG")"
 assert_contains "$meta" "apply-fixes-bead	review.verdict=iterate" "set_verdict writes review.verdict=iterate on THIS bead"
@@ -113,7 +113,7 @@ assert_contains "$meta" "apply-fixes-bead	gc.outcome=pass"        "set_verdict s
 assert_contains "$upd"  "status=closed"                            "set_verdict closes this bead"
 # invalid verdict is rejected (transport guard).
 AFX_META_LOG=""; AFX_UPDATE_LOG=""; AFX_NUDGE_LOG=""; AFX_FINDINGS_FILE=""; afx_sandbox
-afx_run 'review_apply_fixes_load >/dev/null; review_apply_fixes_set_verdict bogus "x"'
+afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_set_verdict bogus "x"'
 assert_eq "2" "$AFX_RC" "set_verdict rejects an invalid verdict (exit 2)"
 
 # --- G. review_apply_fixes_escalate — blocked -> terminate-to-human ----------
@@ -121,7 +121,7 @@ AFX_META_LOG=""; AFX_UPDATE_LOG=""; AFX_NUDGE_LOG=""; AFX_FINDINGS_FILE=""
 AFX_ROOT="root-esc"; AFX_VERDICT="blocked"; AFX_PROMOTED=""; AFX_BURNED=""; AFX_WORKDIR=""
 AFX_FINDINGS_JSON='[]'
 afx_sandbox
-afx_run 'review_apply_fixes_load >/dev/null; review_apply_fixes_escalate "ineligible change"'
+afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_escalate "ineligible change"'
 assert_eq "0" "$AFX_RC" "escalate exits 0 (clean terminal, no abort)"
 meta="$(cat "$AFX_META_LOG")"; upd="$(cat "$AFX_UPDATE_LOG")"; nudge="$(cat "$AFX_NUDGE_LOG")"
 assert_contains "$meta" "root-esc	gc.review.loop_outcome=blocked-needs-human" "escalate flags blocked-needs-human on the ROOT"

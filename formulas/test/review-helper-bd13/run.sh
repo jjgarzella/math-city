@@ -49,8 +49,9 @@ bd init --prefix rv --skip-hooks --skip-agents --non-interactive > "$TASK_TMP/in
 export GC_CITY="$CITY_SOURCE" REVIEW_ROOT=rv-review REVIEW_FINDINGS=rv-review.findings REVIEW_INPUTS_DIR="$TASK_TMP/inputs"
 export GC_BEAD_ID
 bd create --id "$REVIEW_ROOT" --title 'test review root' --silent >/dev/null
+bd update "$REVIEW_ROOT" --set-metadata gc.step_id=test >/dev/null
 GC_BEAD_ID="$(bd create --parent "$REVIEW_ROOT" --title 'test lane' --silent)"
-bd update "$GC_BEAD_ID" --set-metadata "gc.root_bead_id=$REVIEW_ROOT" >/dev/null
+bd update "$GC_BEAD_ID" --set-metadata "gc.root_bead_id=$REVIEW_ROOT" --set-metadata gc.step_id=test.lane >/dev/null
 bd update "$REVIEW_ROOT" --set-metadata "gc.review.inputs_dir=$REVIEW_INPUTS_DIR" --set-metadata gc.review.eligible=yes >/dev/null
 printf 'file.go:42\nEvidence: a lost write\n' > "$TASK_TMP/body"
 PASS=0
@@ -69,7 +70,7 @@ expect_failure() {
   fi
   ok "$title"
 }
-review_lane_load_inputs >/dev/null
+review_lane_load_inputs lane >/dev/null
 # No lazy container is a genuine clean run; failed root reads are not.
 [ -z "$(review_synthesis_candidates)" ] || { echo "FAIL: assertion predicate failed" >&2; exit 1; }
 ok 'absent lazy container gives no candidates'
@@ -118,6 +119,7 @@ review_lane_close 'quality: filed 1 candidate' >/dev/null
 # Use a fresh lane to verify terminal persistence failures propagate too.
 success_lane="$GC_BEAD_ID"
 GC_BEAD_ID="$(bd create --parent "$REVIEW_ROOT" --title 'faulty terminal lane' --silent)"
+bd update "$GC_BEAD_ID" --set-metadata "gc.root_bead_id=$REVIEW_ROOT" --set-metadata gc.step_id=test.lane >/dev/null
 export BD_TEST_FAULT=terminal
 expect_failure 'lane terminal write failure propagates' review_lane_close 'quality: clean'
 unset BD_TEST_FAULT
@@ -162,6 +164,8 @@ findings="$(review_apply_fixes_findings)"
 ok 'durable findings rank blocker before major'
 # Every persistence failure must return nonzero before a success terminal.
 GC_BEAD_ID="$(bd create --parent "$REVIEW_ROOT" --title synthesis --silent)"
+bd update "$GC_BEAD_ID" --set-metadata "gc.root_bead_id=$REVIEW_ROOT" --set-metadata gc.step_id=test.synthesis >/dev/null
+review_synthesis_load synthesis >/dev/null
 for fault in metadata container-close terminal; do
   export BD_TEST_FAULT="$fault"
   expect_failure "synthesis $fault failure propagates" review_synthesis_record_verdict fail 3 2 0 0 'test verdict'
@@ -171,6 +175,8 @@ done
 review_synthesis_record_verdict fail 3 2 0 0 'test verdict' >/dev/null
 assert_json 'synthesis records verdict and counts' "$REVIEW_ROOT" '.metadata["gc.review.synthesis_verdict"]=="fail" and (.metadata["gc.review.synthesis_promoted"]|tostring)=="2"'
 GC_BEAD_ID="$(bd create --parent "$REVIEW_ROOT" --title apply-fixes --silent)"
+bd update "$GC_BEAD_ID" --set-metadata "gc.root_bead_id=$REVIEW_ROOT" --set-metadata gc.step_id=test.apply-fixes >/dev/null
+review_apply_fixes_load apply-fixes >/dev/null
 for fault in metadata terminal; do
   export BD_TEST_FAULT="$fault"
   expect_failure "apply-fixes $fault failure propagates" review_apply_fixes_set_verdict iterate 'test fix'

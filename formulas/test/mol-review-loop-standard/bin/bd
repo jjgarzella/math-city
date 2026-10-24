@@ -26,7 +26,8 @@ case "$sub" in
     target="${2:-}"
     if has_flag --json "$@"; then
       if [ "$target" = "${GC_BEAD_ID:-}" ]; then
-        printf '[{"id":"%s","metadata":{"gc.root_bead_id":"%s"}}]\n' "$target" "${BD_ROOT:-}"
+        jq -nc --arg id "$target" --arg root "${BD_ROOT:-}" --arg step "${BD_STEP_ID:-test.apply-fixes}" \
+          '[{id:$id,metadata:{"gc.root_bead_id":$root,"gc.step_id":$step}}]'
       elif [ "$target" = "${BD_ROOT:-}" ]; then
         # Root bead: the synthesis verdict + counts + work_dir, built with jq so
         # optional fields stay valid JSON when a knob is unset.
@@ -36,7 +37,8 @@ case "$sub" in
           --arg p  "${BD_SYNTH_PROMOTED:-}" \
           --arg b  "${BD_SYNTH_BURNED:-}" \
           --arg wd "${BD_WORKDIR:-}" \
-          '{id:$id, metadata: (
+          --arg step "${BD_ROOT_STEP_ID:-test}" \
+          '{id:$id, metadata: ({"gc.step_id":$step} +
                (if $v  != "" then {"gc.review.synthesis_verdict":$v}   else {} end)
              + (if $p  != "" then {"gc.review.synthesis_promoted":$p}  else {} end)
              + (if $b  != "" then {"gc.review.synthesis_burned":$b}    else {} end)

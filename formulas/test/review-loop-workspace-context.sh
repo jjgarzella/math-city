@@ -4,6 +4,7 @@ section "workspace context behavior"
 
 CTX_TEST_ROOT="$TMPDIR/review-loop-context-$$"
 mkdir -p "$CTX_TEST_ROOT/bin" "$CTX_TEST_ROOT/city/formulas/lib"
+cp -f "$SUITE_DIR/../../lib/resolve-phase-bead.sh" "$CTX_TEST_ROOT/city/formulas/lib/resolve-phase-bead.sh"
 cat > "$CTX_TEST_ROOT/city/formulas/lib/review-verdict.sh" <<'CHECK'
 #!/usr/bin/env bash
 exit 0
@@ -18,11 +19,11 @@ case "${1:-}" in
     target="${2:-}"
     if [ "$target" = "${GC_BEAD_ID:-}" ]; then
       jq -nc --arg id "$target" --arg root "${BD_ROOT_ID:-context-root}" \
-        '[{id:$id,metadata:{"gc.root_bead_id":$root}}]'
+        '[{id:$id,metadata:{"gc.root_bead_id":$root,"gc.step_id":"context.workspace-setup"}}]'
     elif [ "$target" = "${BD_ROOT_ID:-context-root}" ]; then
       jq -nc --arg id "$target" --arg wd "${BD_ROOT_WORK_DIR:-}" \
         --arg branch "${BD_ROOT_BRANCH:-}" --arg sha "${BD_ROOT_BASE_SHA:-}" \
-        '[{id:$id,metadata:{work_dir:$wd,"gc.work_dir":$wd,branch:$branch,base_sha:$sha}}]'
+        '[{id:$id,metadata:{"gc.step_id":"context",work_dir:$wd,"gc.work_dir":$wd,branch:$branch,base_sha:$sha}}]'
     else
       printf '[]\n'
     fi

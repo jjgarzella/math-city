@@ -189,12 +189,12 @@ this block, then stop:
 ```bash
 set -uo pipefail
 json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh"
+review_phase_resolve workspace-setup || exit $?
 echo "[workspace-setup] GC_AGENT=${GC_AGENT:-} GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
 
 # Resolve the molecule ROOT so the ralph control bead inherits work_dir.
-ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
-  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
-[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"   # single-bead molecule: the bead is its own root
+ROOT="$REVIEW_PHASE_ROOT_ID"
 gc bd heartbeat "$GC_BEAD_ID" || true
 
 # Explicit context from the implementation trigger is authoritative. Direct
@@ -322,7 +322,7 @@ is in scope where you branch on it:
 set -uo pipefail
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-apply-fixes.sh"
 export FIX_THRESHOLD="{{severity_threshold}}"   # fix policy: fix at/above, surface below
-review_apply_fixes_load          # sets REVIEW_ROOT/SYNTHESIS_VERDICT/FINDINGS/WORK_DIR/FIX_THRESHOLD + heartbeats
+review_apply_fixes_load apply-fixes || exit $?  # sets REVIEW_ROOT/SYNTHESIS_VERDICT/FINDINGS/WORK_DIR/FIX_THRESHOLD + heartbeats
 
 # cwd does NOT persist between steps — resume the branch under review.
 [ -n "$REVIEW_WORK_DIR" ] && cd "$REVIEW_WORK_DIR"
@@ -331,13 +331,13 @@ echo "[apply-fixes] verdict=$REVIEW_SYNTHESIS_VERDICT promoted=$REVIEW_SYNTHESIS
 # blocked / no verdict — synthesis could not run (ineligible / missing inputs) and
 # iterating cannot help. TERMINATE-TO-HUMAN: stop the loop and flag a human.
 if [ -z "$REVIEW_SYNTHESIS_VERDICT" ] || [ "$REVIEW_SYNTHESIS_VERDICT" = "blocked" ]; then
-  review_apply_fixes_escalate "synthesis verdict=${REVIEW_SYNTHESIS_VERDICT:-<none>} — cannot make progress"
+  review_apply_fixes_escalate "synthesis verdict=${REVIEW_SYNTHESIS_VERDICT:-<none>} — cannot make progress" || exit $?
   exit 0
 fi
 
 # pass — no finding survived at or above the threshold; the branch is clean.
 if [ "$REVIEW_SYNTHESIS_VERDICT" = "pass" ]; then
-  review_apply_fixes_set_verdict done "clean: synthesis pass, no findings at/above $FIX_THRESHOLD (surfaced sub-threshold: ${REVIEW_SYNTHESIS_BURNED:-0})"
+  review_apply_fixes_set_verdict done "clean: synthesis pass, no findings at/above $FIX_THRESHOLD (surfaced sub-threshold: ${REVIEW_SYNTHESIS_BURNED:-0})" || exit $?
   exit 0
 fi
 
@@ -365,7 +365,7 @@ out of scope), do NOT fake a fix — escalate and stop:
 
 ```bash
 # only if a blocker cannot be fixed:
-review_apply_fixes_escalate "unfixable blocker: <finding id + why>"
+review_apply_fixes_escalate "unfixable blocker: <finding id + why>" || exit $?
 exit 0
 ```
 
@@ -381,11 +381,11 @@ verdict onto the loop's done/iterate review.verdict and closes this bead:
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-apply-fixes.sh"
-review_apply_fixes_load
+review_apply_fixes_load apply-fixes || exit $?
 
 APPLIED=yes   # set to "no" ONLY if you changed nothing (e.g. all findings were sub-threshold nits you surfaced)
 VERDICT=$(review_apply_fixes_map_verdict "$REVIEW_SYNTHESIS_VERDICT" "$APPLIED")
-review_apply_fixes_set_verdict "$VERDICT" "synthesis=$REVIEW_SYNTHESIS_VERDICT applied=$APPLIED -> $VERDICT"
+review_apply_fixes_set_verdict "$VERDICT" "synthesis=$REVIEW_SYNTHESIS_VERDICT applied=$APPLIED -> $VERDICT" || exit $?
 ```
 
 Exit criteria: either review_apply_fixes_escalate ran (blocked / unfixable -> done

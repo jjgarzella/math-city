@@ -20,8 +20,8 @@
 # agent's). Source it, then:
 #
 #   . "$GC_CITY/formulas/lib/review-lane.sh"
-#   review_lane_load_inputs                          # sets REVIEW_* + heartbeats
-#   [ "$REVIEW_ELIGIBLE" = "no" ] && { review_lane_close "<lens>: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"; exit 0; }
+#   review_lane_load_inputs <phase-suffix>            # sets REVIEW_* + heartbeats
+#   [ "$REVIEW_ELIGIBLE" = "no" ] && { review_lane_close "<lens>: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)" || exit $?; exit 0; }
 #   # ... the agent reviews $REVIEW_DIFF / $REVIEW_SUMMARY through its lens ...
 #   review_lane_file_finding <category> <confidence 0-100> <priority 0-4> "<title>" "$BODY_FILE"
 #   review_lane_close "<lens>: filed <N> candidate finding(s) (category:<lens>)"
@@ -50,20 +50,28 @@ review_lane__meta() {
     | jq -r --arg k "$2" 'if type=="array" then .[0] else . end | .metadata[$k] // empty'
 }
 
-# review_lane_load_inputs — resolve the molecule root, read the analyze pass's
+# review_lane_load_inputs <phase-suffix> — resolve this lane's own step bead,
+# then resolve the molecule root, read the analyze pass's
 # durable-input handles off it, and expose them as REVIEW_* globals. Heartbeats
 # this lane bead. Fails loudly (exit 2) if the durable input store is missing —
 # that means the analyze contract was not satisfied, and a silent empty review
 # would be worse than a hard stop.
 review_lane_load_inputs() {
-  : "${GC_BEAD_ID:?GC_BEAD_ID must be set by the runtime}"
+  local phase_suffix="${1:-}"
   : "${GC_CITY:?GC_CITY must be set by the runtime}"
+  if [ -z "$phase_suffix" ]; then
+    echo "ERROR: review_lane_load_inputs: pass this lane's gc.step_id suffix" >&2
+    return 2
+  fi
+  unset REVIEW_PHASE_BEAD_ID REVIEW_PHASE_ROOT_ID REVIEW_PHASE_STEP_ID REVIEW_PHASE_SUFFIX
+  . "$GC_CITY/formulas/lib/resolve-phase-bead.sh" || return 2
+  review_phase_resolve "$phase_suffix" || return 2
   gc bd heartbeat "$GC_BEAD_ID" >/dev/null 2>&1 || true
 
   # Molecule ROOT — the durable inputs + findings container hang off it. A
-  # single-bead molecule is its own root.
-  REVIEW_ROOT="$(review_lane__meta "$GC_BEAD_ID" 'gc.root_bead_id')"
-  [ -z "$REVIEW_ROOT" ] && REVIEW_ROOT="$GC_BEAD_ID"
+  # single-bead molecule is its own root. The resolver validated the phase and
+  # confirmed that this root ID resolves in the bead store.
+  REVIEW_ROOT="$REVIEW_PHASE_ROOT_ID"
 
   # Read the analyze pass's recorded handles off the root, retrying briefly so a
   # slow Dolt write right after analyze closed cannot read back empty.
@@ -193,7 +201,9 @@ review_lane_file_finding() {
 # with the given note. The single clean terminal for a lane: a real review, an
 # ineligible no-op, and a zero-findings pass all close the same way.
 review_lane_close() {
-  : "${GC_BEAD_ID:?GC_BEAD_ID must be set by the runtime}"
+  : "${REVIEW_PHASE_SUFFIX:?call review_lane_load_inputs first}"
+  . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh" || return 2
+  review_phase_resolve "$REVIEW_PHASE_SUFFIX" "${REVIEW_PHASE_ROOT_ID:-}" "${REVIEW_PHASE_STEP_ID:-}" || return 2
   local marker
   marker="$(review_lane__write_marker)" || return 2
   [ -d "$REVIEW_INPUTS_DIR" ] && [ -w "$REVIEW_INPUTS_DIR" ] || return 2

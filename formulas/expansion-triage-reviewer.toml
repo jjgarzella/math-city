@@ -183,13 +183,13 @@ it printed:
 ```bash
 set -uo pipefail
 json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh"
+review_phase_resolve analyze || exit $?
 echo "[analyze] GC_AGENT=${GC_AGENT:-} GC_BEAD_ID=${GC_BEAD_ID:-} PWD=$PWD"
 gc bd heartbeat "$GC_BEAD_ID" || true
 
 # Molecule ROOT — the durable inputs hang off it so every lane finds them.
-ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
-  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
-[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"   # single-bead molecule: the bead is its own root
+ROOT="$REVIEW_PHASE_ROOT_ID"
 
 # work_dir under review: an inherited work_dir on the root wins (the standalone
 # host / sling caller records the worktree the reviewer scopes to); otherwise this
@@ -330,13 +330,13 @@ here-document:
 ```bash
 set -uo pipefail
 json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
+. "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh"
+review_phase_resolve analyze || exit $?
 
 ELIGIBLE="yes"                       # <-- set to "no" to skip per the gate above
 REASON="eligible: non-trivial change under review"   # <-- one-line reason
 
-ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
-  | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
-[ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"
+ROOT="$REVIEW_PHASE_ROOT_ID"
 INPUTS_DIR="${GC_CITY:?GC_CITY must be set by the runtime}/.gc/review-inputs/${ROOT}"
 mkdir -p "$INPUTS_DIR"
 
@@ -405,10 +405,10 @@ load the inputs the analyze pass hung off the molecule root:
 ```bash
 set -uo pipefail
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
-review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+review_lane_load_inputs rule-adherence || exit $?  # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
 
 if [ "$REVIEW_ELIGIBLE" = "no" ]; then
-  review_lane_close "rule-adherence: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  review_lane_close "rule-adherence: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)" || exit $?
   exit 0
 fi
 echo "[rule-adherence] kind=$REVIEW_TARGET_KIND diff=$REVIEW_DIFF rules=$REVIEW_INPUTS_DIR/rules.md"
@@ -459,7 +459,7 @@ rubric and gates on the threshold — do not inflate); and a best-guess priority
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-lane.sh"
-review_lane_load_inputs
+review_lane_load_inputs rule-adherence || exit $?
 
 # Repeat per candidate, substituting your values:
 BODY=$(mktemp)
@@ -473,7 +473,7 @@ EOF
 review_lane_file_finding rule-adherence <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
 
 # After all candidates — or immediately, if this lens found nothing (clean pass):
-review_lane_close "rule-adherence: filed <N> candidate finding(s) (category:rule-adherence)"
+review_lane_close "rule-adherence: filed <N> candidate finding(s) (category:rule-adherence)" || exit $?
 ```
 
 Exit criteria: every written-rule violation on the changed surface is filed as a
@@ -505,10 +505,10 @@ load the inputs the analyze pass hung off the molecule root:
 ```bash
 set -uo pipefail
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
-review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+review_lane_load_inputs bug-scan || exit $?  # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
 
 if [ "$REVIEW_ELIGIBLE" = "no" ]; then
-  review_lane_close "bug-scan: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  review_lane_close "bug-scan: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)" || exit $?
   exit 0
 fi
 echo "[bug-scan] kind=$REVIEW_TARGET_KIND diff=$REVIEW_DIFF files=$REVIEW_FILES summary=$REVIEW_SUMMARY"
@@ -556,7 +556,7 @@ priority 0-4.
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-lane.sh"
-review_lane_load_inputs
+review_lane_load_inputs bug-scan || exit $?
 
 # Repeat per candidate, substituting your values:
 BODY=$(mktemp)
@@ -569,7 +569,7 @@ EOF
 review_lane_file_finding bug-scan <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
 
 # After all candidates — or immediately, if this lens found nothing (clean pass):
-review_lane_close "bug-scan: filed <N> candidate finding(s) (category:bug-scan)"
+review_lane_close "bug-scan: filed <N> candidate finding(s) (category:bug-scan)" || exit $?
 ```
 
 Exit criteria: every real bug on the changed surface is filed as a
@@ -601,10 +601,10 @@ then resume the work_dir the analyze pass recorded so `git blame` / `git log` /
 set -uo pipefail
 json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
-review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+review_lane_load_inputs git-history || exit $?  # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
 
 if [ "$REVIEW_ELIGIBLE" = "no" ]; then
-  review_lane_close "git-history: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  review_lane_close "git-history: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)" || exit $?
   exit 0
 fi
 
@@ -613,7 +613,7 @@ fi
 WORK_DIR=$(bd show "$REVIEW_ROOT" --json 2>/dev/null | json_payload \
   | jq -r 'if type=="array" then .[0] else . end | (.metadata["work_dir"] // .metadata["gc.work_dir"] // empty)')
 if [ -z "$WORK_DIR" ] || ! ( cd "$WORK_DIR" 2>/dev/null && git rev-parse --git-dir >/dev/null 2>&1 ); then
-  review_lane_close "git-history: skipped — no git work_dir available (best-effort angle)"
+  review_lane_close "git-history: skipped — no git work_dir available (best-effort angle)" || exit $?
   exit 0
 fi
 cd "$WORK_DIR"
@@ -664,7 +664,7 @@ best-guess priority 0-4.
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-lane.sh"
-review_lane_load_inputs
+review_lane_load_inputs git-history || exit $?
 
 # Repeat per candidate, substituting your values:
 BODY=$(mktemp)
@@ -677,7 +677,7 @@ EOF
 review_lane_file_finding git-history <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
 
 # After all candidates — or immediately, if this lens found nothing (clean pass):
-review_lane_close "git-history: filed <N> candidate finding(s) (category:git-history)"
+review_lane_close "git-history: filed <N> candidate finding(s) (category:git-history)" || exit $?
 ```
 
 Exit criteria: every history-grounded real bug on the changed surface is filed as
@@ -707,10 +707,10 @@ when PR context is unavailable.
 set -uo pipefail
 json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
-review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+review_lane_load_inputs prior-prs || exit $?  # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
 
 if [ "$REVIEW_ELIGIBLE" = "no" ]; then
-  review_lane_close "prior-prs: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  review_lane_close "prior-prs: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)" || exit $?
   exit 0
 fi
 
@@ -721,7 +721,7 @@ WORK_DIR=$(bd show "$REVIEW_ROOT" --json 2>/dev/null | json_payload \
   | jq -r 'if type=="array" then .[0] else . end | (.metadata["work_dir"] // .metadata["gc.work_dir"] // empty)')
 if [ -z "$WORK_DIR" ] || ! command -v gh >/dev/null 2>&1 \
    || ! ( cd "$WORK_DIR" 2>/dev/null && gh repo view >/dev/null 2>&1 ); then
-  review_lane_close "prior-prs: skipped — no PR context (gh / GitHub remote unavailable)"
+  review_lane_close "prior-prs: skipped — no PR context (gh / GitHub remote unavailable)" || exit $?
   exit 0
 fi
 cd "$WORK_DIR"
@@ -766,7 +766,7 @@ the threshold — do not inflate); and a best-guess priority 0-4.
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-lane.sh"
-review_lane_load_inputs
+review_lane_load_inputs prior-prs || exit $?
 
 # Repeat per candidate, substituting your values:
 BODY=$(mktemp)
@@ -779,7 +779,7 @@ EOF
 review_lane_file_finding prior-prs <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
 
 # After all candidates — or immediately, if this lens found nothing (clean pass):
-review_lane_close "prior-prs: filed <N> candidate finding(s) (category:prior-prs)"
+review_lane_close "prior-prs: filed <N> candidate finding(s) (category:prior-prs)" || exit $?
 ```
 
 Exit criteria: every repeated maintainer-flagged problem on the changed surface is
@@ -809,10 +809,10 @@ work_dir and degrades to diff-only when it is unavailable.
 set -uo pipefail
 json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-lane.sh"
-review_lane_load_inputs        # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
+review_lane_load_inputs in-code-invariants || exit $?  # sets REVIEW_ROOT/INPUTS_DIR/TARGET_KIND/ELIGIBLE/DIFF/... + heartbeats
 
 if [ "$REVIEW_ELIGIBLE" = "no" ]; then
-  review_lane_close "in-code-invariants: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)"
+  review_lane_close "in-code-invariants: skipped — ineligible ($REVIEW_ELIGIBILITY_REASON)" || exit $?
   exit 0
 fi
 
@@ -865,7 +865,7 @@ re-scores + gates on the threshold — do not inflate); and a best-guess priorit
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-lane.sh"
-review_lane_load_inputs
+review_lane_load_inputs in-code-invariants || exit $?
 
 # Repeat per candidate, substituting your values:
 BODY=$(mktemp)
@@ -879,7 +879,7 @@ EOF
 review_lane_file_finding in-code-invariants <confidence 0-100> <priority 0-4> "<one-line title>" "$BODY"
 
 # After all candidates — or immediately, if this lens found nothing (clean pass):
-review_lane_close "in-code-invariants: filed <N> candidate finding(s) (category:in-code-invariants)"
+review_lane_close "in-code-invariants: filed <N> candidate finding(s) (category:in-code-invariants)" || exit $?
 ```
 
 Exit criteria: every violated in-code invariant on the changed surface is filed as
@@ -925,10 +925,10 @@ Pure transport — no judgment. Source the shared synthesis helper (referenced v
 ```bash
 set -uo pipefail
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-synthesis.sh"
-review_synthesis_load          # sets REVIEW_ROOT/FINDINGS/INPUTS_DIR/DIFF/SUMMARY/ELIGIBLE + heartbeats
+review_synthesis_load synthesis || exit $?  # sets REVIEW_ROOT/FINDINGS/INPUTS_DIR/DIFF/SUMMARY/ELIGIBLE + heartbeats
 
 if [ "$REVIEW_ELIGIBLE" = "no" ]; then
-  review_synthesis_record_verdict pass 0 0 0 0 "ineligible change — nothing to synthesize"
+  review_synthesis_record_verdict pass 0 0 0 0 "ineligible change — nothing to synthesize" || exit $?
   exit 0
 fi
 
@@ -940,7 +940,7 @@ If `candidates.tsv` is EMPTY, the five lenses found nothing — a clean pass. Re
 it and stop:
 
 ```bash
-review_synthesis_record_verdict pass 0 0 0 0 "no candidate findings from any lane"
+review_synthesis_record_verdict pass 0 0 0 0 "no candidate findings from any lane" || exit $?
 exit 0
 ```
 
@@ -1015,7 +1015,7 @@ sub-threshold reject or a dedup duplicate. Keep running tallies for the verdict.
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-synthesis.sh"
-review_synthesis_load
+review_synthesis_load synthesis || exit $?
 
 # --- promote each canonical survivor at/above the threshold: ---
 #   review_synthesis_promote <wisp_id> <blocker|major|minor|nit> "<one-line rationale>"
@@ -1042,10 +1042,10 @@ considered.)
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-synthesis.sh"
-review_synthesis_load
+review_synthesis_load synthesis || exit $?
 review_synthesis_record_verdict <pass|pass_with_findings|fail> \
   <considered> <promoted> <merged> <burned> \
-  "<one-line headline: e.g. 2 real bugs (1 blocker) + 1 rule violation; 4 below threshold {threshold}>"
+  "<one-line headline: e.g. 2 real bugs (1 blocker) + 1 rule violation; 4 below threshold {threshold}>" || exit $?
 ```
 
 `review_synthesis_record_verdict` writes `gc.review.synthesis_verdict` + counts on

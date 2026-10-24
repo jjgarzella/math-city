@@ -3,4 +3,8 @@
 # block only calls `gc bd heartbeat`; every gc invocation here is a success no-op
 # so the block runs without a live controller.
 set -u
+if [ "${1:-}" = hook ] && [ "${2:-}" = current ] && [ "${3:-}" = --id-only ]; then
+  printf '%s\n' "${GC_CURRENT_BEAD_ID:-}"
+  exit 0
+fi
 exit 0

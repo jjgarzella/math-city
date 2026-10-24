@@ -23,7 +23,7 @@ lane_sandbox
 loaded="$(lane_env bash -c '
   set -uo pipefail
   . "$GC_CITY/formulas/lib/review-lane.sh"
-  review_lane_load_inputs >/dev/null
+  review_lane_load_inputs quality >/dev/null || exit $?
   echo "ROOT=$REVIEW_ROOT"
   echo "KIND=$REVIEW_TARGET_KIND"
   echo "ELIGIBLE=$REVIEW_ELIGIBLE"
@@ -49,7 +49,7 @@ lane_sandbox
 filed="$(lane_env bash -c '
   set -uo pipefail
   . "$GC_CITY/formulas/lib/review-lane.sh"
-  review_lane_load_inputs >/dev/null
+  review_lane_load_inputs quality >/dev/null || exit $?
   BODY=$(mktemp)
   printf "%s\n\n%s\n" "app.go:10 — swallowed error" "Evidence: + _ = doThing()" > "$BODY"
   review_lane_file_finding quality 80 2 "swallowed error in Added()" "$BODY"
@@ -66,6 +66,36 @@ assert_contains "$wisp_line" "body1=Confidence: 80/100"  "the wisp's first body 
 assert_contains "$wisp_line" "ephemeral=yes"             "the candidate is filed as an ephemeral wisp"
 # review_lane_close closes the lane bead pass.
 assert_contains "$(cat "$LB_UPDATE_LOG")" "status=closed" "review_lane_close closes the lane bead (status=closed)"
+
+# Missing GC_BEAD_ID resolves the current claim and closes that phase bead.
+LB_CITY=""; LB_CREATE_LOG=""; LB_UPDATE_LOG=""; LB_META_LOG=""; LB_BEAD_ID=""
+LB_ROOT="root-fallback"; LB_ELIGIBLE="yes"; LB_TARGET_KIND="range"; LB_STEP_SUFFIX="quality"
+lane_sandbox
+fallback_out="$(lane_env env -u GC_BEAD_ID bash -c '
+  set -uo pipefail
+  . "$GC_CITY/formulas/lib/review-lane.sh"
+  review_lane_load_inputs quality >/dev/null || exit $?
+  review_lane_close "quality: fallback resolver check"
+' 2>&1)"
+fallback_rc=$?
+assert_eq "0" "$fallback_rc" "missing GC_BEAD_ID resolves through gc hook current"
+assert_contains "$(cat "$LB_UPDATE_LOG")" "id=lane-bead" "fallback closes the claimed lane bead"
+
+# A workflow root cannot be used as the phase target, even when its suffix looks valid.
+LB_UPDATE_LOG="$(mktemp)"
+refused_out="$(lane_env env GC_BEAD_ID=workflow-root BD_PHASE_BEAD_ID=workflow-root \
+  BD_ROOT=workflow-root BD_ROOT_STEP_ID=review-loop BD_STEP_ID=review-loop.quality BD_KIND=workflow \
+  bash -c '
+    . "$GC_CITY/formulas/lib/review-lane.sh"
+    REVIEW_PHASE_SUFFIX=quality
+    REVIEW_PHASE_ROOT_ID=workflow-root
+    REVIEW_ROOT=workflow-root
+    review_lane_close "must refuse workflow root"
+  ' 2>&1)"
+refused_rc=$?
+assert_eq "2" "$refused_rc" "review_lane_close refuses a workflow bead"
+assert_contains "$refused_out" "control gc.kind='workflow'" "workflow refusal names the control kind"
+assert_eq "" "$(cat "$LB_UPDATE_LOG")" "workflow refusal performs no phase update or close"
 
 # --- C. lane (eligible): step 1 loads + does NOT close (review happens next) ---
 LB_CITY=""; LB_CREATE_LOG=""; LB_UPDATE_LOG=""; LB_META_LOG=""; LB_BEAD_ID=""

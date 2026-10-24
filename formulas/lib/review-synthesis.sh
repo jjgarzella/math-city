@@ -16,7 +16,7 @@
 # Source it via $GC_CITY (branch-independent, exactly like the sibling libs):
 #
 #   . "$GC_CITY/formulas/lib/review-synthesis.sh"
-#   review_synthesis_load                                    # sets REVIEW_* + heartbeats
+#   review_synthesis_load <phase-suffix>                      # sets REVIEW_* + heartbeats
 #   review_synthesis_candidates                              # TSV: wisp \t category \t confidence \t title
 #   review_synthesis_promote <wisp> <severity> "<reason>"    # -> durable finding bead
 #   review_synthesis_burn    <wisp> "<reason>"               # duplicate or sub-threshold
@@ -72,18 +72,25 @@ review_synthesis__meta() {
     | jq -r --arg k "$2" 'if type=="array" then .[0] else . end | .metadata[$k] // empty'
 }
 
-# review_synthesis_load — resolve the molecule root, read the analyze pass's
+# review_synthesis_load <phase-suffix> — resolve this synthesis step bead,
+# then resolve the molecule root, read the analyze pass's
 # durable-input handles + findings container off it, and expose them as REVIEW_*
 # globals. Heartbeats this synthesis bead. A single-bead molecule is its own root,
 # so this works identically standalone (own root) and in-loop (loop root, where
 # apply-fixes reads the same container).
 review_synthesis_load() {
-  : "${GC_BEAD_ID:?GC_BEAD_ID must be set by the runtime}"
+  local phase_suffix="${1:-}"
   : "${GC_CITY:?GC_CITY must be set by the runtime}"
+  if [ -z "$phase_suffix" ]; then
+    echo "ERROR: review_synthesis_load: pass the synthesis gc.step_id suffix" >&2
+    return 2
+  fi
+  unset REVIEW_PHASE_BEAD_ID REVIEW_PHASE_ROOT_ID REVIEW_PHASE_STEP_ID REVIEW_PHASE_SUFFIX
+  . "$GC_CITY/formulas/lib/resolve-phase-bead.sh" || return 2
+  review_phase_resolve "$phase_suffix" || return 2
   gc bd heartbeat "$GC_BEAD_ID" >/dev/null 2>&1 || true
 
-  REVIEW_ROOT="$(review_synthesis__meta "$GC_BEAD_ID" 'gc.root_bead_id')"
-  [ -z "$REVIEW_ROOT" ] && REVIEW_ROOT="$GC_BEAD_ID"
+  REVIEW_ROOT="$REVIEW_PHASE_ROOT_ID"
 
   REVIEW_INPUTS_DIR="$(review_synthesis__meta "$REVIEW_ROOT" 'gc.review.inputs_dir')"
   REVIEW_TARGET_KIND="$(review_synthesis__meta "$REVIEW_ROOT" 'gc.review.target_kind')"
@@ -194,8 +201,10 @@ review_synthesis_burn() {
 # review, a zero-findings clean pass, and an ineligible no-op all close the same.
 review_synthesis_record_verdict() {
   local verdict="$1" considered="$2" promoted="$3" merged="$4" burned="$5" note="$6"
-  : "${GC_BEAD_ID:?GC_BEAD_ID must be set by the runtime}"
+  : "${REVIEW_PHASE_SUFFIX:?call review_synthesis_load first}"
   : "${REVIEW_ROOT:?call review_synthesis_load first}"
+  . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh" || return 2
+  review_phase_resolve "$REVIEW_PHASE_SUFFIX" "$REVIEW_ROOT" "${REVIEW_PHASE_STEP_ID:-}" || return 2
   case "$verdict" in
     pass|pass_with_findings|fail|blocked) : ;;
     *) echo "ERROR: review_synthesis_record_verdict: invalid verdict '$verdict'" >&2; return 2 ;;

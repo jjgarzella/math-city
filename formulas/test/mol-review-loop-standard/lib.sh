@@ -94,7 +94,9 @@ afx_sandbox() {
     AFX_CITY="$(mktemp -d "${TMPDIR:-/tmp}/mrls-afxcity.XXXXXX")"
     mkdir -p "$AFX_CITY/formulas/lib"
     cp -f "$APPLY_FIXES_SH" "$AFX_CITY/formulas/lib/review-apply-fixes.sh"
+    cp -f "$SUITE_DIR/../../lib/resolve-phase-bead.sh" "$AFX_CITY/formulas/lib/resolve-phase-bead.sh"
     chmod +x "$AFX_CITY/formulas/lib/review-apply-fixes.sh"
+    chmod +x "$AFX_CITY/formulas/lib/resolve-phase-bead.sh"
   fi
   : "${AFX_FINDINGS_FILE:=$(mktemp)}"
   : "${AFX_META_LOG:=$(mktemp)}"
@@ -110,6 +112,9 @@ afx_env() {
   GC_CITY="$AFX_CITY" \
   GC_BEAD_ID="${AFX_BEAD_ID:-apply-fixes-bead}" \
   GC_AGENT="gascity/test.polecat" \
+  BD_PHASE_BEAD_ID="${AFX_BEAD_ID:-apply-fixes-bead}" \
+  BD_STEP_ID="test.apply-fixes" \
+  BD_ROOT_STEP_ID="test" \
   FIX_THRESHOLD="${FIX_THRESHOLD:-minor}" \
   BD_ROOT="$AFX_ROOT" \
   BD_SYNTH_VERDICT="${AFX_VERDICT:-}" \

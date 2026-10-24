@@ -124,7 +124,9 @@ run_analyze_block() {
     AB_CITY="$(mktemp -d "${TMPDIR:-/tmp}/esr-city.XXXXXX")"
     mkdir -p "$AB_CITY/formulas/lib"
     cp -f "$RESOLVER" "$AB_CITY/formulas/lib/resolve-diff.sh"
+    cp -f "$SUITE_DIR/../../lib/resolve-phase-bead.sh" "$AB_CITY/formulas/lib/resolve-phase-bead.sh"
     chmod +x "$AB_CITY/formulas/lib/resolve-diff.sh"
+    chmod +x "$AB_CITY/formulas/lib/resolve-phase-bead.sh"
   fi
   [ -z "${AB_META_LOG:-}" ] && AB_META_LOG="$(mktemp)"
   AB_INPUTS="$AB_CITY/.gc/review-inputs/$AB_ROOT"
@@ -140,6 +142,9 @@ run_analyze_block() {
     GC_BEAD_ID="analyze-bead-1" \
     GC_AGENT="gascity/test.polecat" \
     BD_ROOT="$AB_ROOT" \
+    BD_PHASE_BEAD_ID="analyze-bead-1" \
+    BD_STEP_ID="test.analyze" \
+    BD_ROOT_STEP_ID="test" \
     BD_WORKDIR="$workdir" \
     BD_META_LOG="$AB_META_LOG" \
     PATH="$SUITE_DIR/bin:$PATH" \
@@ -166,6 +171,7 @@ LANE_LIB="$SUITE_DIR/../../lib/review-lane.sh"
 lane_sandbox() {
   LB_ROOT="${LB_ROOT:-root-lane-$$}"
   LB_WORKDIR="${LB_WORKDIR:-${TMPDIR:-/tmp}}"
+  LB_STEP_SUFFIX="${LB_STEP_SUFFIX:-quality}"
   LB_TARGET_KIND="${LB_TARGET_KIND:-range}"
   LB_ELIGIBLE="${LB_ELIGIBLE:-yes}"
   LB_REASON="${LB_REASON:-eligible: non-trivial change}"
@@ -173,7 +179,9 @@ lane_sandbox() {
     LB_CITY="$(mktemp -d "${TMPDIR:-/tmp}/esr-lanecity.XXXXXX")"
     mkdir -p "$LB_CITY/formulas/lib"
     cp -f "$LANE_LIB" "$LB_CITY/formulas/lib/review-lane.sh"
+    cp -f "$SUITE_DIR/../../lib/resolve-phase-bead.sh" "$LB_CITY/formulas/lib/resolve-phase-bead.sh"
     chmod +x "$LB_CITY/formulas/lib/review-lane.sh"
+    chmod +x "$LB_CITY/formulas/lib/resolve-phase-bead.sh"
     LB_INPUTS_DIR="$LB_CITY/.gc/review-inputs/$LB_ROOT"
     mkdir -p "$LB_INPUTS_DIR"
     printf 'diff --git a/app.go b/app.go\n+func Added() {}\n' > "$LB_INPUTS_DIR/diff"
@@ -192,6 +200,11 @@ lane_env() {
   GC_BEAD_ID="${LB_BEAD_ID:-lane-bead}" \
   GC_AGENT="gascity/test.polecat" \
   BD_ROOT="$LB_ROOT" \
+  BD_PHASE_BEAD_ID="${LB_BEAD_ID:-lane-bead}" \
+  BD_STEP_ID="test.${LB_STEP_SUFFIX:-quality}" \
+  BD_ROOT_STEP_ID="test" \
+  BD_KIND="${LB_KIND:-}" \
+  GC_CURRENT_BEAD_ID="${LB_CURRENT_BEAD_ID:-${LB_BEAD_ID:-lane-bead}}" \
   BD_WORKDIR="$LB_WORKDIR" \
   BD_META_LOG="$LB_META_LOG" \
   BD_CREATE_LOG="$LB_CREATE_LOG" \
@@ -211,6 +224,7 @@ lane_env() {
 run_lane_block() {
   local lens="$1" sig="$2" script
   LB_BEAD_ID="lane-bead-$lens"
+  LB_STEP_SUFFIX="$lens"
   script="$(formula_py block "{target}.$lens" "$sig")" || {
     LB_RC=99; LB_OUT="render failed: no block with signature [$sig] in $lens"; return 1; }
   LB_OUT="$(lane_env bash -c "$script" 2>&1)"
@@ -241,7 +255,9 @@ synth_sandbox() {
     SY_CITY="$(mktemp -d "${TMPDIR:-/tmp}/esr-synthcity.XXXXXX")"
     mkdir -p "$SY_CITY/formulas/lib"
     cp -f "$SYNTH_LIB" "$SY_CITY/formulas/lib/review-synthesis.sh"
+    cp -f "$SUITE_DIR/../../lib/resolve-phase-bead.sh" "$SY_CITY/formulas/lib/resolve-phase-bead.sh"
     chmod +x "$SY_CITY/formulas/lib/review-synthesis.sh"
+    chmod +x "$SY_CITY/formulas/lib/resolve-phase-bead.sh"
     SY_INPUTS_DIR="$SY_CITY/.gc/review-inputs/$SY_ROOT"
     mkdir -p "$SY_INPUTS_DIR"
     printf 'diff --git a/app.go b/app.go\n+func Added() {}\n' > "$SY_INPUTS_DIR/diff"
@@ -261,6 +277,9 @@ synth_env() {
   GC_CITY="$SY_CITY" \
   GC_BEAD_ID="${SY_BEAD_ID:-synthesis-bead}" \
   GC_AGENT="gascity/test.polecat" \
+  BD_PHASE_BEAD_ID="${SY_BEAD_ID:-synthesis-bead}" \
+  BD_STEP_ID="test.synthesis" \
+  BD_ROOT_STEP_ID="test" \
   BD_ROOT="$SY_ROOT" \
   BD_REVIEW_INPUTS_DIR="$SY_INPUTS_DIR" \
   BD_REVIEW_TARGET_KIND="$SY_TARGET_KIND" \

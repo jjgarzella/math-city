@@ -28,7 +28,7 @@
 # Source it via $GC_CITY (branch-independent, exactly like the sibling libs):
 #
 #   . "$GC_CITY/formulas/lib/review-apply-fixes.sh"
-#   review_apply_fixes_load                              # sets REVIEW_* + heartbeats
+#   review_apply_fixes_load <phase-suffix>                # sets REVIEW_* + heartbeats
 #   review_apply_fixes_findings                          # TSV: id \t severity \t category \t title
 #   review_apply_fixes_map_verdict <synth_verdict> <applied yes|no>   # -> done|iterate
 #   review_apply_fixes_set_verdict <done|iterate> "<note>"            # write review.verdict + close
@@ -105,19 +105,26 @@ review_apply_fixes__rank_for() {
   esac
 }
 
-# review_apply_fixes_load — resolve the molecule root, read the synthesis verdict
+# review_apply_fixes_load <phase-suffix> — resolve this apply-fixes step bead,
+# then resolve the molecule root, read the synthesis verdict
 # + counts synthesis recorded on it, the findings container, the work_dir under
 # review (the feature branch apply-fixes resumes), and the fix threshold. Expose
 # them as REVIEW_* globals and heartbeat this bead. A single-bead molecule is its
 # own root, so this works identically standalone and in-loop (loop root, where
 # the expanded reviewer's synthesis wrote the verdict this same root carries).
 review_apply_fixes_load() {
-  : "${GC_BEAD_ID:?GC_BEAD_ID must be set by the runtime}"
+  local phase_suffix="${1:-}"
   : "${GC_CITY:?GC_CITY must be set by the runtime}"
+  if [ -z "$phase_suffix" ]; then
+    echo "ERROR: review_apply_fixes_load: pass the apply-fixes gc.step_id suffix" >&2
+    return 2
+  fi
+  unset REVIEW_PHASE_BEAD_ID REVIEW_PHASE_ROOT_ID REVIEW_PHASE_STEP_ID REVIEW_PHASE_SUFFIX
+  . "$GC_CITY/formulas/lib/resolve-phase-bead.sh" || return 2
+  review_phase_resolve "$phase_suffix" || return 2
   gc bd heartbeat "$GC_BEAD_ID" >/dev/null 2>&1 || true
 
-  REVIEW_ROOT="$(review_apply_fixes__meta "$GC_BEAD_ID" 'gc.root_bead_id')"
-  [ -z "$REVIEW_ROOT" ] && REVIEW_ROOT="$GC_BEAD_ID"
+  REVIEW_ROOT="$REVIEW_PHASE_ROOT_ID"
 
   REVIEW_SYNTHESIS_VERDICT="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.review.synthesis_verdict')"
   REVIEW_SYNTHESIS_PROMOTED="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.review.synthesis_promoted')"
@@ -185,11 +192,14 @@ review_apply_fixes_map_verdict() {
 # by this body, so it runs after this closes).
 review_apply_fixes_set_verdict() {
   local verdict="$1" note="${2:-}"
-  : "${GC_BEAD_ID:?GC_BEAD_ID must be set by the runtime}"
+  : "${REVIEW_PHASE_SUFFIX:?call review_apply_fixes_load first}"
+  : "${REVIEW_ROOT:?call review_apply_fixes_load first}"
   case "$verdict" in
     done|iterate) : ;;
     *) echo "ERROR: review_apply_fixes_set_verdict: invalid verdict '$verdict' (want done|iterate)" >&2; return 2 ;;
   esac
+  . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh" || return 2
+  review_phase_resolve "$REVIEW_PHASE_SUFFIX" "$REVIEW_ROOT" "${REVIEW_PHASE_STEP_ID:-}" || return 2
   bd update "$GC_BEAD_ID" --set-metadata review.verdict="$verdict" >/dev/null || return 2
   gc bd heartbeat "$GC_BEAD_ID" >/dev/null 2>&1 || true
   bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
@@ -208,8 +218,10 @@ review_apply_fixes_set_verdict() {
 # with a flag a human picks up.
 review_apply_fixes_escalate() {
   local reason="${1:-synthesis blocked}"
-  : "${GC_BEAD_ID:?GC_BEAD_ID must be set by the runtime}"
+  : "${REVIEW_PHASE_SUFFIX:?call review_apply_fixes_load first}"
   : "${REVIEW_ROOT:?call review_apply_fixes_load first}"
+  . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh" || return 2
+  review_phase_resolve "$REVIEW_PHASE_SUFFIX" "$REVIEW_ROOT" "${REVIEW_PHASE_STEP_ID:-}" || return 2
   bd update "$REVIEW_ROOT" --set-metadata gc.review.loop_outcome="blocked-needs-human" >/dev/null || return 2
   bd update "$REVIEW_ROOT" --set-metadata gc.review.loop_blocked_reason="$reason"       >/dev/null || return 2
   echo "[review-apply-fixes] TERMINATE-TO-HUMAN: $reason" >&2

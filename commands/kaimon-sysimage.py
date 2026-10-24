@@ -548,6 +548,10 @@ def prepare(args):
         raise Rejected("project must be inside the explicitly supplied task-owned root")
     if not any(part in (".gc", "worktrees") for part in owner.parts):
         raise Rejected("prepare is limited to isolated city task/worktree directories")
+    shared_roots = {CITY.resolve(), *(CITY.resolve() / name for name in
+                    (".gc", ".gc/worktrees", "worktrees", ".gc/agents", ".gc/kaimon-sysimages"))}
+    if owner in shared_roots or owner.name in (".gc", "worktrees"):
+        raise Rejected("owned root must name one task, not a shared city/worktree container")
     manifest = Path(args.union_manifest).resolve()
     info = runtime(args.julia)
     source_version = read_toml(manifest)["julia_version"]

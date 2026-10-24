@@ -42,13 +42,14 @@ An explicit `julia_bin` overrides `julia_version`; check existing recipes. Kaimo
 missing. Confirm `VERSION` and `Base.active_project()` with native `ex(q=false)`;
 a substituted version does not satisfy a version-specific task.
 
-Use the reviewed city shared dependency image through automatic selection for
-compatible **new** Kaimon sessions; agents do not need manual `-J` flags.
-During a rollout that cannot restart the shared service, use the exact untracked
-`julia_bin` wrapper recipe in `docs/kaimon.md` (`commands/kaimon-sysimage-julia`,
-with your original exact binary in `[city_sysimage]`). A compatible Manifest
-alone does not enable selection until the managed hook is loaded. Confirm the
-actual child image and status; a wrapper rollout does not change existing gates.
+The CURRENT shared-image route is the exact untracked per-worktree `julia_bin`
+wrapper recipe in `docs/kaimon.md` (`commands/kaimon-sysimage-julia`, with your
+original exact binary in `[city_sysimage]`). The live daemon has NOT loaded the
+managed selection hook: a compatible Manifest alone does NOT select the image.
+Agents do not need manual `-J` flags. Use a new owned session and confirm the
+actual child image and status; profile activation and guidance do not load the
+hook or change existing gates. No service restart, live patch or transport
+observer integration is part of this wrapper route.
 Before launching a task-owned worktree whose old Manifest differs from the
 published common lock, prepare it explicitly:
 
@@ -77,7 +78,9 @@ replace an already baked package in a running image session.
 
 For prescribed cold/clean-depot/default-image tests or rollback, preserve the
 recipe and set `[city_sysimage] mode = "off"` before launching a new owned
-session. `mode = "required"` makes compatibility failure explicit. Never restart
+session. Kaimon's test runner retains its original image resolver and isolated
+environment; this wrapper does not inject the shared image into that path.
+`mode = "required"` makes compatibility failure explicit. Never restart
 the shared service merely to change your worktree's mode. Follow the artifact,
 rebuild, receipt rollback and verified deployment instructions in the city docs;
 guidance or a saved profile alone does not prove an image was actually selected.

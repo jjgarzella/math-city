@@ -256,10 +256,16 @@ warmup/build-input hashes, artifact checksum, size and build time are recorded
 in each artifact's `metadata.json`. Artifacts and pinned build environments
 live under ignored `.gc/kaimon-sysimages/`; binaries are never committed.
 
-After source review, artifact/native acceptance and a safe service-only rollout,
-`commands/kaimon-managed-sysimages.jl` selects compatible images for **new
-interactive sessions**, including future worktrees. It uses the existing launch
-recipe and retains caller project/version/binary/flags and explicit images.
+**The current route is the supported per-worktree `julia_bin` wrapper recipe
+below. The live daemon has not loaded the managed selection hook. A compatible
+Manifest alone does not select the image.** Use the wrapper in an owned project,
+preserve its original exact binary and flags, and verify the actual child image.
+Profile publication or activation does not install the hook in a live daemon.
+
+`commands/kaimon-managed-sysimages.jl` provides automatic selection for **new
+interactive sessions** only after a separately authorized future service rollout.
+It retains caller project/version/binary/flags and explicit images. No service
+restart, live patch or observer integration is part of this wrapper rollout.
 `run_tests` keeps its original image resolver and isolated environment behavior.
 The Pkg-before-gate bootstrap repair remains in place. No existing session is
 changed by selection, profile publication, guidance updates or source edits.
@@ -313,9 +319,9 @@ Retain referenced worktrees, profiles, artifact/build depots and source locks
 while any profile or session uses them; these city `.gc` paths are independent
 of ephemeral provider homes.
 
-When a live gate prevents a service restart, an owned worktree can use the same
-validated selector through Kaimon's supported `julia_bin` recipe. Keep existing
-thread, startup and extra-flag settings; merge these fields into an untracked
+For the current live service, use the validated selector through Kaimon's
+supported `julia_bin` recipe. Keep existing thread, startup and extra-flag
+settings; merge these fields into an untracked
 `kaimon.toml` in the owned worktree (never commit host paths into a math repo):
 
 ```toml
@@ -501,9 +507,11 @@ SHA256 `fb46d195e7392f87a1a262149cb6c420dd05ee67702f637bedebd729672fb2a9`.
 It contains 32 external roots and 253 dependency graph entries, occupies
 1,818,498,328 bytes and took 1,637 seconds to build with Julia 1.13.2 and
 PackageCompiler 2.4.3. Publication of profile `ceb668e8...` is inactive;
-production adoption remains pending independent acceptance and readiness.
+production adoption remains held for the coordinator release decision. The
+final launcher `e178a64` passed independent source review and the delivered
+Codex checks below; the earlier failed attempts remain part of this record.
 
-Independent Codex native calls used the same owned DeRham worktree, exact
+The original independent Codex native calls used the same owned DeRham worktree, exact
 runtime, prepared lock, managed depot and default `auto` threads (14+1).
 Each row starts a fresh process; OS caches and existing depots were retained.
 Full delivery includes startup, native call handling, provenance checks,
@@ -606,6 +614,70 @@ reply/adoption failure was established. Detailed evidence is retained in
 `image-init-diagnosis/FINDING.md` under the task directory. The active-project
 contract is covered by the selected-launcher inheritance guard and child
 control above; native delivery and full readiness remain separate gates.
+
+The final `e178a64` launcher was reviewed independently after the fused guards
+and selected-project inheritance changes. Its two sequential Codex image runs
+used the supported wrapper on the unchanged production service (daemon PID
+18411), exact Julia 1.13.2, owned prepared DeRham project, caller flags and depot.
+The second image case included a new source-only probe in a fresh process;
+Project and Manifest bytes stayed unchanged. Actual native results asserted
+runtime, project, source paths, image checksum, dependency pins, QQ coefficients
+`[6,5,4,3,2,1]`, evaluation `114`, CUDA unavailable and state 41→42. The edited
+source probe also returned 42. Revise was absent; this proves a fresh-session
+edit, without a live-reload claim.
+
+| Final e178 case | Startup seconds | Package load seconds | Checked math delivered seconds | Separate state 42 delivered seconds | Peak aggregate RSS, decimal GB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Image 1 | 16.100 | 7.729 | 35.325 | 36.158 | 5.825 |
+| Off 1 | 12.121 | 40.471 | 74.943 | 85.900 | 2.995 |
+| Image 2, source edit | 26.153 | 13.916 | 52.100 | 53.459 | 5.857 |
+
+**Both final Codex image observations passed the full 60-second requirement.**
+Calls within each image sequence were prewritten and sequential, without agent
+turn gaps. These successful later samples do not erase the original
+100.948-second repeated image failure or the 94.589-second cold edited-source
+failure. Existing package and OS caches were retained throughout; no clean-depot
+or OS-cold result is claimed. Source-edit Image 2 forced root-package compilation
+and is labelled separately from Image 1.
+
+Off 1's evaluation reported 46.9 seconds, promoted to a background job after
+30.080 seconds. Native collection occurred 32.736 seconds after promotion;
+the separate state call also includes a 10.016-second agent gap. Those raw
+74.943/85.900-second delivery times are retained, without deriving a wall-time
+speedup ratio. A reversed Off 2 process started in 18.146 seconds but its first
+evaluation and the script's erroneous follow-up both timed out waiting for
+replies. No package result file existed. Its metadata, socket state, process
+commands and sample were captured before coordinator-authorized owned cleanup.
+The sampled main thread was in TTY setup; this observation does not establish
+the transport failure's cause. There was no baseline retry. The coordinator
+permitted only the planned Image 2 source-edit case, so the final record contains
+one complete matched pair and a separate second image result.
+
+The selected route retains full neutral instantiation with automatic cache
+precompilation disabled; off mode keeps the original cache policy. Consequently
+the comparison measures that reviewed adoption route, not an isolated image-only
+effect. The RSS figures sum the root and its child processes; shared image
+mappings can be counted twice. These samples show no memory saving and do not
+establish universal readiness or a repair to general native transport reliability.
+General transport follow-up `mc-rh0r2` remains BLOCKED and unrouted. Its disabled
+observer implementation has not been integrated into the live service.
+
+Independent Claude native acceptance on the same reviewed launcher also
+delivered the edited-source probe, provenance, QQ math, persistent state and a
+35-second background result. Measured startup/import/math components totalled
+39.45 seconds. The raw wall to math was about 75 seconds, including one invalid
+agent call and turn gaps; the component sum is not a measured full-delivery
+60-second pass. The raw limitations remain in its receipt.
+
+Final Codex events, full results, RSS, source-edit and cleanup receipts are in
+`acceptance-codex-mc-wisp-21fg9x/e178a64-final-enzhrl/` under the task directory.
+The separate Claude receipt is
+`.gc/kaimon-scratch/mc-xf9j5.3-accept/e178/native-e178-receipt.json`.
+All owned native keys/processes/samplers were retired, seven fixture source and
+Project/Manifest hashes restored, and recipes restored. No service, profile or
+production default was changed by these acceptance runs. At their completion
+the profile was inactive; scoped installation, current-profile selection and a
+canonical-wrapper native canary require the separate coordinator release check.
 
 Raw receipts are retained under
 `.gc/kaimon-sysimages/mc-xf9j5/acceptance-codex-mc-wisp-21fg9x/continuation-2jgcfx/`

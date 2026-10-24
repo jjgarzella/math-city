@@ -203,7 +203,7 @@ gc bd heartbeat "$GC_BEAD_ID" || true
 ROOT_JSON=$(bd show "$ROOT" --json 2>/dev/null | json_payload)
 WORK_DIR="{{work_dir}}"
 [ -z "$WORK_DIR" ] && WORK_DIR=$(printf '%s\n' "$ROOT_JSON" | jq -r \
-  'if type=="array" then .[0] else . end | (.metadata["work_dir"] // .metadata["gc.work_dir"] // empty)')
+  'if type=="array" then .[0] else . end | (.metadata["work_dir"] // empty)')
 if [ -z "$WORK_DIR" ] || [ ! -d "$WORK_DIR" ]; then
   echo "STOP: no valid work_dir supplied or recorded on root $ROOT; refusing to fall back to PWD" >&2
   exit 1

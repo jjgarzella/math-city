@@ -351,6 +351,29 @@ The full union can activate additional package extensions beyond a smaller
 ordinary environment; one representative calculation is not universal workload
 or extension/invalidation acceptance.
 
+The `mc-xf9j5` union build uses a **local CUDA 5.11.3 compatibility fork**.
+The version number alone does not identify the registered CUDA source. Its
+registered base tree is `54751d09f9acf05ea7b7ee6baa6a99677c788880`; the fork commit
+is `e8be927e4aba1bcbd9f147f310e2163c2a6246ea`, with tree
+`ea57a047d5decf052949ffc063da95c0bd7ab905`. The 13 inserted lines annotate
+`exit`/`nanosleep` as device functions and repair the observed Julia 1.13.2
+docstring expansion in the existing annotation macro. The original GPU bodies,
+signatures, documentation, package version and compat constraints are preserved.
+CPU stubs, native precompilation, overlay AST preservation and a CUDA-only
+diagnostic image were tested; these checks do not establish GPU execution or
+full-union/native-provider acceptance.
+
+The common lock pins that full commit through the local Git URL
+`file:///Users/Shared/Developer/ai/city/math-city/.gc/kaimon-sysimages/mc-xf9j5/cuda-aot-repair/CUDA`.
+Keep that repository and the retained
+`.gc/kaimon-sysimages/mc-xf9j5/cuda-provenance-e8be927/CUDA-e8be927.bundle` on this
+host. Image metadata records CUDA's `repo-url`, `repo-rev` and `git-tree-sha1`;
+verify those fields when reproducing the build or aligning an owned target.
+All other 261 common-lock entries are unchanged. Use the regenerated owned
+Manifests for this fork; an old registered-CUDA Manifest must fail image
+selection. Replacing the fork with registered/upstream source requires a new
+lock, image and acceptance gates.
+
 The current image policy supports **empty effective preferences for baked
 package UUIDs (including declared extensions) only**. Julia's package-cache preference invalidation does not
 reload modules already serialized into a sysimage. Before adding `-J`, the

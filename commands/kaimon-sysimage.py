@@ -612,6 +612,9 @@ def launch(args, execute=os.execv):
             else:
                 check_project_compat(binary, project, info, metadata, stack_projects)
             flags.insert(0, f"--sysimage={image}")
+            # Base.julia_cmd() propagates -J without --project. Singular's
+            # baked initializer requires an active project in such children.
+            os.environ["JULIA_PROJECT"] = str(project)
             status = metadata["id"]
             print(f"[city-sysimage] selected {metadata['id']} ({info['version']})", file=sys.stderr)
         except (Rejected, OSError, ValueError, subprocess.CalledProcessError) as error:
@@ -717,16 +720,24 @@ TOML.print(Dict("pre"=>pre,"post"=>post,"neutral_seconds"=>neutral_seconds);sort
         raise Rejected(error.stderr.strip()) from error
     if metadata is not None:
         parsed = tomllib.loads(output)
+        if instantiate and not all(isinstance(parsed.get(part), dict) for part in ("pre", "post")):
+            raise Rejected("missing managed pre/post preference audits")
         if instantiate and "neutral_seconds" in parsed:
+            if not isinstance(parsed["neutral_seconds"], (int, float)):
+                raise Rejected("invalid neutral instantiation timing receipt")
             print(f"[city-sysimage] neutral managed instantiation completed in {parsed['neutral_seconds']:.3f}s",
                   file=sys.stderr)
         audits = [parsed["pre"], parsed["post"]] if instantiate else [parsed]
         for value in audits:
             audit = dict(preference_identity(metadata["packages"]), **value)
             require_empty_preferences(audit, metadata["packages"])
-        if instantiate and ([c["input_files"] for c in parsed["pre"]["contexts"]] !=
-                            [c["input_files"] for c in parsed["post"]["contexts"]]):
-            raise Rejected("preference inputs changed during neutral instantiation; use normal Julia")
+        if instantiate:
+            try:
+                inputs = [[c["input_files"] for c in parsed[part]["contexts"]] for part in ("pre", "post")]
+            except (KeyError, TypeError) as error:
+                raise Rejected("incomplete managed preference input audit") from error
+            if inputs[0] != inputs[1]:
+                raise Rejected("preference inputs changed during neutral instantiation; use normal Julia")
         return audit
 
 

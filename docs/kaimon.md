@@ -457,6 +457,18 @@ real selected-image JSON/script path by setting `KAIMON_TEST_PROFILE`,
 `KAIMON_TEST_PROJECT` and `KAIMON_TEST_OWNED_ROOT`. It constructs the command
 against a copied target without executing the image or starting a gate.
 
+Selected city images require the exact project to remain available. Singular's
+baked initializer calls `Pkg.dependencies()` and fails if there is no active
+project. The wrapper therefore exports `JULIA_PROJECT=<exact resolved project>`
+before executing a selected image, in addition to the original `--project` flag.
+The managed hook sets the same environment value in its bootstrap for later
+children. This protects `Base.julia_cmd()` descendants which inherit `-J`
+without an explicit project. Explicit child `--project` still takes precedence.
+Off mode, test runners, explicit caller images and rejected city images retain
+their original project environment. `check-kaimon-sysimage-child.py` checks an
+owned inherited-image child with no project flag and an explicit-child override;
+it starts no Gate or daemon and is not native acceptance or a benchmark.
+
 After source/native review, create a frozen profile from the completed image,
 the full union lock and the explicit source map:
 
@@ -575,11 +587,25 @@ The finite Claude review also found two image-initialization limits: starting
 it without an active project fails in Singular's `locate_libsingular` through
 `Pkg.dependencies()`, and a bare image process with an active project opens a
 localhost TCP listener at startup (8086, advancing to 8087 when occupied).
-The listener's caller is unidentified. Normal Polymake/GAP/Singular probes
+At that review the listener's caller was unidentified. Normal Polymake/GAP/Singular probes
 opened no listener; those controls do not establish the cause. Identification
 and the project contract are separate acceptance gates. No package, tree or
 builder input was changed based on this observation. Production remains
 inactive, with the 60-second requirement and native delivery gates unmet.
+
+The follow-up B3 investigation identified that listener as Tracy's profiler
+client: CUDA → GPUCompiler → Tracy 0.1.6 → LibTracyClient_jll 0.13.1.
+A native `bind`/`listen` interposer captured `tracy::ListenSocket::Listen` from
+`tracy::Profiler::Worker` during package initialization. An ordinary-Julia
+control loading only LibTracyClient_jll produced the same localhost listener;
+`TRACY_PORT=9311` moved it to that port. The default is 8086, advancing when
+occupied. It remains for the process lifetime. The coordinator accepted and
+documented this behavior, with no package removal, artifact override or rebuild.
+The launcher preserves a caller's `TRACY_PORT`. No connection to the ZMQ
+reply/adoption failure was established. Detailed evidence is retained in
+`image-init-diagnosis/FINDING.md` under the task directory. The active-project
+contract is covered by the selected-launcher inheritance guard and child
+control above; native delivery and full readiness remain separate gates.
 
 Raw receipts are retained under
 `.gc/kaimon-sysimages/mc-xf9j5/acceptance-codex-mc-wisp-21fg9x/continuation-2jgcfx/`

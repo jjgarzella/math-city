@@ -98,8 +98,9 @@ if haskey(ENV, "KAIMON_TEST_PROFILE") || haskey(ENV, "KAIMON_TEST_PROJECT")
                 @test cmd[2] == "--sysimage=$(joinpath(profile["artifact"],"image.dylib"))"
                 @test cmd[3:end-1] == ["-i","-t","2,1","--gcthreads=2","--heap-size-hint=3G",
                                       "--check-bounds=yes","--project=$project","--startup-file=no","-e"]
-                @test startswith(cmd[end], "ENV[\"KAIMON_CITY_SYSIMAGE\"] = $(repr(profile["artifact_id"]))\n")
-                original = split(cmd[end], '\n';limit=2)[2]
+                @test startswith(cmd[end], "ENV[\"KAIMON_CITY_SYSIMAGE\"] = $(repr(profile["artifact_id"]))\n" *
+                                          "ENV[\"JULIA_PROJECT\"] = $(repr(project))\n")
+                original = split(cmd[end], '\n';limit=3)[3]
                 @test replace(original,"# Pkg.instantiate completed in neutral prelaunch Julia."=>
                               "Pkg.instantiate(; io=devnull)") == script
                 @test all(read(joinpath(project,name)) == content for (name,content) in before)

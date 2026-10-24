@@ -68,7 +68,9 @@ end
             selected = JSON.parse(read(pipeline(selector;stderr=errors),String))
             image = String(selected["image"])
             isabspath(image) && isfile(image) || error("Invalid selector response")
-            cmd[end] = String(selected["script"])
+            # The parent already has --project; pin the inherited environment
+            # for later Base.julia_cmd() children which inherit -J only.
+            cmd[end] = "ENV[\"JULIA_PROJECT\"] = $(repr(realpath(project)))\n" * String(selected["script"])
             insert!(cmd,2,"--sysimage=$image")
             status = basename(dirname(image))
             _push_log!(:info,"City dependency image $status selected for $project")

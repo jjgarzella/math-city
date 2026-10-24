@@ -191,7 +191,7 @@ class Images(unittest.TestCase):
         with self.assertRaisesRegex(image.Rejected, "version mismatch"):
             self.validate()
 
-    def run_launch(self, mode="auto", compatible=True, extra=(), script=None, real_compat=False):
+    def run_launch(self, mode="auto", compatible=True, extra=(), script=None, real_compat=False, environment=None):
         recipe = self.project / "kaimon.toml"
         recipe.write_text('[launch]\nthreads = "2,1"\nextra_flags = ["--check-bounds=yes"]\n'
                           '[city_sysimage]\njulia_bin = "/original/julia"\n'
@@ -204,8 +204,10 @@ class Images(unittest.TestCase):
         def execute(binary, flags):
             calls.append((binary, flags))
             self.launch_status = os.environ.get("KAIMON_CITY_SYSIMAGE")
+            self.launch_project_environment = os.environ.get("JULIA_PROJECT")
         compat = contextlib.nullcontext() if real_compat else patch.object(image, "check_project_compat")
-        with patch.dict(os.environ, {"JULIA_LOAD_PATH": str(self.gate)}, clear=True), patch.object(image, "runtime", return_value=info), compat:
+        env = {"JULIA_LOAD_PATH": str(self.gate), **(environment or {})}
+        with patch.dict(os.environ, env, clear=True), patch.object(image, "runtime", return_value=info), compat:
             code = image.launch(argv, execute=execute)
         self.assertEqual(recipe.read_bytes(), before)
         return code, calls, argv
@@ -214,6 +216,7 @@ class Images(unittest.TestCase):
         code, calls, argv = self.run_launch()
         self.assertEqual(code, 0)
         self.assertEqual(calls[0][1], ["/original/julia", f"--sysimage={self.artifact / 'image.dylib'}", *argv])
+        self.assertEqual(self.launch_project_environment, str(self.project))
 
     def managed_script(self, restart="true"):
         quote = json.dumps(str(self.project), ensure_ascii=False).replace("$", "\\$")
@@ -324,9 +327,17 @@ class Images(unittest.TestCase):
         self.assertEqual(calls[0][1], ["/original/julia", *original])
         self.assertIn("preference inputs changed", self.launch_status)
 
+    def test_combined_guard_missing_receipts_fall_back_without_an_image(self):
+        for audit in ("[pre]\n", self.empty_audits().replace('input_files = {}\n', '', 1)):
+            with patch.object(image, "run_julia", return_value=audit):
+                _, calls, original = self.run_launch(script=self.managed_script(), real_compat=True)
+            self.assertEqual(calls[0][1], ["/original/julia", *original])
+            self.assertIn("audit", self.launch_status)
+
     def test_fallback_and_required(self):
         code, calls, argv = self.run_launch(compatible=False)
         self.assertEqual(calls[0][1], ["/original/julia", *argv])
+        self.assertIsNone(self.launch_project_environment)
         code, calls, argv = self.run_launch(mode="required", compatible=False)
         self.assertEqual(code, 78)
         self.assertFalse(calls)
@@ -336,6 +347,18 @@ class Images(unittest.TestCase):
             with self.subTest(mode=mode):
                 code, calls, argv = self.run_launch(mode=mode, extra=extra)
                 self.assertEqual(calls[0][1], ["/original/julia", *argv])
+                self.assertIsNone(self.launch_project_environment)
+
+    def test_inherited_project_only_changes_for_selected_city_image(self):
+        inherited = {"JULIA_PROJECT": "/caller/child-default"}
+        self.run_launch(environment=inherited)
+        self.assertEqual(self.launch_project_environment, str(self.project))
+        cases = [dict(mode="off"), dict(extra=("--sysimage=/caller/image",)),
+                 dict(extra=("--compiled-modules=no",)), dict(extra=("--compiled-modules=existing",)),
+                 dict(compatible=False)]
+        for options in cases:
+            self.run_launch(environment=inherited, **options)
+            self.assertEqual(self.launch_project_environment, inherited["JULIA_PROJECT"])
 
     def test_kaimon_run_tests_without_project_flag(self):
         self.run_launch()
@@ -343,8 +366,9 @@ class Images(unittest.TestCase):
         script.write_text("# test runner activates its own environment\n")
         argv = ["--startup-file=no", str(script), str(self.project), "", "false"]
         calls = []
-        with patch.dict(os.environ, {}, clear=True), patch.object(image, "runtime") as runtime:
+        with patch.dict(os.environ, {"JULIA_PROJECT": "/caller/test-default"}, clear=True), patch.object(image, "runtime") as runtime:
             image.launch(argv, execute=lambda binary, flags: calls.append((binary, flags)))
+            self.assertEqual(os.environ["JULIA_PROJECT"], "/caller/test-default")
         runtime.assert_not_called()
         self.assertEqual(calls, [("/original/julia", ["/original/julia", *argv])])
 
@@ -394,6 +418,7 @@ class Images(unittest.TestCase):
         gate_manifest.write_text(gate_manifest.read_text().replace('1.2.3', '1.2.4'))
         code, calls, argv = self.run_launch()
         self.assertEqual(calls[0][1], ["/original/julia", *argv])
+        self.assertIsNone(self.launch_project_environment)
         self.assertIn("bootstrap environment", self.launch_status)
         self.run_launch(mode="off")
         self.assertEqual(self.launch_status, "off")

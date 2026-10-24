@@ -12,7 +12,8 @@ assert_eq "graph.v2"        "$(formula_py contract)"     "graph.v2 contract"
 
 # --- vars: exactly the three tunables, all referenced ------------------------
 defined="$(formula_py defined-vars | tr '\n' ' ')"
-assert_eq "base_branch notify_target target " "$defined" "defines exactly base_branch, notify_target, target"
+assert_eq "base_branch base_sha branch notify_target review_worker_target target work_dir " "$defined" \
+  "defines review target + explicit work_dir/branch/base_sha context and notify_target"
 
 undefined=""
 while IFS= read -r ref; do
@@ -23,6 +24,9 @@ assert_eq "" "$undefined" "no template ref points at an undefined var"
 assert_eq "main" "$(formula_py var-default base_branch)"  "base_branch default = main"
 assert_eq ""     "$(formula_py var-default target)"       "target default = empty (base_branch..HEAD)"
 assert_eq ""     "$(formula_py var-default notify_target)" "notify_target default = empty (notify disabled)"
+assert_eq ""     "$(formula_py var-default work_dir)"     "work_dir default = empty (use root metadata for an explicit direct sling)"
+assert_eq ""     "$(formula_py var-default branch)"      "branch default = empty (use root metadata when available)"
+assert_eq ""     "$(formula_py var-default base_sha)"    "base_sha default = empty (use root metadata when available)"
 
 # --- top-level steps: workspace-setup -> review-loop -------------------------
 steps="$(formula_py step-ids | tr '\n' ' ')"
@@ -86,3 +90,8 @@ assert_contains "$SETUP_BLOCK" 'gc.review_loop.notify' \
   "workspace-setup records the optional notify target on the root"
 assert_contains "$SETUP_BLOCK" 'work_dir=' \
   "workspace-setup records work_dir on the root (the ralph control inherits it)"
+assert_contains "$SETUP_BLOCK" 'WORK_DIR="{{work_dir}}"' "workspace-setup starts with explicit work_dir context"
+assert_contains "$SETUP_BLOCK" 'BRANCH="{{branch}}"' "workspace-setup starts with explicit branch context"
+assert_contains "$SETUP_BLOCK" 'BASE_SHA="{{base_sha}}"' "workspace-setup starts with explicit immutable base context"
+assert_contains "$SETUP_BLOCK" 'STOP: no valid work_dir supplied or recorded' "workspace-setup stops when no work_dir is known"
+assert_not_contains "$SETUP_BLOCK" 'WORK_DIR="$PWD"' "workspace-setup never falls back to the worker PWD"

@@ -19,13 +19,16 @@ PATH; it is skipped (not failed) when `gc` is absent.
   lifecycle (load-context → workspace-setup → preflight-tests → implement →
   self-review → trigger-review), every step continuation-pinned to one polecat
   (`gc.continuation_group=main`, `gc.session_affinity=require`, no
-  `gc.run_target`), the vars + defaults (`review_formula=mol-review-loop`), the
+  `gc.run_target`), the vars + defaults (`review_formula=mol-review-loop-standard`), the
   idempotent feature-branch resume, the post-setup `cd "$WORK_DIR"` re-entry, and
-  the **NON-MERGING terminal**: push + sling `{{review_formula}}` (reviewer-agnostic)
-  + drain, leaving the work bead open for the human gate (never merges, never
-  `bd close`, no refinery).
+  the **NON-MERGING terminal**: push + sling `{{review_formula}}` with the exact
+  work_dir, branch, and immutable base SHA / `<base_sha>..HEAD` target, then drain.
+  It leaves the work bead open for the human gate (never merges, never `bd close`,
+  no refinery).
 - **test_02_compile** — `gc formula show` compiles the formula to the expected
   prefixed step beads + the auto-appended `workflow-finalize` terminal.
+- **test_03_trigger_context** — runs the trigger block against stubbed
+  `bd`/`gc`/`git` commands and verifies its immutable range and context vars.
 
 ## The seam
 

@@ -3,7 +3,7 @@ Polecat IMPLEMENT lifecycle — native graph.v2, feature-branch, NON-MERGING
 (gascity gcs-f4j.6 / gcs-6r2). A complete, runnable polecat work lifecycle: it
 implements a single work bead on an isolated feature branch, then — instead of
 merging — pushes the branch and TRIGGERS the reviewer-agnostic review→fix loop
-(mol-review-loop), then drains. The HUMAN is the gate; nothing here auto-merges.
+(mol-review-loop-standard by default), then drains. The HUMAN is the gate; nothing here auto-merges.
 
 This is the implement half of the review system. The review LOOP owns the
 automated fix cycle; this formula owns producing/resuming the branch under
@@ -33,7 +33,7 @@ cleanly: the branch and worktree are recorded on the bead the moment they exist.
 | Variable | Source | Description |
 |----------|--------|-------------|
 | base_branch | caller | Base branch to branch from / measure against (default: main). |
-| review_formula | caller | Review-loop formula the terminal triggers (default: mol-review-loop). Swap for a triage/quorum variant via --var; keeps review reviewer-agnostic. |
+| review_formula | caller | Review-loop formula the terminal triggers (default: mol-review-loop-standard). Swap for another reviewer-loop variant via --var; keeps review reviewer-agnostic. |
 | review_worker_target | caller / rig `formula_vars` | Pool target for the review loop workers. Defaults to city-scope claude; rigs override to gasvillage.polecat. |
 | target_repo | caller | Repo the change lands in (path or URL). Empty (default) = the rig repo. Set it to work a DIFFERENT repo — e.g. a standalone package nested in an umbrella rig, absent from the rig checkout. |
 | setup_command | rig `formula_vars` | Setup/install command. Empty = skip. |
@@ -62,11 +62,11 @@ default = "main"
 [vars.review_formula]
 description = """
 The review-loop formula the non-merging terminal triggers against the pushed
-branch. Default mol-review-loop (the shared reviewer-agnostic loop). Swap for a
-triage/quorum loop variant via --var review_formula=<name> — dispatch policy
-(which reviewer/tier) lives in the caller, never here.
+branch. Default mol-review-loop-standard (the standard multi-pass reviewer).
+Swap for another reviewer-loop variant via --var review_formula=<name> —
+dispatch policy (which reviewer/tier) lives in the caller, never here.
 """
-default = "mol-review-loop"
+default = "mol-review-loop-standard"
 
 [vars.review_worker_target]
 description = "Pool target used to trigger the review loop and route its worker steps. Defaults to the city-scope claude pool; rigs override this via formula_vars to gasvillage.polecat."
@@ -480,47 +480,69 @@ gc bd heartbeat "$GC_BEAD_ID" || true
 ROOT=$(bd show "$GC_BEAD_ID" --json 2>/dev/null | json_payload \
   | jq -r 'if type=="array" then .[0] else . end | .metadata["gc.root_bead_id"] // empty')
 [ -z "$ROOT" ] && ROOT="$GC_BEAD_ID"
-WORK_DIR=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
-  | jq -r 'if type=="array" then .[0] else . end | .metadata["work_dir"] // empty')
-[ -n "$WORK_DIR" ] && cd "$WORK_DIR"
+meta() { bd show "$ROOT" --json 2>/dev/null | json_payload \
+  | jq -r "if type==\"array\" then .[0] else . end | (.metadata[\"$1\"] // empty)"; }
+WORK_DIR=$(meta work_dir)
+if [ -z "$WORK_DIR" ] || [ ! -d "$WORK_DIR" ]; then
+    echo "STOP: no valid work_dir recorded on $ROOT; cannot trigger review" >&2
+    gc runtime drain-ack; exit 1
+fi
+WORK_DIR="$(cd "$WORK_DIR" && pwd -P)"
+cd "$WORK_DIR"
+
+BRANCH=$(meta branch)
+[ -z "$BRANCH" ] && BRANCH=$(git branch --show-current)
+[ -n "$BRANCH" ] || { echo "STOP: no feature branch recorded or checked out in $WORK_DIR" >&2; gc runtime drain-ack; exit 1; }
 
 # 1. Belt-and-suspenders: nothing uncommitted should remain.
 if [ -n "$(git status --porcelain)" ]; then
     git add -A && git commit -m "chore: capture remaining work ($ROOT)"
 fi
 
-# 2. Push the feature branch. The branch recorded on ROOT in workspace-setup is
-#    authoritative (cwd/HEAD may be detached after a resume); fall back to HEAD.
-BRANCH=$(bd show "$ROOT" --json 2>/dev/null | json_payload \
-  | jq -r 'if type=="array" then .[0] else . end | .metadata["branch"] // empty')
-[ -z "$BRANCH" ] && BRANCH=$(git branch --show-current)
+# 2. Resolve review context for the work bead. The loop resumes work_dir (this
+#    branch) and reviews an immutable range from the commit this branch forked
+#    from. Capture the merge base once now; don't let a later base-branch move
+#    change what this review means. review_formula is swappable, so the implement
+#    side stays reviewer-agnostic. Routed to the polecat pool; --nudge wakes it
+#    once this session drains the slot.
+BASE_REF=$(meta base_ref)
+[ -z "$BASE_REF" ] && BASE_REF="origin/{{base_branch}}"
+BASE_SHA=$(git merge-base "$BASE_REF" HEAD) \
+  || { echo "STOP: could not resolve immutable review base from $BASE_REF" >&2; gc runtime drain-ack; exit 1; }
+BASE_SHA=$(git rev-parse --verify "$BASE_SHA^{commit}") \
+  || { echo "STOP: resolved review base is not a commit" >&2; gc runtime drain-ack; exit 1; }
+REVIEW_TARGET="$BASE_SHA..HEAD"
+
+# 3. Push only after the exact work_dir, branch, and immutable review base are
+# known. The review target is the captured SHA range, never a moving branch name.
 if git remote | grep -qx origin; then
     git push -u origin "HEAD:$BRANCH"
 else
     echo "note: no origin remote on this repo; leaving $BRANCH local (the review loop resumes work_dir directly)"
 fi
-bd update "$ROOT" --set-metadata branch="$BRANCH"
 
-# 3. Trigger the review→fix loop ON the work bead. It resumes work_dir (this
-#    branch) and reviews {{base_branch}}..HEAD. review_formula is swappable so
-#    the implement side stays reviewer-agnostic. Routed to the polecat pool;
-#    --nudge wakes it once this session drains the slot.
+# 4. Trigger the review→fix loop with that exact context. Routed to the polecat
+#    pool; --nudge wakes it once this session drains the slot.
 REVIEW_WORKER_TARGET="{{review_worker_target}}"
 case "$REVIEW_WORKER_TARGET" in
   */*) REVIEW_ROUTE="$REVIEW_WORKER_TARGET" ;;
   claude|codex|bd.dog|core.*|gasvillage.mayor) REVIEW_ROUTE="$REVIEW_WORKER_TARGET" ;;
   *) REVIEW_ROUTE="${GC_RIG:+$GC_RIG/}$REVIEW_WORKER_TARGET" ;;
 esac
+bd update "$ROOT" --set-metadata work_dir="$WORK_DIR" \
+  --set-metadata branch="$BRANCH" --set-metadata base_sha="$BASE_SHA"
 gc sling "$REVIEW_ROUTE" "$ROOT" \
   --on "{{review_formula}}" --var "base_branch={{base_branch}}" \
+  --var "work_dir=$WORK_DIR" --var "branch=$BRANCH" \
+  --var "base_sha=$BASE_SHA" --var "target=$REVIEW_TARGET" \
   --var "review_worker_target=$REVIEW_ROUTE" --nudge
 
-# 4. Close THIS step (the implement lifecycle is done; the work bead stays OPEN
+# 5. Close THIS step (the implement lifecycle is done; the work bead stays OPEN
 #    for review + the human gate — do NOT close ROOT).
 bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
   --notes "trigger-review: pushed $BRANCH, slung {{review_formula}} on $ROOT via $REVIEW_ROUTE; draining"
 
-# 5. Drain and exit — you are gone. The review loop runs in a fresh polecat.
+# 6. Drain and exit — you are gone. The review loop runs in a fresh polecat.
 gc runtime drain-ack
 exit 0
 ```

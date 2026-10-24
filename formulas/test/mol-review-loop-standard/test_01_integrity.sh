@@ -41,14 +41,17 @@ assert_contains "$PIPE_DESC" "synthesis"      "review-pipeline notes the expande
 
 # --- vars: fragment contract (target<-review_target rename) + loop knobs ------
 host_vars="$(formula_py defined-vars | tr '\n' ' ')"
-expected_host="$( { fragment_vars | sed 's/^review_target$/target/'; echo notify_target; } | sort | tr '\n' ' ')"
+expected_host="$( { fragment_vars | sed 's/^review_target$/target/'; echo notify_target; echo work_dir; echo branch; echo base_sha; } | sort | tr '\n' ' ')"
 assert_eq "$expected_host" "$host_vars" \
-  "loop declares the fragment contract (review_target->target) plus notify_target"
+  "loop declares the fragment contract plus explicit work_dir/branch/base_sha context and notify_target"
 
 assert_eq "main"  "$(formula_py var-default base_branch)"       "base_branch default = main"
 assert_eq ""      "$(formula_py var-default target)"            "target default = empty (base_branch..HEAD)"
 assert_eq "minor" "$(formula_py var-default severity_threshold)" "severity_threshold default = minor (fix blocker/major/minor, surface nit)"
 assert_eq ""      "$(formula_py var-default notify_target)"     "notify_target default = empty (notify disabled)"
+assert_eq ""      "$(formula_py var-default work_dir)"         "work_dir default = empty (use root metadata for an explicit direct sling)"
+assert_eq ""      "$(formula_py var-default branch)"          "branch default = empty (use root metadata when available)"
+assert_eq ""      "$(formula_py var-default base_sha)"        "base_sha default = empty (use root metadata when available)"
 
 # every {{template ref}} points at a defined var
 undefined=""
@@ -134,6 +137,11 @@ assert_contains "$SETUP_BLOCK" 'GC_CITY' \
   "workspace-setup references the lib via \$GC_CITY (branch-independent)"
 assert_contains "$SETUP_BLOCK" 'cp -f "$VERDICT_SRC" "$WORK_DIR/.gc-review-verdict.sh"' \
   "workspace-setup copies the lib to the work_dir-relative check path"
+assert_contains "$SETUP_BLOCK" 'WORK_DIR="{{work_dir}}"' "workspace-setup starts with explicit work_dir context"
+assert_contains "$SETUP_BLOCK" 'BRANCH="{{branch}}"' "workspace-setup starts with explicit branch context"
+assert_contains "$SETUP_BLOCK" 'BASE_SHA="{{base_sha}}"' "workspace-setup starts with explicit immutable base context"
+assert_contains "$SETUP_BLOCK" 'STOP: no valid work_dir supplied or recorded' "workspace-setup stops when no work_dir is known"
+assert_not_contains "$SETUP_BLOCK" 'WORK_DIR="$PWD"' "workspace-setup never falls back to the worker PWD"
 
 # --- NO abort_scope / on_complete directive ----------------------------------
 if grep -nE '^[[:space:]]*(on_complete|on_fail)[[:space:]]*=' "$FORMULA" >/dev/null 2>&1; then

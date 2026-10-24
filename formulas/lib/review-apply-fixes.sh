@@ -17,13 +17,14 @@
 # review-pipeline slot; the synthesis output contract + this mapping are
 # reviewer-agnostic.
 #
-# THIS IS PURE TRANSPORT — ZERO judgment lives here. The per-finding fix-vs-
-# surface call, whether a blocker is actually fixable, and whether a fix was
-# applied this round are the apply-fixes agent's reasoning (ZFC). This file only
-# moves beads: it reads what synthesis recorded, enumerates the durable
-# findings, maps a fixed verdict vocabulary, and writes the result. The
-# severity threshold is config (a formula var the agent is handed); ranking is
-# never suppression.
+# The per-finding fix-vs-surface call, whether a blocker is actually fixable,
+# and whether a fix was applied this round are the apply-fixes agent's reasoning
+# (ZFC); ZERO judgment about what to fix or surface lives here. This file moves
+# the durable review state and guards filesystem side effects: edits stay within
+# the reviewed paths and related tests, the configured test command passes before
+# commit, and a successful commit is pushed before the loop advances. The severity
+# threshold remains config (a formula var the agent is handed); ranking is never
+# suppression.
 #
 # Source it via $GC_CITY (branch-independent, exactly like the sibling libs):
 #
@@ -33,6 +34,9 @@
 #   review_apply_fixes_map_verdict <synth_verdict> <applied yes|no>   # -> done|iterate
 #   review_apply_fixes_set_verdict <done|iterate> "<note>"            # write review.verdict + close
 #   review_apply_fixes_escalate "<reason>"               # blocked / unfixable -> terminate-to-human
+#   review_apply_fixes_check_allowed_paths [newline-list]  # refuse out-of-scope edits
+#   review_apply_fixes_test_before_commit [command]        # 0 pass/skip, 10 recorded failure
+#   review_apply_fixes_commit_and_push "<message>"         # scope -> tests -> commit -> push
 #
 # THE INPUT CONTRACT (gcs-f4j.8.3 review-synthesis.sh — the same durable output
 # every bead-native reviewer produces, so apply-fixes stays reviewer-agnostic):
@@ -62,9 +66,10 @@
 #                                     than spin to the cap, and flag a human)
 #
 # Env (provided by the runtime): GC_BEAD_ID (this apply-fixes bead), GC_CITY
-# (city root). The fix threshold the agent applies is handed in via the
-# FIX_THRESHOLD env var (the formula renders its severity_threshold var into it);
-# it defaults to minor. bd and gc are on PATH.
+# (city root). The formula passes FIX_THRESHOLD, TEST_COMMAND, and ALLOWED_PATHS;
+# empty ALLOWED_PATHS derives an allowlist from the reviewed diff and related
+# tests, and an empty TEST_COMMAND falls back to gc.var.test_command on the root.
+# bd, gc, and git are on PATH.
 
 # Strip any non-JSON prefix (bd can emit "warning: ..." on stdout) so jq parses.
 review_apply_fixes__json_payload() { awk 'found || /^[[:space:]]*[[{]/{ found=1; print }'; }
@@ -131,11 +136,21 @@ review_apply_fixes_load() {
   REVIEW_SYNTHESIS_BURNED="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.review.synthesis_burned')"
   REVIEW_WORK_DIR="$(review_apply_fixes__meta "$REVIEW_ROOT" 'work_dir')"
   [ -z "$REVIEW_WORK_DIR" ] && REVIEW_WORK_DIR="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.work_dir')"
+  REVIEW_BASE_SHA="${BASE_SHA:-}"
+  [ -z "$REVIEW_BASE_SHA" ] && REVIEW_BASE_SHA="$(review_apply_fixes__meta "$REVIEW_ROOT" 'base_sha')"
+  REVIEW_BASE_BRANCH="${BASE_BRANCH:-}"
+  [ -z "$REVIEW_BASE_BRANCH" ] && REVIEW_BASE_BRANCH="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.var.base_branch')"
+  [ -z "$REVIEW_BASE_BRANCH" ] && REVIEW_BASE_BRANCH="main"
+  REVIEW_TEST_COMMAND="${TEST_COMMAND:-}"
+  [ -z "$REVIEW_TEST_COMMAND" ] && REVIEW_TEST_COMMAND="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.var.test_command')"
+  REVIEW_ALLOWED_PATHS="${ALLOWED_PATHS:-}"
+  [ -z "$REVIEW_ALLOWED_PATHS" ] && REVIEW_ALLOWED_PATHS="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.var.allowed_paths')"
   REVIEW_FINDINGS="${REVIEW_ROOT}.findings"
   REVIEW_FIX_THRESHOLD="${FIX_THRESHOLD:-minor}"
 
   export REVIEW_ROOT REVIEW_SYNTHESIS_VERDICT REVIEW_SYNTHESIS_PROMOTED \
-    REVIEW_SYNTHESIS_BURNED REVIEW_WORK_DIR REVIEW_FINDINGS REVIEW_FIX_THRESHOLD
+    REVIEW_SYNTHESIS_BURNED REVIEW_WORK_DIR REVIEW_BASE_SHA REVIEW_BASE_BRANCH \
+    REVIEW_TEST_COMMAND REVIEW_ALLOWED_PATHS REVIEW_FINDINGS REVIEW_FIX_THRESHOLD
   echo "[review-apply-fixes] root=$REVIEW_ROOT verdict=${REVIEW_SYNTHESIS_VERDICT:-<none>} promoted=${REVIEW_SYNTHESIS_PROMOTED:-0} burned=${REVIEW_SYNTHESIS_BURNED:-0} fix_threshold=$REVIEW_FIX_THRESHOLD work_dir=${REVIEW_WORK_DIR:-<unset>}"
 }
 
@@ -162,6 +177,307 @@ review_apply_fixes_findings() {
                    | (.[0] // "category:?") | sub("^category:"; "") ),
             title: (.title // "") } ]
         | sort_by(.rank, .id) | .[] | [.id, .sev, .cat, .title] | @tsv'
+}
+
+# review_apply_fixes__valid_path <path> — path-list entries are repo-relative
+# and may not escape the worktree. Newline-containing git paths cannot be
+# represented by the newline-delimited allowed_paths var, so fail closed.
+review_apply_fixes__valid_path() {
+  local path="$1"
+  case "$path" in
+    ""|/*|.|..|../*|*/../*|*/..|*$'\n'*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# review_apply_fixes__base_ref — return the immutable review base, or resolve
+# the configured base branch when a direct sling has no recorded base_sha.
+review_apply_fixes__base_ref() {
+  local base="${REVIEW_BASE_SHA:-}" branch="${REVIEW_BASE_BRANCH:-main}"
+  : "${REVIEW_WORK_DIR:?call review_apply_fixes_load first}"
+  if [ -n "$base" ]; then
+    git -C "$REVIEW_WORK_DIR" rev-parse --verify "$base^{commit}" 2>/dev/null || {
+      echo "ERROR: invalid review base commit: $base" >&2
+      return 2
+    }
+    return 0
+  fi
+  base="$(git -C "$REVIEW_WORK_DIR" merge-base "$branch" HEAD 2>/dev/null)" \
+    || base="$(git -C "$REVIEW_WORK_DIR" merge-base "origin/$branch" HEAD 2>/dev/null)" \
+    || {
+      echo "ERROR: cannot resolve review base branch $branch" >&2
+      return 2
+    }
+  printf '%s\n' "$base"
+}
+
+# review_apply_fixes__reviewed_paths — NUL-delimited paths already present in
+# the immutable diff under review. Local edits must never widen the default list.
+review_apply_fixes__reviewed_paths() {
+  local base
+  : "${REVIEW_WORK_DIR:?call review_apply_fixes_load first}"
+  base="$(review_apply_fixes__base_ref)" || return $?
+  git -C "$REVIEW_WORK_DIR" diff --name-only -z "$base..HEAD" || return 2
+}
+
+# review_apply_fixes__changed_paths — NUL-delimited reviewed, staged, unstaged,
+# and untracked paths. Ignored runtime files are deliberately excluded.
+review_apply_fixes__changed_paths() {
+  : "${REVIEW_WORK_DIR:?call review_apply_fixes_load first}"
+  review_apply_fixes__reviewed_paths || return $?
+  git -C "$REVIEW_WORK_DIR" diff --name-only -z || return 2
+  git -C "$REVIEW_WORK_DIR" diff --cached --name-only -z || return 2
+  git -C "$REVIEW_WORK_DIR" ls-files --others --exclude-standard -z || return 2
+}
+
+# review_apply_fixes__append_test_tree <suite-dir> <allow-file> — add the
+# existing tests plus a directory prefix so new related tests are also allowed.
+review_apply_fixes__append_test_tree() {
+  local suite="$1" allow_file="$2" files_file path
+  [ -n "$suite" ] || return 0
+  printf '%s/\n' "$suite" >> "$allow_file" || return 2
+  files_file="$(mktemp)" || return 2
+  git -C "$REVIEW_WORK_DIR" ls-files --cached --others --exclude-standard -z -- "$suite" > "$files_file" || {
+    rm -f "$files_file"
+    return 2
+  }
+  while IFS= read -r -d '' path; do
+    review_apply_fixes__valid_path "$path" || {
+      echo "ERROR: unsupported test path in allowlist: $path" >&2
+      rm -f "$files_file"
+      return 2
+    }
+    printf '%s\n' "$path" >> "$allow_file" || {
+      rm -f "$files_file"
+      return 2
+    }
+  done < "$files_file"
+  rm -f "$files_file"
+}
+
+# review_apply_fixes__append_related_tests <changed-path> <allow-file> — match
+# formula files to their suite and shared helpers to test suites that reference
+# them. Existing test files are listed exactly; the suite prefix covers new tests.
+review_apply_fixes__append_related_tests() {
+  local path="$1" allow_file="$2" suite="" name hits_file test_path rest grep_status
+  case "$path" in
+    formulas/*.toml)
+      name="${path##*/}"
+      name="${name%.toml}"
+      suite="formulas/test/$name"
+      review_apply_fixes__append_test_tree "$suite" "$allow_file" || return $?
+      ;;
+    formulas/test/*)
+      rest="${path#formulas/test/}"
+      suite="formulas/test/${rest%%/*}"
+      review_apply_fixes__append_test_tree "$suite" "$allow_file" || return $?
+      ;;
+    formulas/lib/*)
+      name="${path##*/}"
+      hits_file="$(mktemp)" || return 2
+      if git -C "$REVIEW_WORK_DIR" grep -l -z -F -e "$name" -- formulas/test > "$hits_file" 2>/dev/null; then
+        while IFS= read -r -d '' test_path; do
+          rest="${test_path#formulas/test/}"
+          suite="formulas/test/${rest%%/*}"
+          review_apply_fixes__append_test_tree "$suite" "$allow_file" || {
+            rm -f "$hits_file"
+            return 2
+          }
+        done < "$hits_file"
+      else
+        grep_status=$?
+        if [ "$grep_status" -gt 1 ]; then
+          echo "ERROR: cannot find tests referencing $path" >&2
+          rm -f "$hits_file"
+          return 2
+        fi
+      fi
+      rm -f "$hits_file"
+      ;;
+  esac
+}
+
+# review_apply_fixes_allowed_paths [newline-list] — print the effective allowlist.
+# An explicit list is exact apart from entries ending in /, which authorize that
+# directory subtree. The default is the reviewed diff plus related test suites.
+review_apply_fixes_allowed_paths() {
+  local explicit="${1:-${REVIEW_ALLOWED_PATHS:-}}" allow_file changed_file path line
+  if [ -n "$explicit" ]; then
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      review_apply_fixes__valid_path "${line%/}" || {
+        echo "ERROR: invalid allowed_paths entry: $line" >&2
+        return 2
+      }
+      printf '%s\n' "$line"
+    done < <(printf '%s\n' "$explicit")
+    return 0
+  fi
+
+  allow_file="$(mktemp)" || return 2
+  changed_file="$(mktemp)" || { rm -f "$allow_file"; return 2; }
+  if ! review_apply_fixes__reviewed_paths > "$changed_file"; then
+    rm -f "$allow_file" "$changed_file"
+    return 2
+  fi
+  while IFS= read -r -d '' path; do
+    review_apply_fixes__valid_path "$path" || {
+      echo "ERROR: unsupported path in reviewed diff: $path" >&2
+      rm -f "$allow_file" "$changed_file"
+      return 2
+    }
+    printf '%s\n' "$path" >> "$allow_file" || {
+      rm -f "$allow_file" "$changed_file"
+      return 2
+    }
+    review_apply_fixes__append_related_tests "$path" "$allow_file" || {
+      rm -f "$allow_file" "$changed_file"
+      return 2
+    }
+  done < "$changed_file"
+  sort -u "$allow_file"
+  local sort_status=$?
+  rm -f "$allow_file" "$changed_file"
+  return "$sort_status"
+}
+
+# review_apply_fixes_check_allowed_paths [newline-list] — refuse the commit if
+# any tracked, staged, unstaged, or non-ignored untracked edit is outside scope.
+# Returns 3 for a scope violation, 2 for an inspection failure, 0 when clean.
+review_apply_fixes_check_allowed_paths() {
+  local explicit="${1:-${REVIEW_ALLOWED_PATHS:-}}" allow_file changed_file path line ok violation=0
+  allow_file="$(mktemp)" || return 2
+  changed_file="$(mktemp)" || { rm -f "$allow_file"; return 2; }
+  if ! review_apply_fixes_allowed_paths "$explicit" > "$allow_file"; then
+    rm -f "$allow_file" "$changed_file"
+    return 2
+  fi
+  if ! review_apply_fixes__changed_paths > "$changed_file"; then
+    rm -f "$allow_file" "$changed_file"
+    return 2
+  fi
+  while IFS= read -r -d '' path; do
+    review_apply_fixes__valid_path "$path" || {
+      echo "ERROR: unsupported changed path: $path" >&2
+      violation=1
+      continue
+    }
+    ok=0
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      case "$line" in
+        */) case "$path" in "$line"*) ok=1 ;; esac ;;
+        *) [ "$path" = "$line" ] && ok=1 ;;
+      esac
+    done < "$allow_file"
+    if [ "$ok" -ne 1 ]; then
+      echo "ERROR: out-of-scope edit refused: $path" >&2
+      violation=1
+    fi
+  done < "$changed_file"
+  rm -f "$allow_file" "$changed_file"
+  [ "$violation" -eq 0 ] || return 3
+  echo "[review-apply-fixes] allowed-path check passed"
+}
+
+# review_apply_fixes__record_test_failure <command> <status> <output> — create
+# a durable major/testing finding under the review findings container.
+review_apply_fixes__record_test_failure() {
+  local command_text="$1" status="$2" output="$3" description finding_id
+  description="$(printf 'Test command failed with exit status %s.\n\nCommand:\n%s\n\nOutput (last 100 lines):\n%s\n' \
+    "$status" "$command_text" "$output")"
+  finding_id="$(bd create --parent "$REVIEW_FINDINGS" \
+    --title "Apply-fixes test command failed (exit $status)" \
+    --description "$description" --type bug --priority 1 \
+    --labels "severity:major,category:testing" --silent)" || {
+      echo "ERROR: could not record failed test command as a finding" >&2
+      return 2
+    }
+  [ -n "$finding_id" ] || {
+    echo "ERROR: bd create returned no id for the failed-test finding" >&2
+    return 2
+  }
+  printf '%s\n' "$finding_id"
+}
+
+# review_apply_fixes_test_before_commit [command] — run the rig test command in
+# the review worktree. Empty skips. Return 10 only after a failing run was
+# recorded as a finding and review.verdict=iterate closed this apply-fixes bead.
+review_apply_fixes_test_before_commit() {
+  local command_text="${1:-${REVIEW_TEST_COMMAND:-}}" output_file status output finding_id
+  if [ -z "$command_text" ]; then
+    echo "[review-apply-fixes] no test_command configured; skipping test gate"
+    return 0
+  fi
+  [ -n "${REVIEW_WORK_DIR:-}" ] && [ -d "$REVIEW_WORK_DIR" ] || {
+    echo "ERROR: test gate has no valid REVIEW_WORK_DIR" >&2
+    return 2
+  }
+  output_file="$(mktemp)" || return 2
+  echo "[review-apply-fixes] running test_command in $REVIEW_WORK_DIR"
+  (cd "$REVIEW_WORK_DIR" && bash -c "$command_text") > "$output_file" 2>&1
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    rm -f "$output_file"
+    echo "[review-apply-fixes] test_command passed"
+    return 0
+  fi
+  output="$(tail -n 100 "$output_file")"
+  rm -f "$output_file"
+  finding_id="$(review_apply_fixes__record_test_failure "$command_text" "$status" "$output")" || return 2
+  review_apply_fixes_set_verdict iterate \
+    "test_command failed with exit $status; failure recorded as finding $finding_id; no commit made" || return 2
+  echo "ERROR: test_command failed (exit $status); finding=$finding_id; refusing to commit" >&2
+  return 10
+}
+
+# review_apply_fixes_push_branch — push the current review branch to origin and
+# report a clear error if no branch or a remote push failure prevents it.
+review_apply_fixes_push_branch() {
+  local branch
+  : "${REVIEW_WORK_DIR:?call review_apply_fixes_load first}"
+  branch="$(git -C "$REVIEW_WORK_DIR" symbolic-ref --quiet --short HEAD)" || {
+    echo "ERROR: cannot push a detached review worktree" >&2
+    return 2
+  }
+  if ! git -C "$REVIEW_WORK_DIR" push origin "HEAD:refs/heads/$branch"; then
+    echo "ERROR: failed to push review branch $branch to origin" >&2
+    return 1
+  fi
+  echo "[review-apply-fixes] pushed $branch to origin"
+}
+
+# review_apply_fixes_commit_and_push <message> — the only supported commit path:
+# scope check, test gate, commit, then push. A test failure returns 10 after it
+# has written iterate and closed the bead; no git add/commit/push has run.
+review_apply_fixes_commit_and_push() {
+  local message="${1:-}" status
+  [ -n "$message" ] || { echo "ERROR: commit message is required" >&2; return 2; }
+  review_apply_fixes_check_allowed_paths || return $?
+  review_apply_fixes_test_before_commit "${REVIEW_TEST_COMMAND:-}"
+  status=$?
+  [ "$status" -eq 0 ] || return "$status"
+  # Tests can generate or mutate files; re-check after they pass so such
+  # side-effects cannot enter the commit through git add -A.
+  review_apply_fixes_check_allowed_paths || return $?
+  (
+    cd "$REVIEW_WORK_DIR" || exit 2
+    git add -A || exit $?
+    git diff --cached --quiet
+    status=$?
+    if [ "$status" -eq 0 ]; then
+      echo "[review-apply-fixes] no new changes to commit; retrying branch push"
+      exit 0
+    elif [ "$status" -ne 1 ]; then
+      exit "$status"
+    fi
+    git commit -m "$message"
+  ) || {
+    status=$?
+    echo "ERROR: apply-fixes commit failed (status $status)" >&2
+    return "$status"
+  }
+  review_apply_fixes_push_branch || return $?
 }
 
 # review_apply_fixes_map_verdict <synthesis_verdict> <applied yes|no> — map the

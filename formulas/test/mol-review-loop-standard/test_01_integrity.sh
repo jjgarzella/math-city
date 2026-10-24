@@ -41,7 +41,7 @@ assert_contains "$PIPE_DESC" "synthesis"      "review-pipeline notes the expande
 
 # --- vars: fragment contract (target<-review_target rename) + loop knobs ------
 host_vars="$(formula_py defined-vars | tr '\n' ' ')"
-expected_host="$( { fragment_vars | sed 's/^review_target$/target/'; echo notify_target; echo work_dir; echo branch; echo base_sha; } | sort | tr '\n' ' ')"
+expected_host="$( { fragment_vars | sed 's/^review_target$/target/'; echo notify_target; echo work_dir; echo branch; echo base_sha; echo test_command; echo allowed_paths; } | sort | tr '\n' ' ')"
 assert_eq "$expected_host" "$host_vars" \
   "loop declares the fragment contract plus explicit work_dir/branch/base_sha context and notify_target"
 
@@ -52,6 +52,8 @@ assert_eq ""      "$(formula_py var-default notify_target)"     "notify_target d
 assert_eq ""      "$(formula_py var-default work_dir)"         "work_dir default = empty (use root metadata for an explicit direct sling)"
 assert_eq ""      "$(formula_py var-default branch)"          "branch default = empty (use root metadata when available)"
 assert_eq ""      "$(formula_py var-default base_sha)"        "base_sha default = empty (use root metadata when available)"
+assert_eq ""      "$(formula_py var-default test_command)"  "test_command default = empty (rig formula_vars supplies it when configured)"
+assert_eq ""      "$(formula_py var-default allowed_paths)" "allowed_paths default = empty (derive reviewed diff + tests)"
 
 # every {{template ref}} points at a defined var
 undefined=""
@@ -128,6 +130,12 @@ assert_contains "$FIX_DESC" "review.verdict"  "apply-fixes documents the loop's 
 assert_contains "$FIX_DESC" "blocked"         "apply-fixes documents the blocked verdict path"
 assert_contains "$FIX_DESC" "TERMINATE-TO-HUMAN" "apply-fixes documents blocked -> terminate-to-human"
 assert_contains "$FIX_DESC" "ZFC"             "apply-fixes attributes the fix-vs-surface decision to the agent (ZFC)"
+assert_contains "$FIX_DESC" "TEST_COMMAND"    "apply-fixes passes the rig test command to the guarded commit path"
+assert_contains "$FIX_DESC" "ALLOWED_PATHS"   "apply-fixes passes the allowed-path list to the scope guard"
+assert_contains "$FIX_DESC" "review_apply_fixes_commit_and_push" "apply-fixes uses one guarded test/scope/commit/push helper"
+assert_contains "$FIX_DESC" "review.verdict=iterate" "test failure records iterate before stopping"
+assert_contains "$FIX_DESC" "test_command"   "test gate uses the configured rig test command"
+assert_contains "$FIX_DESC" "out-of-scope"    "apply-fixes refuses out-of-scope edits before commit"
 
 # --- no-drift: workspace-setup installs exactly the SHARED check the base loop uses
 SETUP_BLOCK="$(formula_py block workspace-setup '.gc-review-verdict.sh')"

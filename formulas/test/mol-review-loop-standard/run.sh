@@ -11,8 +11,9 @@
 # from the TOML directly (no gc needed); test_02 runs the real apply-fixes lib
 # against canned bead JSON (stub bd/gc, no Dolt) to pin the verdict->severity->fix
 # mapping + the blocked terminate-to-human escalation; test_03 compiles the loop
-# through the live gc binary and asserts the eight reviewer passes materialize
-# inside the ralph iteration body ahead of apply-fixes. What the model actually
+# through the live gc binary and asserts the reviewer passes materialize inside
+# the ralph iteration body; test_04 covers commit, push, and allowed-path gates.
+# What the model actually
 # finds + fixes on a real diff is the dogfood's job; this suite locks the wiring.
 set -uo pipefail
 

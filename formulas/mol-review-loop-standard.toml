@@ -121,6 +121,14 @@ default = ""
 description = "Immutable review base commit captured by the implementation trigger. When provided, target should be base_sha..HEAD."
 default = ""
 
+[vars.test_command]
+description = "Rig test command. The rig's formula_vars value is used by default; an explicit review-loop var overrides it. Empty skips the commit gate."
+default = ""
+
+[vars.allowed_paths]
+description = "Optional newline-separated repo-relative allowed paths (directory prefixes end in /). Empty allows the reviewed diff and its related tests."
+default = ""
+
 [vars.severity_threshold]
 description = """
 The fix policy threshold (ordering blocker > major > minor > nit). Default minor:
@@ -307,11 +315,12 @@ and write the review.verdict the loop's check reads.
 
 The verdict->severity->fix TRANSPORT is the shared, reviewer-agnostic
 formulas/lib/review-apply-fixes.sh (the codex-independent half of gcs-f4j.5,
-reused unchanged by the quorum variant). It is PURE transport: it reads the
-synthesis output, enumerates the durable findings, maps a fixed verdict
-vocabulary, and writes the result. WHICH findings you fix vs surface, whether a
-blocker is fixable, and whether you actually changed the branch are YOUR judgment
-(ZFC) — the lib never decides that.
+reused unchanged by the quorum variant). It reads the synthesis output,
+enumerates durable findings, maps the verdict vocabulary, and safely gates the
+fix commit: only the reviewed paths and their tests may change, the configured
+test command must pass before commit, and a successful commit is pushed. WHICH
+findings you fix vs surface, whether a blocker is fixable, and whether you
+actually changed the branch are YOUR judgment (ZFC).
 
 ## 1. Load the run, branch on the verdict, enumerate findings (run verbatim)
 
@@ -322,6 +331,15 @@ is in scope where you branch on it:
 set -uo pipefail
 . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/review-apply-fixes.sh"
 export FIX_THRESHOLD="{{severity_threshold}}"   # fix policy: fix at/above, surface below
+TEST_COMMAND=$(cat <<'GC_TEST_COMMAND_VALUE'
+{{test_command}}
+GC_TEST_COMMAND_VALUE
+)
+ALLOWED_PATHS=$(cat <<'GC_ALLOWED_PATHS_VALUE'
+{{allowed_paths}}
+GC_ALLOWED_PATHS_VALUE
+)
+export TEST_COMMAND ALLOWED_PATHS
 review_apply_fixes_load apply-fixes || exit $?  # sets REVIEW_ROOT/SYNTHESIS_VERDICT/FINDINGS/WORK_DIR/FIX_THRESHOLD + heartbeats
 
 # cwd does NOT persist between steps — resume the branch under review.
@@ -369,9 +387,43 @@ review_apply_fixes_escalate "unfixable blocker: <finding id + why>" || exit $?
 exit 0
 ```
 
-Otherwise apply the fixes and commit with a descriptive body. This fix-mode
+Otherwise apply the fixes and commit with a descriptive body. If you changed no
+files (for example, every finding was below the fix threshold), skip the commit
+helper and set APPLIED=no in section 3. This fix-mode
 behavior — resume branch + apply findings + commit — is the mol-polecat-base
-implement lifecycle running in fix mode; this loop does not re-specify it.
+implement lifecycle running in fix mode. Before committing, run the guarded
+commit helper below; do not run `git commit` or `git push` directly:
+
+```bash
+set -uo pipefail
+. "${GC_CITY:?}/formulas/lib/review-apply-fixes.sh"
+TEST_COMMAND=$(cat <<'GC_TEST_COMMAND_VALUE'
+{{test_command}}
+GC_TEST_COMMAND_VALUE
+)
+ALLOWED_PATHS=$(cat <<'GC_ALLOWED_PATHS_VALUE'
+{{allowed_paths}}
+GC_ALLOWED_PATHS_VALUE
+)
+export TEST_COMMAND ALLOWED_PATHS
+review_apply_fixes_load apply-fixes || exit $?
+review_apply_fixes_commit_and_push "fix: apply review findings on $REVIEW_ROOT"
+commit_status=$?
+if [ "$commit_status" -eq 10 ]; then
+  echo "test failure recorded as a finding; verdict is iterate; no commit was made"
+  exit 0
+fi
+[ "$commit_status" -eq 0 ] || exit "$commit_status"
+```
+
+`allowed_paths` is an optional newline-separated list of repo-relative file
+paths; directory prefixes end in `/`. When empty, the helper derives the list
+from the reviewed diff and adds the matching test directories. out-of-scope
+changes stop before tests or commit. `test_command` defaults to the rig's
+`formula_vars.test_command`; when empty, the commit test gate is skipped. A test
+failure is recorded as a durable testing finding, writes `review.verdict=iterate`,
+closes this bead, and returns status 10 so no commit or push happens. A push
+failure returns non-zero after the local commit and is reported as an error.
 
 ## 3. Map the verdict + write it (run verbatim)
 
@@ -381,6 +433,15 @@ verdict onto the loop's done/iterate review.verdict and closes this bead:
 ```bash
 set -uo pipefail
 . "${GC_CITY:?}/formulas/lib/review-apply-fixes.sh"
+TEST_COMMAND=$(cat <<'GC_TEST_COMMAND_VALUE'
+{{test_command}}
+GC_TEST_COMMAND_VALUE
+)
+ALLOWED_PATHS=$(cat <<'GC_ALLOWED_PATHS_VALUE'
+{{allowed_paths}}
+GC_ALLOWED_PATHS_VALUE
+)
+export TEST_COMMAND ALLOWED_PATHS
 review_apply_fixes_load apply-fixes || exit $?
 
 APPLIED=yes   # set to "no" ONLY if you changed nothing (e.g. all findings were sub-threshold nits you surfaced)

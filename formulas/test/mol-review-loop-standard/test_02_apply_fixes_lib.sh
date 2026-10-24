@@ -42,7 +42,7 @@ LIBTXT="$(cat "$APPLY_FIXES_SH")"
 assert_contains "$LIBTXT" "gc.review.synthesis_verdict"   "contract: reads the synthesis verdict off the root"
 assert_contains "$LIBTXT" "pass_with_findings"            "contract: the pass/pass_with_findings/fail/blocked input vocabulary"
 assert_contains "$LIBTXT" "severity:<blocker|major|minor|nit>" "contract: durable severity-tagged findings"
-assert_contains "$LIBTXT" "ZERO judgment"                 "contract: pure transport, zero judgment (ZFC)"
+assert_contains "$LIBTXT" "ZERO judgment"                 "contract: fix decisions remain agent judgment (ZFC)"
 assert_contains "$LIBTXT" "terminate-to-human"            "contract: blocked -> terminate-to-human"
 
 # --- D. review_apply_fixes_load resolves the run -----------------------------

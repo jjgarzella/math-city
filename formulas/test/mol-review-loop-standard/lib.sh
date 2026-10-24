@@ -84,9 +84,9 @@ gc_show_json() { gc formula show "$(formula_py formula-name)" "$@" --json 2>/dev
 # review-apply-fixes.sh, and write the durable findings (AFX_FINDINGS_JSON, a JSON
 # array) to a file the stub bd returns for dependency enumeration.
 # Caller may pre-set AFX_ROOT / AFX_VERDICT / AFX_PROMOTED / AFX_BURNED /
-# AFX_WORKDIR / AFX_FINDINGS_JSON / FIX_THRESHOLD before the first call. Sets
-# AFX_CITY, AFX_FINDINGS, AFX_FINDINGS_FILE, AFX_META_LOG, AFX_UPDATE_LOG,
-# AFX_NUDGE_LOG.
+# AFX_WORKDIR / AFX_BASE_SHA / AFX_TEST_COMMAND / AFX_ALLOWED_PATHS /
+# AFX_FINDINGS_JSON / FIX_THRESHOLD before the first call. Sets AFX_CITY,
+# AFX_FINDINGS, AFX_FINDINGS_FILE, AFX_META_LOG, AFX_UPDATE_LOG, AFX_NUDGE_LOG.
 afx_sandbox() {
   AFX_ROOT="${AFX_ROOT:-root-afx-$$}"
   AFX_FINDINGS="$AFX_ROOT.findings"
@@ -121,13 +121,35 @@ afx_env() {
   BD_SYNTH_PROMOTED="${AFX_PROMOTED:-}" \
   BD_SYNTH_BURNED="${AFX_BURNED:-}" \
   BD_WORKDIR="${AFX_WORKDIR:-}" \
+  BD_BASE_SHA="${AFX_BASE_SHA:-}" \
+  BD_BASE_BRANCH="${AFX_BASE_BRANCH:-main}" \
+  BD_TEST_COMMAND="${AFX_ROOT_TEST_COMMAND:-}" \
+  BD_ALLOWED_PATHS="${AFX_ROOT_ALLOWED_PATHS:-}" \
   BD_FINDINGS="$AFX_FINDINGS" \
   BD_FINDINGS_FILE="$AFX_FINDINGS_FILE" \
   BD_META_LOG="$AFX_META_LOG" \
   BD_UPDATE_LOG="$AFX_UPDATE_LOG" \
+  BD_CREATE_LOG="${AFX_CREATE_LOG:-}" \
   GC_NUDGE_LOG="$AFX_NUDGE_LOG" \
+  TEST_COMMAND="${AFX_TEST_COMMAND:-}" \
+  ALLOWED_PATHS="${AFX_ALLOWED_PATHS:-}" \
+  BASE_SHA="${AFX_BASE_SHA:-}" \
+  BASE_BRANCH="${AFX_BASE_BRANCH:-main}" \
   PATH="$SUITE_DIR/bin:$PATH" \
   "$@"
+}
+
+# afx_git_repo — isolated repository for commit/scope/push gate tests.
+afx_git_repo() {
+  local dir
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/mrls-git.XXXXXX")" || return 2
+  git -C "$dir" init -q || return 2
+  git -C "$dir" config user.name "Review Apply Fixes Test" || return 2
+  git -C "$dir" config user.email "review-apply-fixes@example.invalid" || return 2
+  printf 'base\n' > "$dir/app.txt"
+  git -C "$dir" add app.txt || return 2
+  git -C "$dir" commit -q -m "test base" || return 2
+  printf '%s\n' "$dir"
 }
 
 # afx_run <snippet> — source the real lib in the sandbox env and run <snippet>.

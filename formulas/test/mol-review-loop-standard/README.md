@@ -53,6 +53,10 @@ shared verdict-glue check (`review-verdict.sh`) unchanged.
   absent. NOTE: workflow `{{vars}}` (e.g. `{{severity_threshold}}` →
   `FIX_THRESHOLD` in apply-fixes) render at *sling* time, not at `formula show`,
   so they are intentionally not asserted-substituted here.
+- **test_04_workspace_context** — executes the shared setup block with stubbed
+  bead commands: explicit work_dir/branch/base_sha vars take precedence, root
+  metadata remains a supported fallback, and missing work_dir stops without
+  installing into the worker PWD.
 
 ## What is NOT covered here
 

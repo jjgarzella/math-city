@@ -24,7 +24,7 @@ done < <(formula_py template-refs)
 assert_eq "" "$undefined" "no template ref points at an undefined var"
 
 assert_eq "main"           "$(formula_py var-default base_branch)"    "base_branch default = main"
-assert_eq "mol-review-loop" "$(formula_py var-default review_formula)" "review_formula default = mol-review-loop"
+assert_eq "mol-review-loop-standard" "$(formula_py var-default review_formula)" "review_formula default = mol-review-loop-standard"
 for v in setup_command typecheck_command lint_command build_command test_command; do
   assert_eq "" "$(formula_py var-default "$v")" "$v default = empty (rig formula_vars or skip)"
 done
@@ -74,6 +74,12 @@ assert_contains "$TR" 'git push'                       "trigger-review pushes th
 assert_contains "$TR" 'gc sling'                       "trigger-review slings the review loop"
 assert_contains "$TR" '--on "{{review_formula}}"'      "trigger-review triggers the configurable review_formula (reviewer-agnostic)"
 assert_contains "$TR" '--var "base_branch={{base_branch}}"' "trigger-review passes base_branch through to the review loop"
+assert_contains "$TR" 'BASE_SHA=$(git merge-base "$BASE_REF" HEAD)' "trigger-review resolves the immutable base SHA once"
+assert_contains "$TR" 'REVIEW_TARGET="$BASE_SHA..HEAD"' "trigger-review builds the review range from the captured SHA"
+assert_contains "$TR" '--var "work_dir=$WORK_DIR"' "trigger-review passes work_dir explicitly"
+assert_contains "$TR" '--var "branch=$BRANCH"' "trigger-review passes branch explicitly"
+assert_contains "$TR" '--var "base_sha=$BASE_SHA"' "trigger-review passes immutable base_sha explicitly"
+assert_contains "$TR" '--var "target=$REVIEW_TARGET"' "trigger-review passes the fixed base_sha..HEAD target"
 assert_contains "$TR" 'gasvillage.polecat'             "trigger-review routes the review loop to the polecat pool"
 assert_contains "$TR" 'gc runtime drain-ack'           "trigger-review drains (fire-and-forget; releases the max=1 slot)"
 assert_contains "$TR" 'do NOT close ROOT'              "trigger-review documents leaving the work bead open for the human gate"

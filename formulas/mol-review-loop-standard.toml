@@ -564,14 +564,14 @@ review_apply_fixes_commit_and_push "fix: apply review findings on $REVIEW_ROOT" 
 commit_status=$?
 if [ "$commit_status" -eq 10 ]; then
   cat "$commit_error_file" >&2
-  rm -f "$commit_error_file"
+  printf 'Commit diagnostic retained at %s\n' "$commit_error_file" >&2
   echo "test failure recorded; action=${REVIEW_ACTION:-iterate}; no commit was made"
   exit 0
 fi
 if [ "$commit_status" -ne 0 ]; then
   commit_error=$(tail -n 20 "$commit_error_file" | tr '\n' ' ' | cut -c 1-2000)
   cat "$commit_error_file" >&2
-  rm -f "$commit_error_file"
+  printf 'Commit diagnostic retained at %s\n' "$commit_error_file" >&2
   [ -n "$commit_error" ] || commit_error="no diagnostic captured"
   if [ "$commit_status" -eq 3 ]; then
     review_apply_fixes_replan "scope refusal: $commit_error; preserve edits and reconcile the authorized assignment" || exit $?
@@ -581,7 +581,7 @@ if [ "$commit_status" -ne 0 ]; then
   exit 0
 fi
 cat "$commit_error_file" >&2
-rm -f "$commit_error_file"
+printf 'Commit diagnostic retained at %s\n' "$commit_error_file" >&2
 
 ```
 

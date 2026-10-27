@@ -530,6 +530,15 @@ git push -u -- "$PUSH_REMOTE" "HEAD:$BRANCH" \
 
 # 4. Trigger the review→fix loop with that exact context. Routed to the polecat
 #    pool; --nudge wakes it once this session drains the slot.
+# Preserve the configured command literally, including trailing newlines. The
+# sentinel prevents command substitution from stripping them; remove only the
+# newline introduced by the heredoc and the sentinel itself. Never eval here.
+TEST_COMMAND=$(cat <<'GC_TEST_COMMAND_VALUE'
+{{test_command}}
+GC_TEST_COMMAND_VALUE
+printf 'GC_TEST_COMMAND_END'
+)
+TEST_COMMAND=${TEST_COMMAND%$'\nGC_TEST_COMMAND_END'}
 REVIEW_WORKER_TARGET="{{review_worker_target}}"
 case "$REVIEW_WORKER_TARGET" in
   */*) REVIEW_ROUTE="$REVIEW_WORKER_TARGET" ;;
@@ -543,6 +552,7 @@ gc sling "$REVIEW_ROUTE" "$ROOT" \
   --var "work_dir=$WORK_DIR" --var "branch=$BRANCH" \
   --var "base_sha=$BASE_SHA" --var "target=$REVIEW_TARGET" \
   --var "push_remote=$PUSH_REMOTE" \
+  --var "test_command=$TEST_COMMAND" \
   --var "review_worker_target=$REVIEW_ROUTE" --nudge
 
 # 5. Close THIS step (the implement lifecycle is done; the work bead stays OPEN

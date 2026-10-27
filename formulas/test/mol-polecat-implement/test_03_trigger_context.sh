@@ -40,6 +40,11 @@ BD
 cat > "$TRIGGER_TEST_ROOT/bin/gc" <<'GC'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GC_LOG"
+python3 - "$GC_ARGV_LOG" "$@" <<'PY'
+import json, sys
+with open(sys.argv[1], "a") as out:
+    out.write(json.dumps(sys.argv[2:]) + "\n")
+PY
 GC
 cat > "$TRIGGER_TEST_ROOT/bin/git" <<'GIT'
 #!/usr/bin/env bash
@@ -57,17 +62,23 @@ esac
 GIT
 chmod +x "$TRIGGER_TEST_ROOT/bin/bd" "$TRIGGER_TEST_ROOT/bin/gc" "$TRIGGER_TEST_ROOT/bin/git"
 
-TRIGGER_BLOCK="$(formula_py block trigger-review 'gc sling')"
-TRIGGER_BLOCK="$(printf '%s' "$TRIGGER_BLOCK" | \
+TRIGGER_TEST_COMMAND="julia --project=. -e 'using Pkg; Pkg.test(test_args=[\"--workflow=presubmit\"])'"
+export TRIGGER_TEST_COMMAND
+TRIGGER_BLOCK_TEMPLATE="$(formula_py block trigger-review 'gc sling')"
+render_trigger_block() {
+printf '%s' "$TRIGGER_BLOCK_TEMPLATE" | \
   TRIGGER_FORMULA_VALUE=mol-review-loop-standard \
   TRIGGER_WORKER_VALUE=gasvillage.polecat \
   TRIGGER_BASE_BRANCH_VALUE=review-loop-repair \
   TRIGGER_PUSH_REMOTE_VALUE=review-fork \
   python3 -c 'import os,sys; s=sys.stdin.read();
-for key, env in (("review_formula","TRIGGER_FORMULA_VALUE"),("review_worker_target","TRIGGER_WORKER_VALUE"),("base_branch","TRIGGER_BASE_BRANCH_VALUE"),("push_remote","TRIGGER_PUSH_REMOTE_VALUE")):
+for key, env in (("review_formula","TRIGGER_FORMULA_VALUE"),("review_worker_target","TRIGGER_WORKER_VALUE"),("base_branch","TRIGGER_BASE_BRANCH_VALUE"),("push_remote","TRIGGER_PUSH_REMOTE_VALUE"),("test_command","TRIGGER_TEST_COMMAND")):
     s=s.replace("{{"+key+"}}", os.environ[env])
-sys.stdout.write(s)')"
+sys.stdout.write(s)'
+}
 TRIGGER_OUT="$TRIGGER_TEST_ROOT/output"
+run_trigger_block() {
+TRIGGER_BLOCK="$(render_trigger_block)"
 if (
   cd "$TRIGGER_TEST_ROOT/worktree" && \
   env PATH="$TRIGGER_TEST_ROOT/bin:$PATH" \
@@ -76,6 +87,7 @@ if (
     BD_BRANCH="$TRIGGER_BRANCH" BD_BASE_REF=origin/review-loop-repair \
     BD_LOG="$TRIGGER_TEST_ROOT/logs/bd.log" \
     GC_LOG="$TRIGGER_TEST_ROOT/logs/gc.log" \
+    GC_ARGV_LOG="$TRIGGER_TEST_ROOT/logs/gc-argv.jsonl" \
     GIT_LOG="$TRIGGER_TEST_ROOT/logs/git.log" \
     TRIGGER_BASE_SHA="$TRIGGER_BASE_SHA" bash -c "$TRIGGER_BLOCK"
 ) > "$TRIGGER_OUT" 2>&1; then
@@ -83,6 +95,8 @@ if (
 else
   TRIGGER_RC=$?
 fi
+}
+run_trigger_block
 TRIGGER_GC_LOG="$(cat "$TRIGGER_TEST_ROOT/logs/gc.log")"
 TRIGGER_GIT_LOG="$(cat "$TRIGGER_TEST_ROOT/logs/git.log")"
 TRIGGER_BD_LOG="$(cat "$TRIGGER_TEST_ROOT/logs/bd.log")"
@@ -99,5 +113,48 @@ assert_contains "$TRIGGER_GC_LOG" "--var branch=$TRIGGER_BRANCH" "trigger passes
 assert_contains "$TRIGGER_GC_LOG" "--var base_sha=$TRIGGER_BASE_SHA" "trigger passes the immutable base SHA to the review loop"
 assert_contains "$TRIGGER_GC_LOG" "--var target=$TRIGGER_BASE_SHA..HEAD" "trigger passes the exact immutable range target"
 assert_contains "$TRIGGER_BD_LOG" "set-metadata base_sha=$TRIGGER_BASE_SHA" "trigger records the immutable SHA on the work bead"
+
+# Verify actual argv boundaries and bytes, rather than the ambiguous $* log.
+# Commands are data during handoff: neither substitution nor execution is safe.
+check_test_command_argv() {
+  if python3 - "$TRIGGER_TEST_ROOT/logs/gc-argv.jsonl" <<'PY'
+import json, os, sys
+calls = [json.loads(line) for line in open(sys.argv[1])]
+slings = [argv for argv in calls if argv[0] == "sling"]
+assert len(slings) == 1, slings
+argv = slings[0]
+values = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "--var"]
+assert [v for v in values if v.startswith("test_command=")] == [
+    "test_command=" + os.environ["TRIGGER_TEST_COMMAND"]
+], values
+PY
+  then ok "$1"; else fail "$1"; fi
+}
+check_test_command_argv "trigger forwards the configured short test gate as one argument"
+
+TRIGGER_TEST_COMMAND=$(cat <<'COMMAND'
+printf '%s\n' "quoted \"text\" and $HOME" 'single quotes'
+$(touch "$TRIGGER_SIDE_EFFECT")
+`touch "$TRIGGER_SIDE_EFFECT"`
+COMMAND
+)
+TRIGGER_TEST_COMMAND="$TRIGGER_TEST_COMMAND"$'\n\n'
+TRIGGER_SIDE_EFFECT="$TRIGGER_TEST_ROOT/command-was-executed"
+export TRIGGER_SIDE_EFFECT
+: > "$TRIGGER_TEST_ROOT/logs/gc-argv.jsonl"
+run_trigger_block
+assert_eq "0" "$TRIGGER_RC" "trigger accepts a multiline test command"
+check_test_command_argv "multiline quotes, dollars, backticks and trailing newlines survive unchanged"
+if [ ! -e "$TRIGGER_SIDE_EFFECT" ]; then
+  ok "trigger does not execute the forwarded test command"
+else
+  fail "trigger does not execute the forwarded test command"
+fi
+
+TRIGGER_TEST_COMMAND=""
+: > "$TRIGGER_TEST_ROOT/logs/gc-argv.jsonl"
+run_trigger_block
+assert_eq "0" "$TRIGGER_RC" "trigger accepts an explicitly empty test command"
+check_test_command_argv "empty test command is forwarded explicitly"
 
 rm -rf "$TRIGGER_TEST_ROOT"

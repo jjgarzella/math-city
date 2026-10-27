@@ -175,7 +175,7 @@ review_apply_fixes_commit_and_push() {
 }
 OVERRIDE
 
-for commit_status in 1 2 3 10; do
+for commit_status in 0 1 2 3 10; do
   AFX_ROOT="root-commit-error-$commit_status"; AFX_VERDICT="pass_with_findings"
   AFX_WORKDIR=""; AFX_BASE_SHA=""; AFX_TEST_COMMAND=""; AFX_ALLOWED_PATHS=""; AFX_ROOT_TEST_COMMAND=""
   AFX_FINDINGS_JSON='[]'; AFX_META_LOG="$(mktemp)"; AFX_UPDATE_LOG="$(mktemp)"; AFX_NUDGE_LOG="$(mktemp)"
@@ -197,7 +197,15 @@ for commit_status in 1 2 3 10; do
   commit_out="$(cat "$commit_out_file")"; commit_err="$(cat "$commit_err_file")"
   rm -f "$commit_out_file" "$commit_err_file"
   assert_eq "0" "$block_status" "apply-fixes handles commit status $commit_status without escaping nonzero"
-  if [ "$commit_status" -eq 10 ]; then
+  diagnostic_path=$(printf '%s\n' "$commit_err" | sed -n 's/^Commit diagnostic retained at //p' | head -n 1)
+  if [ -n "$diagnostic_path" ] && [ -f "$diagnostic_path" ]; then
+    assert_eq "$MOCK_COMMIT_DIAGNOSTIC" "$(cat "$diagnostic_path")" "status $commit_status retains the complete diagnostic file"
+  else
+    fail "status $commit_status retains the complete diagnostic file"
+  fi
+  if [ "$commit_status" -eq 0 ]; then
+    assert_not_contains "$(cat "$AFX_META_LOG")" "gc.review.loop_outcome" "successful commit does not request recovery"
+  elif [ "$commit_status" -eq 10 ]; then
     assert_contains "$commit_out" "test failure recorded; action=iterate; no commit was made" "status 10 preserves the recorded test failure"
     assert_not_contains "$(cat "$AFX_META_LOG")" "gc.review.loop_outcome" "status 10 does not escalate to human"
   else

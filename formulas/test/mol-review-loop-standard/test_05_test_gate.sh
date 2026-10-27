@@ -164,8 +164,7 @@ assert_not_contains "$(cat "$AFX_META_LOG")" 'test-phase-bead	review.verdict=' "
 assert_not_contains "$(cat "$AFX_UPDATE_LOG")" 'id=test-phase-bead	status=closed' "test step leaves its close to the formula block"
 assert_contains "$(cat "$AFX_CREATE_LOG")" "parent=$AFX_ROOT.findings" "test step records the failure under durable findings"
 
-# A commit-time failure on the third regular attempt terminates to the human
-# gate instead of spending the one final-verification attempt.
+# A third-attempt failure stays agent-owned without spending verification.
 AFX_ROOT="root-test-gate-at-cap"; AFX_VERDICT="pass_with_findings"; AFX_ITERATION=3
 AFX_STEP_ID=apply-fixes; AFX_BEAD_ID="apply-fixes-bead"
 AFX_WORKDIR="$(afx_git_repo)"; AFX_BASE_SHA="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
@@ -176,9 +175,11 @@ printf 'head\n' > "$AFX_WORKDIR/app.txt"
 afx_sandbox
 afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_test_before_commit "$REVIEW_TEST_COMMAND"'
 assert_eq "10" "$AFX_RC" "third-attempt test failure returns its recorded-failure signal"
-assert_contains "$(cat "$AFX_META_LOG")" "$AFX_ROOT	gc.review.loop_outcome=blocked-needs-human" "third-attempt test failure escalates"
-assert_contains "$(cat "$AFX_META_LOG")" "$AFX_BEAD_ID	review.verdict=blocked" "third-attempt test failure stops the loop"
-assert_contains "$(cat "$AFX_UPDATE_LOG")" "id=$AFX_BEAD_ID	status=closed" "escalation closes the apply-fixes bead"
+assert_contains "$(cat "$AFX_META_LOG")" "$AFX_ROOT	gc.review.loop_outcome=replan" "third-attempt test failure requests agent replanning"
+assert_contains "$(cat "$AFX_META_LOG")" "$AFX_BEAD_ID	review.verdict=replan" "third-attempt test failure retains the unresolved action"
+assert_not_contains "$(cat "$AFX_UPDATE_LOG")" "status=closed" "replanning leaves the phase open"
+assert_eq "fail" "$(read_root_meta "$AFX_ROOT" gc.review.test_result)" "replanning preserves the failed test result"
+assert_contains "$(cat "$AFX_CREATE_LOG")" "parent=$AFX_ROOT.findings" "replanning preserves the durable test finding"
 
 # The fallback parser canonicalizes volatile addresses/timings before comparing
 # lines, so the same failure remains one identifier across runs.

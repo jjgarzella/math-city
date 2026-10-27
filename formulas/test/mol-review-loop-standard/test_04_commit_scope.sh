@@ -158,8 +158,8 @@ afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply
 assert_eq "3" "$AFX_RC" "unreviewed Python source remains outside scope"
 assert_contains "$AFX_ERR" "out-of-scope edit refused: other.py" "Python source refusal names the path"
 
-# --- M. the apply-fixes body escalates helper statuses 2/3 and keeps 10 --------
-section "06 apply-fixes commit error escalation"
+# --- M. actual caller routes commit errors without completing the phase ------
+section "06 apply-fixes commit error recovery"
 COMMIT_BLOCK="$(formula_py block apply-fixes review_apply_fixes_commit_and_push)"
 COMMIT_BLOCK_FILE="$(mktemp)"
 printf '%s\n' "$COMMIT_BLOCK" | python3 -c 'import sys; sys.stdout.write(sys.stdin.read().replace("{{test_command}}", "").replace("{{allowed_paths}}", "").replace("{{push_remote}}", "origin"))' > "$COMMIT_BLOCK_FILE"
@@ -175,7 +175,7 @@ review_apply_fixes_commit_and_push() {
 }
 OVERRIDE
 
-for commit_status in 2 3 10; do
+for commit_status in 1 2 3 10; do
   AFX_ROOT="root-commit-error-$commit_status"; AFX_VERDICT="pass_with_findings"
   AFX_WORKDIR=""; AFX_BASE_SHA=""; AFX_TEST_COMMAND=""; AFX_ALLOWED_PATHS=""; AFX_ROOT_TEST_COMMAND=""
   AFX_FINDINGS_JSON='[]'; AFX_META_LOG="$(mktemp)"; AFX_UPDATE_LOG="$(mktemp)"; AFX_NUDGE_LOG="$(mktemp)"
@@ -184,6 +184,8 @@ for commit_status in 2 3 10; do
     MOCK_COMMIT_DIAGNOSTIC="ERROR: out-of-scope edit refused: src/Bar.jl"
   elif [ "$commit_status" -eq 2 ]; then
     MOCK_COMMIT_DIAGNOSTIC="ERROR: cannot inspect changed paths: git diff failed"
+  elif [ "$commit_status" -eq 1 ]; then
+    MOCK_COMMIT_DIAGNOSTIC="ERROR: push failed after local commit"
   else
     MOCK_COMMIT_DIAGNOSTIC="ERROR: test command failed; finding recorded"
   fi
@@ -196,16 +198,20 @@ for commit_status in 2 3 10; do
   rm -f "$commit_out_file" "$commit_err_file"
   assert_eq "0" "$block_status" "apply-fixes handles commit status $commit_status without escaping nonzero"
   if [ "$commit_status" -eq 10 ]; then
-    assert_contains "$commit_out" "test failure recorded as a finding" "status 10 keeps the test-failure terminal message"
+    assert_contains "$commit_out" "test failure recorded; action=iterate; no commit was made" "status 10 preserves the recorded test failure"
     assert_not_contains "$(cat "$AFX_META_LOG")" "gc.review.loop_outcome" "status 10 does not escalate to human"
   else
     meta="$(cat "$AFX_META_LOG")"; updates="$(cat "$AFX_UPDATE_LOG")"
-    assert_contains "$meta" "$AFX_ROOT	gc.review.loop_outcome=blocked-needs-human" "status $commit_status records blocked-needs-human on the root"
-    assert_contains "$meta" "gc.review.loop_blocked_reason=" "status $commit_status records a blocked reason"
+    expected_action=recover
+    [ "$commit_status" -eq 3 ] && expected_action=replan
+    assert_contains "$meta" "$AFX_ROOT	gc.review.loop_outcome=$expected_action" "status $commit_status requests agent $expected_action"
+    assert_contains "$meta" "gc.review.loop_reason=" "status $commit_status records a concrete reason"
     assert_contains "$meta" "$MOCK_COMMIT_DIAGNOSTIC" "status $commit_status preserves the scope or inspection diagnostic"
-    assert_contains "$meta" "apply-fixes-bead	review.verdict=blocked" "status $commit_status stops the review loop"
-    assert_contains "$updates" "status=closed" "status $commit_status closes the apply-fixes bead"
-    assert_contains "$commit_err" "TERMINATE-TO-HUMAN" "status $commit_status emits a human escalation"
+    assert_contains "$meta" "apply-fixes-bead	review.verdict=$expected_action" "status $commit_status retains the unresolved action"
+    assert_not_contains "$updates" "status=closed" "status $commit_status leaves the phase open"
+    assert_not_contains "$meta" "gc.outcome=pass" "status $commit_status cannot claim success"
+    assert_not_contains "$meta" "blocked-needs-human" "status $commit_status does not require a human"
+    assert_contains "$commit_err" "action=$expected_action" "status $commit_status identifies the agent action"
   fi
 done
 rm -f "$COMMIT_BLOCK_FILE"

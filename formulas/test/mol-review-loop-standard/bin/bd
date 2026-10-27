@@ -129,7 +129,7 @@ case "$sub" in
         --status=*) status="${a#*=}" ;;
         --notes=*)  notes="${a#*=}" ;;
       esac
-      if [ "$prev" = "--notes" ]; then notes="$a"; fi
+      if [ "$prev" = "--notes" ] || [ "$prev" = "--append-notes" ]; then notes="$a"; fi
       prev="$a"
     done
     [ -n "${BD_UPDATE_LOG:-}" ] && printf 'id=%s\tstatus=%s\tnotes=%s\n' "$bid" "$status" "$notes" >> "$BD_UPDATE_LOG"

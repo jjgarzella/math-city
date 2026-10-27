@@ -29,17 +29,17 @@ assert_eq "iterate" "$(action pass pass yes 3)" \
   "a third-attempt commit always gets the one verification pass"
 assert_eq "iterate" "$(action pass_with_findings pass yes 3)" \
   "a fix committed on the third regular attempt gets one verification"
-assert_eq "escalate" "$(action pass_with_findings pass no 3)" \
-  "unresolved work without a third-attempt commit terminates to a human"
-assert_eq "escalate" "$(action pass fail yes 3)" \
+assert_eq "replan" "$(action pass_with_findings pass no 3)" \
+  "unresolved work without a third-attempt commit requests agent replanning"
+assert_eq "replan" "$(action pass fail yes 3)" \
   "a failed test gate on the third regular attempt cannot spend verification budget"
 
 assert_eq "done" "$(action pass pass no 4)" \
   "the one final verification converges on synthesis pass plus test pass"
-assert_eq "escalate" "$(action pass_with_findings pass yes 4)" \
-  "actionable findings in verification terminate to a human, even after a fix"
-assert_eq "escalate" "$(action pass fail no 4)" \
-  "test failures in verification terminate to a human"
+assert_eq "replan" "$(action pass_with_findings pass yes 4)" \
+  "actionable findings in verification request agent replanning, even after a fix"
+assert_eq "replan" "$(action pass fail no 4)" \
+  "test failures in verification request agent replanning"
 assert_not_contains "$(action pass_with_findings pass yes 5)" "iterate" \
   "attempt five can never start another verification loop"
 

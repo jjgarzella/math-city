@@ -41,7 +41,7 @@ Each ralph attempt:
   4. The controller runs the SHARED verdict-glue check (formulas/lib/review-verdict.sh,
      installed into work_dir at setup — the exact same check the base loop uses):
      only synthesis pass plus test-gate pass converges. Otherwise iterate within
-     the bounded attempt budget or escalate to the human gate.
+     the bounded attempt budget or request agent recovery/replanning without completing the current phase.
 
 Why EXPAND, not pour: the controller schedules the fragment's beads directly as
 flat graph children inside the ralph iteration body, so at gascity polecat pool=1
@@ -56,32 +56,24 @@ into apply-fixes as the fix threshold the agent applies per finding. Ranking, ne
 category suppression.
 
 Convergence and retry policy (formulas/lib/review-apply-fixes.sh):
-  pass + test result pass -> done (the only clean convergence)
-  pass_with_findings      -> iterate (actionable findings remain or were fixed)
-  fail                    -> iterate (a blocker was fixed; re-review)
-  blocked                 -> blocked + ESCALATE (terminal hard failure with the
-                        original reason; gc.review.loop_outcome=blocked-needs-human
-                        is flagged on the root for the human gate)
+  synthesis pass + tests pass on the final head -> done
+  actionable findings or a genuine test failure -> fix, test, re-review
+  missing/stale results, blocked synthesis, tool/store errors -> recover
+  scope refusal, non-progress, failed final verification -> replan
+  missing external authority/access/product decision -> explicit human request
 
-Termination (requires controller support for hard failures in compiled loops):
-  • converged: a done verdict makes the check exit 0; the ralph control bead closes
-    gc.outcome=pass.
-  • blocked: apply-fixes closes gc.outcome=fail with gc.failure_class=hard and
-    gc.failure_reason. The controller ends the loop without another iteration or
-    running the verdict checker; this is a failed review, never convergence.
-  • bounded: attempts 1–3 may apply fixes. If attempt 3 commits fixes, attempt 4 is
-    the single final verification; it cannot apply or commit fixes, and any
-    actionable finding or failed test gate escalates to a human. If attempt 3 has
-    unresolved work but made no commit, it escalates without using that extra
-    verification. No path can start attempt 5.
-
+Recover and replan are autonomous agent actions, not successful reviews. The
+current phase stays owned and open, so the installed controller cannot advance
+it while recovery or coordinator handoff is pending. Three regular attempts may
+make fixes; the fourth is verification only. Failure at that cap requests agent
+replanning, not human intervention or another identical verification attempt.
 The total cap is 4 (literal max_attempts — the compiler parses it as an int
 before variable substitution): three regular attempts plus at most one verification.
 
 Optional fire-and-forget notify: pass --var notify_target=<session id-or-alias> and
 the verdict check sends a best-effort `gc session nudge` on convergence or cap.
-The escalation helper sends blocked notifications itself because hard failures
-bypass the checker. Empty (the default) = no notify.
+Recovery/replanning helpers notify the coordinator directly while the current
+phase stays owned and open. Empty (the default) = no notify.
 
 Sling (review the changes on the current branch, default target base_branch..HEAD):
   gc sling gascity/gasvillage.polecat <bead> --on mol-review-loop-standard --var push_remote=<remote> --nudge
@@ -198,8 +190,8 @@ description = """
 Optional fire-and-forget notify recipient — a running session id or alias. When
 non-empty it is recorded on the molecule root as gc.review_loop.notify; the
 verdict-glue check sends a best-effort `gc session nudge` for converged or capped
-transitions; the escalation helper sends blocked notifications because hard
-failures bypass the checker. Empty (the default) disables notify.
+transitions; recovery/replanning helpers notify the coordinator directly while
+the current phase stays owned and open. Empty (the default) disables notify.
 """
 default = ""
 
@@ -301,7 +293,7 @@ pass and a passing test result to converge.
 
 [steps.check]
 # Three regular attempts plus exactly one final verification. The apply-fixes
-# step permits attempt four only as a read-only verification and escalates any
+# step permits attempt four only as a read-only verification and replans any
 # new findings/test failures, so this total cap cannot become an unbounded retry.
 max_attempts = 4
 
@@ -448,25 +440,51 @@ REVIEW_SYNTHESIS_VERDICT=$(review_apply_fixes_synthesis_for_attempt \
 echo "[apply-fixes] attempt=$REVIEW_ATTEMPT verdict=$REVIEW_SYNTHESIS_VERDICT test=$REVIEW_TEST_RESULT/$REVIEW_TEST_ATTEMPT promoted=$REVIEW_SYNTHESIS_PROMOTED burned(surfaced sub-threshold)=$REVIEW_SYNTHESIS_BURNED at $PWD"
 
 if [ "$REVIEW_TEST_ATTEMPT" != "$REVIEW_ATTEMPT" ] || [ -z "$REVIEW_TEST_RESULT" ] || [ "$REVIEW_TEST_RESULT" = running ]; then
-  review_apply_fixes_escalate "missing or stale test-gate result for attempt $REVIEW_ATTEMPT" || exit $?
+  review_apply_fixes_recover "missing or stale test-gate result for attempt $REVIEW_ATTEMPT" || exit $?
   exit 0
 fi
 
-# blocked / no verdict — synthesis could not run (ineligible / missing inputs) and
-# iterating cannot help. TERMINATE-TO-HUMAN: stop the loop and flag a human.
+# Missing synthesis is an execution/input failure for agents to repair.
 if [ -z "$REVIEW_SYNTHESIS_VERDICT" ] || [ "$REVIEW_SYNTHESIS_VERDICT" = "blocked" ]; then
-  review_apply_fixes_escalate "synthesis verdict=${REVIEW_SYNTHESIS_VERDICT:-<none>} — cannot make progress" || exit $?
+  review_apply_fixes_recover "synthesis verdict=${REVIEW_SYNTHESIS_VERDICT:-<none>} — cannot make progress" || exit $?
   exit 0
+fi
+
+# Neither regular convergence nor final verification may approve a later commit
+# or a dirty worktree using the earlier test result.
+APPLIED=no
+if { [ "$REVIEW_SYNTHESIS_VERDICT" = pass ] && [ "$REVIEW_TEST_RESULT" = pass ]; } || [ "$REVIEW_ATTEMPT" -ge 4 ] 2>/dev/null; then
+START_HEAD=$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.review.iteration_start_head')
+CURRENT_HEAD=$(git -C "$REVIEW_WORK_DIR" rev-parse HEAD) || {
+  review_apply_fixes_recover "cannot read branch HEAD before convergence" || exit $?
+  exit 0
+}
+if [ -z "$START_HEAD" ]; then
+  review_apply_fixes_recover "missing attempt $REVIEW_ATTEMPT start commit" || exit $?
+  exit 0
+fi
+WORKTREE_STATE=$(git -C "$REVIEW_WORK_DIR" status --porcelain) || {
+  review_apply_fixes_recover "cannot inspect worktree before convergence" || exit $?
+  exit 0
+}
+if [ -n "$WORKTREE_STATE" ]; then
+  review_apply_fixes_recover "uncommitted changes remain after the test gate; finish guarded fixes and re-review" || exit $?
+  exit 0
+fi
+[ "$CURRENT_HEAD" = "$START_HEAD" ] || APPLIED=yes
+
 fi
 
 # Attempt four is the one finite verification allowed after fixes on attempt 3.
 # It must not edit, commit, or start another iteration.
 if [ "$REVIEW_ATTEMPT" -ge 4 ] 2>/dev/null; then
-  action=$(review_apply_fixes_iteration_action "$REVIEW_SYNTHESIS_VERDICT" "$REVIEW_TEST_RESULT" no "$REVIEW_ATTEMPT") || exit $?
+  action=$(review_apply_fixes_iteration_action "$REVIEW_SYNTHESIS_VERDICT" "$REVIEW_TEST_RESULT" "$APPLIED" "$REVIEW_ATTEMPT") || exit $?
   if [ "$action" = done ]; then
     review_apply_fixes_set_verdict done "final verification passed: synthesis=pass and test gate passed on attempt $REVIEW_ATTEMPT" || exit $?
+  elif [ "$action" = recover ]; then
+    review_apply_fixes_recover "final verification has incomplete review inputs" || exit $?
   else
-    review_apply_fixes_escalate "final verification attempt $REVIEW_ATTEMPT found synthesis=$REVIEW_SYNTHESIS_VERDICT test=$REVIEW_TEST_RESULT; fixes are not applied in verification" || exit $?
+    review_apply_fixes_replan "final verification attempt $REVIEW_ATTEMPT found synthesis=$REVIEW_SYNTHESIS_VERDICT test=$REVIEW_TEST_RESULT; fixes are not applied in verification" || exit $?
   fi
   exit 0
 fi
@@ -475,7 +493,8 @@ fi
 # If synthesis itself was clean, surface it to apply-fixes as actionable work.
 # This is the only clean convergence point in regular attempts.
 if [ "$REVIEW_SYNTHESIS_VERDICT" = pass ] && [ "$REVIEW_TEST_RESULT" = pass ]; then
-  review_apply_fixes_set_verdict done "clean: synthesis pass and test gate pass on attempt $REVIEW_ATTEMPT (surfaced sub-threshold: ${REVIEW_SYNTHESIS_BURNED:-0})" || exit $?
+  action=$(review_apply_fixes_iteration_action "$REVIEW_SYNTHESIS_VERDICT" "$REVIEW_TEST_RESULT" "$APPLIED" "$REVIEW_ATTEMPT") || exit $?
+  review_apply_fixes_set_verdict "$action" "synthesis and tests passed on attempt $REVIEW_ATTEMPT; applied=$APPLIED (surfaced sub-threshold: ${REVIEW_SYNTHESIS_BURNED:-0}); changed HEAD requires re-review" || exit $?
   exit 0
 fi
 
@@ -498,18 +517,18 @@ Resume the branch (you cd'd into REVIEW_WORK_DIR above) and, for each finding:
   it in your commit body / summary) but do not fix it.
 
 A `fail` verdict means at least one blocker survived; you MUST fix the blocker(s).
-If a blocker is genuinely unfixable here (needs a human decision, missing access,
-out of scope), do NOT fake a fix — escalate and stop:
+If a blocker is genuinely unfixable here (needs a different plan or assignment), preserve the finding and request agent
+replanning. Do not fake a fix or widen the authorized scope:
 
 ```bash
-# only if a blocker cannot be fixed:
-review_apply_fixes_escalate "unfixable blocker: <finding id + why>" || exit $?
+# only if a blocker needs a different plan:
+review_apply_fixes_replan "finding <id> needs replanning: <why>" || exit $?
 exit 0
 ```
 
 Otherwise apply the fixes and commit with a descriptive body. If you changed no
 files, skip the commit helper and set APPLIED=no in section 3; actionable findings
-still cannot converge, and the third regular attempt will escalate if it makes no
+still cannot converge, and the third regular attempt will request agent replanning if it makes no
 new commit. This fix-mode
 behavior — resume branch + apply findings + commit — is the mol-polecat-base
 implement lifecycle running in fix mode. Before committing, run the guarded
@@ -546,30 +565,33 @@ commit_status=$?
 if [ "$commit_status" -eq 10 ]; then
   cat "$commit_error_file" >&2
   rm -f "$commit_error_file"
-  echo "test failure recorded as a finding; verdict is iterate; no commit was made"
+  echo "test failure recorded; action=${REVIEW_ACTION:-iterate}; no commit was made"
   exit 0
 fi
-if [ "$commit_status" -eq 2 ] || [ "$commit_status" -eq 3 ]; then
+if [ "$commit_status" -ne 0 ]; then
   commit_error=$(tail -n 20 "$commit_error_file" | tr '\n' ' ' | cut -c 1-2000)
   cat "$commit_error_file" >&2
   rm -f "$commit_error_file"
   [ -n "$commit_error" ] || commit_error="no diagnostic captured"
-  review_apply_fixes_escalate "review_apply_fixes_commit_and_push returned status $commit_status: $commit_error" || exit $?
+  if [ "$commit_status" -eq 3 ]; then
+    review_apply_fixes_replan "scope refusal: $commit_error; preserve edits and reconcile the authorized assignment" || exit $?
+  else
+    review_apply_fixes_recover "commit/push failed (status $commit_status): $commit_error; preserve any existing commit and repair the failed action" || exit $?
+  fi
   exit 0
 fi
 cat "$commit_error_file" >&2
 rm -f "$commit_error_file"
-[ "$commit_status" -eq 0 ] || exit "$commit_status"
 
 ```
 
 `allowed_paths` is an optional newline-separated list of repo-relative file
 paths; directory prefixes end in `/`. When empty, the helper derives the list
 from the reviewed diff and adds the matching formula or top-level `test/` and
-`tests/` directories that exist. An out-of-scope refusal (status 3) or inspection
-failure (status 2) escalates to a human with the captured diagnostic; a test failure
+`tests/` directories that exist. An out-of-scope refusal (status 3) requests agent replanning. An inspection
+failure (status 2) requests agent recovery with the captured diagnostic; a test failure
 (status 10) returns before commit and lets the current attempt decide whether to
-iterate or escalate. `test_command` defaults to the rig's
+iterate or replan. `test_command` defaults to the rig's
 `formula_vars.test_command`; when empty, the commit test gate is skipped. The
 temporary `test_gate` default is `no-new-failures`: when fix-head tests fail, the
 same command runs once at the immutable review base in a disposable worktree.
@@ -581,8 +603,7 @@ FAIL/ERROR lines. A failed or impossible base comparison fails closed. Base
 failures are stored in `gc.review.preexisting_test_failures` on the root and
 reported in the apply-fixes note. A test-gate failure records a durable testing
 finding and returns status 10 before commit or push; apply-fixes or the final
-verification decides whether to iterate or escalate. A push failure returns
-non-zero after the local commit and is reported as an error.
+verification decides whether to iterate or replan. A push failure requests agent recovery after the local commit; preserve it and retry the failed push.
 
 ## 3. Require synthesis + tests, record whether this attempt committed, and write the verdict
 
@@ -616,16 +637,16 @@ REVIEW_SYNTHESIS_VERDICT=$(review_apply_fixes_synthesis_for_attempt \
   "$REVIEW_SYNTHESIS_VERDICT" "$REVIEW_TEST_RESULT" \
   "$REVIEW_TEST_FAILURE_ATTEMPT" "$REVIEW_ATTEMPT") || exit $?
 if [ "$REVIEW_TEST_ATTEMPT" != "$REVIEW_ATTEMPT" ] || [ -z "$REVIEW_TEST_RESULT" ] || [ "$REVIEW_TEST_RESULT" = running ]; then
-  review_apply_fixes_escalate "missing or stale test-gate result for attempt $REVIEW_ATTEMPT" || exit $?
+  review_apply_fixes_recover "missing or stale test-gate result for attempt $REVIEW_ATTEMPT" || exit $?
   exit 0
 fi
 START_HEAD=$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.review.iteration_start_head')
 CURRENT_HEAD=$(git -C "$REVIEW_WORK_DIR" rev-parse HEAD) || {
-  review_apply_fixes_escalate "cannot read branch HEAD after the guarded commit" || exit $?
+  review_apply_fixes_recover "cannot read branch HEAD after the guarded commit" || exit $?
   exit 0
 }
 if [ -z "$START_HEAD" ]; then
-  review_apply_fixes_escalate "missing attempt $REVIEW_ATTEMPT start commit; cannot determine whether fixes were applied" || exit $?
+  review_apply_fixes_recover "missing attempt $REVIEW_ATTEMPT start commit; cannot determine whether fixes were applied" || exit $?
   exit 0
 fi
 APPLIED=no
@@ -634,7 +655,7 @@ if [ "$CURRENT_HEAD" != "$START_HEAD" ]; then
   bd update "$REVIEW_ROOT" \
     --set-metadata gc.review.last_fix_attempt="$REVIEW_ATTEMPT" \
     --set-metadata gc.review.last_fix_head="$CURRENT_HEAD" || {
-      review_apply_fixes_escalate "could not record the fix commit for attempt $REVIEW_ATTEMPT" || exit $?
+      review_apply_fixes_recover "could not record the fix commit for attempt $REVIEW_ATTEMPT" || exit $?
       exit 0
     }
 fi
@@ -648,21 +669,33 @@ case "$ACTION" in
   iterate)
     review_apply_fixes_set_verdict iterate "synthesis=$REVIEW_SYNTHESIS_VERDICT tests=$REVIEW_TEST_RESULT applied=$APPLIED attempt=$REVIEW_ATTEMPT; re-review required" || exit $?
     ;;
-  escalate)
-    review_apply_fixes_escalate "attempt $REVIEW_ATTEMPT ended without clean synthesis/test pass and without a new fix commit" || exit $?
+  recover)
+    review_apply_fixes_recover "attempt $REVIEW_ATTEMPT has incomplete review or test inputs" || exit $?
+    ;;
+  replan)
+    review_apply_fixes_replan "attempt $REVIEW_ATTEMPT ended without clean synthesis/test pass and without a new fix commit" || exit $?
     ;;
   *) echo "ERROR: unknown loop action '$ACTION'" >&2; exit 2 ;;
 esac
 ```
 
-Exit criteria: either review_apply_fixes_escalate ran (blocked / unfixable ->
-review.verdict=blocked, gc.outcome=fail, gc.failure_class=hard, original reason
-preserved, and gc.review.loop_outcome=blocked-needs-human on the root) or
-review.verdict (done|iterate) is set on this bead and it is closed pass. Only synthesis pass plus
-test-gate pass converges; a third attempt without a fix commit or a failed final
-verification escalates. Hard failure stops the loop without running the checker.
-For a passed iteration the controller runs .gc-review-verdict.sh: review.verdict=done -> exit 0 (converged, stop);
-iterate -> exit 1 (next regular attempt or the one final verification).
+Exit criteria: done/iterate is recorded and the phase closes only after its
+required work is complete. A recover/replan request leaves it owned and open;
+exiting a shell block is NOT permission to finish the phase. Continue recovery
+as the current agent or hand off through the configured notify_target agent.
+Repair the actual tool/state/input error, then rerun the affected guarded step.
+For replanning, preserve failed results and the current work, hand off with fresh
+context, and retire the old workflow ROOT before replacing it through ordinary
+native lifecycle. Do not create concurrent source writers or repeat an unchanged
+failed strategy. A coordinator is an agent, not a new user approval gate.
+
+Only when agents actually lack external authority/access or require a product
+decision may review_apply_fixes_require_human <authority|access|decision> <reason>
+be used. Supply the concrete missing capability/question after checking existing
+authorization. Tool errors, findings, failed tests, and attempt exhaustion never
+by themselves justify that route. Human requests also leave the phase open, so
+no SDK change is required to prevent automatic retries. Never report recovery
+or replanning as a passed test or review; never weaken scope or test gates.
 '''
 
 # --------------------------------------------------------------------------

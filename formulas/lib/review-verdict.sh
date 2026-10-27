@@ -16,11 +16,10 @@
 # The ralph runtime treats exit 0 as GatePass (stop) and EVERY non-zero exit as
 # GateFail (iterate, bounded by max_attempts) — so exit 1 and exit 2 differ only
 # for diagnosis (the code is persisted to gc.exit_code), never in control flow.
-# A blocked review closes apply-fixes with gc.outcome=fail, failure_class=hard,
-# and the original reason. The controller stops that iteration BEFORE this
-# checker; review_apply_fixes_escalate owns its blocked notification. If invoked
-# directly on a blocked verdict, this checker returns 2 without claiming success.
-# The terminal hard-failure metadata, rather than a special exit code, stops retry.
+# Recovery, replanning, and explicit human requests leave their phase open;
+# the check is not reached until the owning agent resolves that action. These
+# paths notify the coordinator directly and require no SDK hard-stop support.
+# If an unresolved action reaches this check, it never counts as convergence.
 #
 # Robustness: this reuses the two-read sampling of the gastown adopt-pr review
 # check (assets/scripts/checks/adopt-pr-review-approved.sh) — it keeps reading
@@ -142,8 +141,8 @@ case "$current" in
     notify_terminal "converged" "$current"
     exit 0
     ;;
-  blocked)
-    echo "review.verdict=blocked (attempt $ATTEMPT): expected a terminal hard failure; checker cannot authorize retry" >&2
+  blocked|recover|replan)
+    echo "review.verdict=$current (attempt $ATTEMPT): unresolved action cannot authorize convergence" >&2
     exit 2
     ;;
   iterate|fail|retry)

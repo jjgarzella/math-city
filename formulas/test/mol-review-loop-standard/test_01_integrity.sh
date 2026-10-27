@@ -142,11 +142,12 @@ assert_contains "$FIX_DESC" "review_apply_fixes_synthesis_for_attempt" "a test f
 assert_contains "$FIX_DESC" "final verification"                   "attempt four is documented as verification-only"
 assert_contains "$FIX_DESC" "last_fix_attempt"                    "fix commits are recorded on the loop root"
 assert_contains "$FIX_DESC" "review_apply_fixes_set_verdict"     "apply-fixes writes review.verdict via the lib"
-assert_contains "$FIX_DESC" "review_apply_fixes_escalate"        "apply-fixes escalates (terminate-to-human) via the lib"
+assert_contains "$FIX_DESC" "review_apply_fixes_recover" "apply-fixes requests agent recovery via the lib"
+assert_contains "$FIX_DESC" "review_apply_fixes_replan" "apply-fixes requests agent replanning via the lib"
 assert_contains "$FIX_DESC" "FIX_THRESHOLD=\"{{severity_threshold}}\"" "apply-fixes hands the loop's severity_threshold to the lib as FIX_THRESHOLD"
 assert_contains "$FIX_DESC" "review.verdict"  "apply-fixes documents the loop's review.verdict glue"
 assert_contains "$FIX_DESC" "blocked"         "apply-fixes documents the blocked verdict path"
-assert_contains "$FIX_DESC" "TERMINATE-TO-HUMAN" "apply-fixes documents blocked -> terminate-to-human"
+assert_contains "$FIX_DESC" "review_apply_fixes_require_human" "human requests require an explicit category"
 assert_contains "$FIX_DESC" "ZFC"             "apply-fixes attributes the fix-vs-surface decision to the agent (ZFC)"
 assert_contains "$FIX_DESC" "TEST_COMMAND"    "apply-fixes passes the rig test command to the guarded commit path"
 assert_contains "$FIX_DESC" "TEST_GATE" "apply-fixes passes the test-gate mode to the guarded commit path"
@@ -155,14 +156,14 @@ assert_contains "$FIX_DESC" "permanent target" "apply-fixes documents strict mod
 assert_contains "$FIX_DESC" "gc.review.preexisting_test_failures" "apply-fixes documents durable baseline failure metadata"
 assert_contains "$FIX_DESC" "ALLOWED_PATHS"   "apply-fixes passes the allowed-path list to the scope guard"
 assert_contains "$FIX_DESC" "review_apply_fixes_commit_and_push" "apply-fixes uses one guarded test/scope/commit/push helper"
-assert_contains "$FIX_DESC" 'if [ "$commit_status" -eq 2 ] || [ "$commit_status" -eq 3 ]; then' \
-  "apply-fixes escalates inspection failures and scope refusals"
-assert_contains "$FIX_DESC" 'review_apply_fixes_escalate "review_apply_fixes_commit_and_push returned status $commit_status:' \
-  "apply-fixes escalation includes the helper status and captured diagnostic"
+assert_contains "$FIX_DESC" 'if [ "$commit_status" -ne 0 ]; then' \
+  "every commit or push error remains agent-owned"
+assert_contains "$FIX_DESC" 'review_apply_fixes_recover "commit/push failed (status $commit_status):' \
+  "agent recovery preserves the status and captured diagnostic"
 assert_contains "$FIX_DESC" 'if [ "$commit_status" -eq 10 ]; then' \
   "apply-fixes preserves the recorded test-failure terminal path"
 assert_contains "$FIX_DESC" "returns status 10 before commit or push" "test failure blocks commit until apply-fixes decides the terminal"
-assert_contains "$FIX_DESC" "third attempt without a fix commit" "final regular attempt escalates when it cannot make progress"
+assert_contains "$FIX_DESC" "retire the old workflow ROOT" "replanning prevents concurrent replacement writers"
 assert_contains "$FIX_DESC" "test_command"   "test gate uses the configured rig test command"
 assert_contains "$FIX_DESC" "out-of-scope"    "apply-fixes refuses out-of-scope edits before commit"
 

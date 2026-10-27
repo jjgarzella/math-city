@@ -4,7 +4,7 @@
 # mapping: read the reviewer's synthesis output (the verdict + the durable
 # findings), map the synthesis verdict onto the loop's done/iterate
 # review.verdict, write that verdict, and — when synthesis could make no
-# progress (blocked) — terminate the loop to a human. Lives under formulas/lib/
+# progress (blocked) — request agent recovery without advancing the loop. Lives under formulas/lib/
 # (ignored by formula discovery, which only matches .toml) next to the shared
 # diff resolver (resolve-diff.sh), the lane helper (review-lane.sh), the
 # synthesis transport (review-synthesis.sh), and the loop verdict-glue check
@@ -32,10 +32,12 @@
 #   . "$GC_CITY/formulas/lib/review-apply-fixes.sh"
 #   review_apply_fixes_load <phase-suffix>                # sets REVIEW_* + heartbeats
 #   review_apply_fixes_findings                          # TSV: id \t severity \t category \t title
-#   review_apply_fixes_map_verdict <synth_verdict> <applied yes|no>   # -> done|iterate|blocked
-#   review_apply_fixes_iteration_action <synth> <test> <applied> <attempt> # -> done|iterate|escalate
+#   review_apply_fixes_map_verdict <synth_verdict> <applied yes|no>   # -> done|iterate|recover
+#   review_apply_fixes_iteration_action <synth> <test> <applied> <attempt> # -> done|iterate|recover|replan
 #   review_apply_fixes_set_verdict <done|iterate> "<note>"            # write review.verdict + close
-#   review_apply_fixes_escalate "<reason>"               # blocked / unfixable -> terminate-to-human
+#   review_apply_fixes_recover "<reason>"                 # repair this phase; keep it open
+#   review_apply_fixes_replan "<reason>"                  # coordinator handoff; keep it open
+#   review_apply_fixes_require_human <authority|access|decision> "<reason>"
 #   review_apply_fixes_check_allowed_paths [newline-list]  # refuse out-of-scope edits
 #   review_apply_fixes_test_before_commit [command]        # configured test gate
 #   review_apply_fixes_commit_and_push "<message>" "<remote>" # scope -> tests -> commit -> push
@@ -58,13 +60,11 @@
 #   synthesis threshold, so apply-fixes fixes the set it is handed.
 #
 # THE OUTPUT CONTRACT (consumed by review-verdict.sh, the loop's ralph check):
-#   review.verdict on THIS apply-fixes bead — done (converge, stop), iterate
-#   (re-review the fixes), or blocked (terminal hard failure). The mapping:
-#     synthesis pass + passing test gate -> done (the only clean convergence)
-#     synthesis pass_with_findings -> iterate (actionable work remains or changed)
-#     synthesis fail               -> iterate  (blocker fixed; re-review)
-#     synthesis blocked            -> blocked + hard failure (terminate-to-human;
-#                                     preserve the reason and stop without retry)
+#   done requires clean synthesis and tests on the actual final head. iterate
+#   schedules another review after actionable findings or fixes. recover and
+#   replan remain agent-owned and leave the current phase open. Only an explicit
+#   authority/access/decision request records blocked-needs-human. No recovery
+#   action counts as approval or depends on an SDK hard-failure fix.
 #
 # Env (provided by the runtime): GC_BEAD_ID (this apply-fixes bead), GC_CITY
 # (city root). The formula passes FIX_THRESHOLD, TEST_COMMAND, and ALLOWED_PATHS;
@@ -569,7 +569,7 @@ review_apply_fixes__record_test_failure() {
 
 # Record a failed test run and return status 10 so the caller makes no commit or
 # push. The standalone test step leaves verdict handling to apply-fixes; a test
-# failure on the third regular attempt escalates instead of using verification.
+# failure on the third regular attempt requests agent replanning.
 review_apply_fixes__test_failure_iterate() {
   local command_text="$1" command_status="$2" output_file="$3" details="$4" output finding_id
   output="$(tail -n 100 "$output_file")"
@@ -580,9 +580,9 @@ review_apply_fixes__test_failure_iterate() {
     return 10
   fi
   if [ "${REVIEW_PHASE_SUFFIX:-}" = "apply-fixes" ] && [ "${REVIEW_ATTEMPT:-0}" -ge 3 ] 2>/dev/null; then
-    review_apply_fixes_escalate \
+    review_apply_fixes_replan \
       "test gate failed on the final regular attempt (${REVIEW_ATTEMPT}); finding=$finding_id" || return 2
-    echo "ERROR: test_command failed on the final regular attempt; finding=$finding_id" >&2
+    echo "ERROR: test_command failed on the final regular attempt; agent replanning required; finding=$finding_id" >&2
     return 10
   fi
   review_apply_fixes_set_verdict iterate \
@@ -604,7 +604,7 @@ review_apply_fixes__comparison_failure_iterate() {
 # the review worktree. `strict` preserves the original any-failure gate;
 # `no-new-failures` compares a failing fix-head run with one disposable run at
 # the immutable review base. Return 10 only after the failure is durable; the
-# caller owns phase-specific iterate/escalate handling.
+# caller owns phase-specific iterate/replan handling.
 review_apply_fixes_test_before_commit() {
   local command_text="${1:-${REVIEW_TEST_COMMAND:-}}" gate="${REVIEW_TEST_GATE:-no-new-failures}"
   local pattern="${REVIEW_TEST_FAILURE_PATTERN:-}" output_file command_status head_status parse_status
@@ -908,18 +908,16 @@ review_apply_fixes_commit_and_push() {
 #   pass               -> done    (nothing actionable)
 #   pass_with_findings -> iterate (actionable findings remain or were fixed)
 #   fail               -> iterate (a blocker was surfaced and fixed; re-review)
-#   blocked            -> blocked (terminal hard failure; caller must escalate)
-#   anything else      -> iterate (conservative: re-review rather than silently stop)
-# blocked remains distinct; review_apply_fixes_escalate stamps the hard failure
-# that terminates the loop and flags the human.
+#   blocked / missing  -> recover (repair review execution or inputs)
+# Recovery keeps the phase open and agent-owned; it is never an approval.
 review_apply_fixes_map_verdict() {
   local sv="$1" applied="${2:-no}"
   case "$sv" in
     pass)               echo done ;;
     pass_with_findings) echo iterate ;;
     fail)               echo iterate ;;
-    blocked)            echo blocked ;;
-    *)                  echo iterate ;;
+    blocked)            echo recover ;;
+    *)                  echo recover ;;
   esac
 }
 
@@ -941,8 +939,7 @@ review_apply_fixes_synthesis_for_attempt() {
 # attempts may apply fixes; attempt four is exactly one verification-only pass.
 # It never accepts pass_with_findings as convergence, and it never loops after
 # the verification attempt. At the third regular attempt, unresolved work with
-# no new commit terminates to a human rather than consuming the verification
-# budget without progress.
+# no new commit requests agent replanning without consuming verification budget.
 review_apply_fixes_iteration_action() {
   local synthesis="${1:-}" test_result="${2:-}" applied="${3:-no}" attempt="${4:-0}"
   local verdict
@@ -950,15 +947,14 @@ review_apply_fixes_iteration_action() {
     ''|*[!0-9]*) echo "ERROR: invalid review attempt '$attempt'" >&2; return 2 ;;
   esac
 
-  if [ "$synthesis" = "blocked" ]; then
-    echo escalate
-    return 0
-  fi
+  case "$synthesis" in pass|pass_with_findings|fail) ;; *) echo recover; return 0 ;; esac
+  case "$test_result" in pass|fail) ;; *) echo recover; return 0 ;; esac
+  if [ "$attempt" -eq 0 ]; then echo recover; return 0; fi
   if [ "$attempt" -ge 4 ]; then
-    if [ "$synthesis" = "pass" ] && [ "$test_result" = "pass" ]; then
+    if [ "$synthesis" = "pass" ] && [ "$test_result" = "pass" ] && [ "$applied" = no ]; then
       echo done
     else
-      echo escalate
+      echo replan
     fi
     return 0
   fi
@@ -970,7 +966,7 @@ review_apply_fixes_iteration_action() {
     if [ "$test_result" = "pass" ] && [ "$applied" = "yes" ]; then
       echo iterate
     else
-      echo escalate
+      echo replan
     fi
     return 0
   fi
@@ -1003,34 +999,77 @@ review_apply_fixes_set_verdict() {
   fi
   . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh" || return 2
   review_phase_resolve "$REVIEW_PHASE_SUFFIX" "$REVIEW_ROOT" "${REVIEW_PHASE_STEP_ID:-}" || return 2
-  bd update "$GC_BEAD_ID" --set-metadata review.verdict="$verdict" >/dev/null || return 2
+  bd update "$REVIEW_ROOT" --set-metadata gc.review.loop_outcome="$verdict" \
+    --set-metadata gc.review.loop_reason="$note" \
+    --set-metadata gc.review.loop_blocked_reason="" \
+    --set-metadata gc.review.human_reason_kind="" >/dev/null || return 2
+  bd update "$GC_BEAD_ID" --set-metadata review.verdict="$verdict" \
+    --set-metadata gc.failure_class="" --set-metadata gc.failure_reason="" >/dev/null || return 2
   gc bd heartbeat "$GC_BEAD_ID" >/dev/null 2>&1 || true
   bd update "$GC_BEAD_ID" --set-metadata gc.outcome=pass --status=closed \
-    --notes "apply-fixes: review.verdict=$verdict. $note" || return 2
+    --append-notes "apply-fixes: review.verdict=$verdict. $note" || return 2
+  REVIEW_ACTION="$verdict"
+  export REVIEW_ACTION
   echo "[review-apply-fixes] review.verdict=$verdict"
 }
 
-# review_apply_fixes_escalate <reason> — preserve a blocked review as a hard
-# failure. The controller stops the compiled loop without running its checker.
-# Therefore this path also owns the optional best-effort blocked notification.
-review_apply_fixes_escalate() {
-  local reason="${1:-synthesis blocked}" notify_target
+# Record an agent-owned action without closing the current phase. Closing it
+# here would let the installed controller start another iteration before repair.
+# The current owner continues recovery, or coordinates a root-first replacement
+# of this workflow for replanning. No SDK hard-stop support is required.
+review_apply_fixes__request_action() {
+  local action="$1" reason="$2" human_kind="${3:-}" outcome verdict failure_class notify_target blocked_reason=""
+  case "$action" in
+    recover|replan) outcome="$action"; verdict="$action"; failure_class=transient ;;
+    needs-human)
+      case "$human_kind" in authority|access|decision) ;; *)
+        echo "ERROR: human action requires authority, access, or decision" >&2; return 2 ;;
+      esac
+      outcome=blocked-needs-human; verdict=blocked; failure_class=hard; blocked_reason="$reason" ;;
+    *) echo "ERROR: unsupported review action: $action" >&2; return 2 ;;
+  esac
+  [ -n "$reason" ] || { echo "ERROR: a concrete review action reason is required" >&2; return 2; }
   : "${REVIEW_PHASE_SUFFIX:?call review_apply_fixes_load first}"
   : "${REVIEW_ROOT:?call review_apply_fixes_load first}"
   . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh" || return 2
   review_phase_resolve "$REVIEW_PHASE_SUFFIX" "$REVIEW_ROOT" "${REVIEW_PHASE_STEP_ID:-}" || return 2
-  bd update "$REVIEW_ROOT" --set-metadata gc.review.loop_outcome="blocked-needs-human" \
-    --set-metadata gc.review.loop_blocked_reason="$reason" >/dev/null || return 2
-  bd update "$GC_BEAD_ID" --set-metadata review.verdict=blocked \
-    --set-metadata gc.outcome=fail --set-metadata gc.failure_class=hard \
-    --set-metadata gc.failure_reason="$reason" --status=closed \
-    --notes "apply-fixes: review.verdict=blocked. TERMINATE-TO-HUMAN: $reason" || return 2
-  echo "[review-apply-fixes] TERMINATE-TO-HUMAN: $reason" >&2
+  bd update "$REVIEW_ROOT" --set-metadata gc.review.loop_outcome="$outcome" \
+    --set-metadata gc.review.loop_reason="$reason" \
+    --set-metadata gc.review.loop_blocked_reason="$blocked_reason" \
+    --set-metadata gc.review.human_reason_kind="$human_kind" >/dev/null || return 2
+  bd update "$GC_BEAD_ID" --set-metadata review.verdict="$verdict" \
+    --set-metadata gc.failure_class="$failure_class" \
+    --set-metadata gc.failure_reason="$reason" \
+    --append-notes "apply-fixes: action=$action; phase remains open. $reason" >/dev/null || return 2
+  REVIEW_ACTION="$action"
+  export REVIEW_ACTION
+  echo "[review-apply-fixes] action=$action: $reason; phase remains owned and open" >&2
   notify_target="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.review_loop.notify')" || notify_target=""
+  [ -n "$notify_target" ] || notify_target="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.var.notify_target')"
   if [ -n "$notify_target" ]; then
     gc session nudge "$notify_target" \
-      "mol-review-loop blocked: root=$REVIEW_ROOT attempt=${REVIEW_ATTEMPT:-unknown} verdict=blocked reason=$reason" \
-      >/dev/null 2>&1 || true
+      "mol-review-loop action=$action: root=$REVIEW_ROOT phase=$GC_BEAD_ID attempt=${REVIEW_ATTEMPT:-unknown} reason=$reason. Phase remains open; coordinate recovery or root-first replanning, preserving tests and scope." \
+      >/dev/null 2>&1 || echo "WARNING: coordinator notification failed; current owner retains action=$action" >&2
   fi
   return 0
+}
+
+review_apply_fixes_recover() {
+  review_apply_fixes__request_action recover "${1:-}"
+}
+
+review_apply_fixes_replan() {
+  review_apply_fixes__request_action replan "${1:-}"
+}
+
+# Only an agent's explicit identification of missing external authority, access,
+# or a product decision may request a human. Tool errors and retry limits cannot.
+review_apply_fixes_require_human() {
+  review_apply_fixes__request_action needs-human "${2:-}" "${1:-}"
+}
+
+# Existing compiled workflows still call this generic entry point. They recover
+# under agent ownership; only require_human can select the human route.
+review_apply_fixes_escalate() {
+  review_apply_fixes_recover "${1:-synthesis unavailable; diagnose and recover}"
 }

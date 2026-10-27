@@ -3,7 +3,7 @@
 # no Dolt). The fix-vs-surface REASONING is the agent's and is not deterministic;
 # the transport that frames it IS — and that is what this pins: the synthesis
 # verdict -> done/iterate mapping, the durable-findings enumeration, the
-# verdict-write glue, and the blocked terminate-to-human escalation.
+# verdict-write glue, and the explicit human request and agent recovery.
 
 section "02 apply-fixes lib (verdict->severity->fix transport)"
 
@@ -13,8 +13,7 @@ section "02 apply-fixes lib (verdict->severity->fix transport)"
 # --- A. the synthesis verdict -> review.verdict map (pure, no bd) ------------
 # pass->done only after the caller also verifies the test gate;
 # pass_with_findings always remains actionable; fail->iterate;
-# fail->iterate (blocker fixed, re-review); blocked->blocked (caller escalates);
-# unknown->iterate (conservative re-review, never a silent stop).
+# blocked and unknown verdicts request agent recovery of review inputs.
 MV="$(. "$APPLY_FIXES_SH"; for sv in pass pass_with_findings fail blocked weird; do
   printf '%s/yes=%s %s/no=%s\n' "$sv" "$(review_apply_fixes_map_verdict "$sv" yes)" \
                                  "$sv" "$(review_apply_fixes_map_verdict "$sv" no)"
@@ -24,10 +23,10 @@ assert_contains "$MV" "pass/no=done"                "map: pass -> done (not appl
 assert_contains "$MV" "pass_with_findings/yes=iterate" "map: pass_with_findings + applied -> iterate (re-review)"
 assert_contains "$MV" "pass_with_findings/no=iterate" "map: pass_with_findings remains actionable when no fix was applied"
 assert_contains "$MV" "fail/yes=iterate"            "map: fail + applied -> iterate (blocker fixed, re-review)"
-assert_contains "$MV" "fail/no=iterate"             "map: fail -> iterate (loop re-tries; agent escalates an unfixable blocker)"
-assert_contains "$MV" "blocked/yes=blocked"            "map: blocked -> blocked (terminate; caller escalates)"
-assert_contains "$MV" "blocked/no=blocked"             "map: blocked -> blocked"
-assert_contains "$MV" "weird/yes=iterate"           "map: unknown verdict -> iterate (conservative, never a silent stop)"
+assert_contains "$MV" "fail/no=iterate"             "map: fail -> iterate (loop re-tries; agent replans an unfixable blocker)"
+assert_contains "$MV" "blocked/yes=recover"            "map: blocked synthesis requests agent recovery"
+assert_contains "$MV" "blocked/no=recover"             "map: blocked synthesis requests agent recovery"
+assert_contains "$MV" "weird/yes=recover"           "map: unknown verdict requests input recovery"
 
 # --- B. the severity -> rank map (pure, no bd) -------------------------------
 RANKS="$(. "$APPLY_FIXES_SH"; for s in blocker major minor nit other; do
@@ -44,7 +43,7 @@ assert_contains "$LIBTXT" "gc.review.synthesis_verdict"   "contract: reads the s
 assert_contains "$LIBTXT" "pass_with_findings"            "contract: the pass/pass_with_findings/fail/blocked input vocabulary"
 assert_contains "$LIBTXT" "severity:<blocker|major|minor|nit>" "contract: durable severity-tagged findings"
 assert_contains "$LIBTXT" "ZERO judgment"                 "contract: fix decisions remain agent judgment (ZFC)"
-assert_contains "$LIBTXT" "terminate-to-human"            "contract: blocked -> terminate-to-human"
+assert_contains "$LIBTXT" "review_apply_fixes_recover"     "contract: recoverable failures remain agent-owned"
 
 # --- D. review_apply_fixes_load resolves the run -----------------------------
 AFX_META_LOG=""; AFX_UPDATE_LOG=""; AFX_NUDGE_LOG=""; AFX_FINDINGS_FILE=""
@@ -117,34 +116,28 @@ AFX_META_LOG=""; AFX_UPDATE_LOG=""; AFX_NUDGE_LOG=""; AFX_FINDINGS_FILE=""; afx_
 afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_set_verdict bogus "x"'
 assert_eq "2" "$AFX_RC" "set_verdict rejects an invalid verdict (exit 2)"
 
-# --- G. review_apply_fixes_escalate — blocked -> terminate-to-human ----------
+# --- G. an explicit human request is distinct from generic recovery ----------
 AFX_META_LOG=""; AFX_UPDATE_LOG=""; AFX_NUDGE_LOG=""; AFX_FINDINGS_FILE=""
 AFX_ROOT="root-esc"; AFX_VERDICT="blocked"; AFX_PROMOTED=""; AFX_BURNED=""; AFX_WORKDIR=""
 AFX_FINDINGS_JSON='[]'
 afx_sandbox
-afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_escalate "ineligible change"'
-assert_eq "0" "$AFX_RC" "escalate records a terminal failure successfully"
-meta="$(cat "$AFX_META_LOG")"; upd="$(cat "$AFX_UPDATE_LOG")"; nudge="$(cat "$AFX_NUDGE_LOG")"
-assert_contains "$meta" "root-esc	gc.review.loop_outcome=blocked-needs-human" "escalate flags blocked-needs-human on the ROOT"
-assert_contains "$meta" "root-esc	gc.review.loop_blocked_reason=ineligible change" "escalate records the reason on the ROOT"
-assert_contains "$meta" "apply-fixes-bead	review.verdict=blocked" "escalate preserves review.verdict=blocked"
-assert_contains "$meta" "apply-fixes-bead	gc.outcome=fail" "escalate closes with failure"
-assert_contains "$meta" "apply-fixes-bead	gc.failure_class=hard" "escalate is a terminal hard failure"
-assert_contains "$meta" "apply-fixes-bead	gc.failure_reason=ineligible change" "escalate preserves the reason"
-assert_contains "$upd"  "status=closed"  "escalate closes this bead"
-assert_not_contains "$meta" "review.verdict=done" "blocked never reports done"
-assert_not_contains "$meta" "gc.outcome=pass" "blocked never reports pass"
-assert_contains "$AFX_ERR" "TERMINATE-TO-HUMAN" "escalate announces the terminate-to-human transition (stderr)"
-assert_eq "" "$nudge" "escalate does NOT nudge from the lib (the verdict-glue check owns notify)"
+afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_require_human decision "choose the product behavior"'
+assert_eq "0" "$AFX_RC" "explicit human request records the missing decision"
+meta="$(cat "$AFX_META_LOG")"; upd="$(cat "$AFX_UPDATE_LOG")"
+assert_contains "$meta" "root-esc	gc.review.loop_outcome=blocked-needs-human" "human request is explicit on the root"
+assert_contains "$meta" "root-esc	gc.review.loop_blocked_reason=choose the product behavior" "human request retains its concrete reason"
+assert_contains "$meta" "apply-fixes-bead	review.verdict=blocked" "human request remains blocked"
+assert_contains "$meta" "apply-fixes-bead	gc.failure_class=hard" "human request is not a transient tool failure"
+assert_not_contains "$upd" "status=closed" "human request leaves the phase open on the installed engine"
+assert_not_contains "$meta" "review.verdict=done" "a decision request never reports done"
+assert_not_contains "$meta" "gc.outcome=pass" "a decision request never reports pass"
 
-# The hard-failed iteration bypasses the verdict checker, so escalation itself
-# owns optional blocked notification. Delivery failures must not alter failure.
 for notify_fail in 0 1; do
   AFX_META_LOG=""; AFX_UPDATE_LOG=""; AFX_NUDGE_LOG=""
   AFX_NOTIFY="review-owner"; AFX_NUDGE_FAIL="$notify_fail"; afx_sandbox
-  afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_escalate "human decision required"'
-  assert_eq "0" "$AFX_RC" "blocked notification delivery is best effort ($notify_fail)"
-  assert_contains "$(cat "$AFX_NUDGE_LOG")" "blocked" "escalation notifies blocked without waiting for checker"
-  assert_not_contains "$(cat "$AFX_NUDGE_LOG")" "converged" "blocked notification never says converged"
+  afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_recover "tool repair required"'
+  assert_eq "0" "$AFX_RC" "notification delivery cannot lose the owned recovery action ($notify_fail)"
+  assert_contains "$(cat "$AFX_NUDGE_LOG")" "recover" "recovery notifies the agent coordinator"
+  assert_not_contains "$(cat "$AFX_UPDATE_LOG")" "status=closed" "notification failure cannot advance the loop"
 done
 AFX_NOTIFY=""; AFX_NUDGE_FAIL=0

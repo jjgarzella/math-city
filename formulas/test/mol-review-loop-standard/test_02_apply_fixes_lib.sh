@@ -13,7 +13,7 @@ section "02 apply-fixes lib (verdict->severity->fix transport)"
 # --- A. the synthesis verdict -> review.verdict map (pure, no bd) ------------
 # pass->done only after the caller also verifies the test gate;
 # pass_with_findings always remains actionable; fail->iterate;
-# fail->iterate (blocker fixed, re-review); blocked->done (caller escalates);
+# fail->iterate (blocker fixed, re-review); blocked->blocked (caller escalates);
 # unknown->iterate (conservative re-review, never a silent stop).
 MV="$(. "$APPLY_FIXES_SH"; for sv in pass pass_with_findings fail blocked weird; do
   printf '%s/yes=%s %s/no=%s\n' "$sv" "$(review_apply_fixes_map_verdict "$sv" yes)" \
@@ -25,8 +25,8 @@ assert_contains "$MV" "pass_with_findings/yes=iterate" "map: pass_with_findings 
 assert_contains "$MV" "pass_with_findings/no=iterate" "map: pass_with_findings remains actionable when no fix was applied"
 assert_contains "$MV" "fail/yes=iterate"            "map: fail + applied -> iterate (blocker fixed, re-review)"
 assert_contains "$MV" "fail/no=iterate"             "map: fail -> iterate (loop re-tries; agent escalates an unfixable blocker)"
-assert_contains "$MV" "blocked/yes=done"            "map: blocked -> done (terminate; caller escalates)"
-assert_contains "$MV" "blocked/no=done"             "map: blocked -> done"
+assert_contains "$MV" "blocked/yes=blocked"            "map: blocked -> blocked (terminate; caller escalates)"
+assert_contains "$MV" "blocked/no=blocked"             "map: blocked -> blocked"
 assert_contains "$MV" "weird/yes=iterate"           "map: unknown verdict -> iterate (conservative, never a silent stop)"
 
 # --- B. the severity -> rank map (pure, no bd) -------------------------------
@@ -123,11 +123,28 @@ AFX_ROOT="root-esc"; AFX_VERDICT="blocked"; AFX_PROMOTED=""; AFX_BURNED=""; AFX_
 AFX_FINDINGS_JSON='[]'
 afx_sandbox
 afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_escalate "ineligible change"'
-assert_eq "0" "$AFX_RC" "escalate exits 0 (clean terminal, no abort)"
+assert_eq "0" "$AFX_RC" "escalate records a terminal failure successfully"
 meta="$(cat "$AFX_META_LOG")"; upd="$(cat "$AFX_UPDATE_LOG")"; nudge="$(cat "$AFX_NUDGE_LOG")"
 assert_contains "$meta" "root-esc	gc.review.loop_outcome=blocked-needs-human" "escalate flags blocked-needs-human on the ROOT"
 assert_contains "$meta" "root-esc	gc.review.loop_blocked_reason=ineligible change" "escalate records the reason on the ROOT"
-assert_contains "$meta" "apply-fixes-bead	review.verdict=done" "escalate sets review.verdict=done (stop, not spin to cap)"
+assert_contains "$meta" "apply-fixes-bead	review.verdict=blocked" "escalate preserves review.verdict=blocked"
+assert_contains "$meta" "apply-fixes-bead	gc.outcome=fail" "escalate closes with failure"
+assert_contains "$meta" "apply-fixes-bead	gc.failure_class=hard" "escalate is a terminal hard failure"
+assert_contains "$meta" "apply-fixes-bead	gc.failure_reason=ineligible change" "escalate preserves the reason"
 assert_contains "$upd"  "status=closed"  "escalate closes this bead"
+assert_not_contains "$meta" "review.verdict=done" "blocked never reports done"
+assert_not_contains "$meta" "gc.outcome=pass" "blocked never reports pass"
 assert_contains "$AFX_ERR" "TERMINATE-TO-HUMAN" "escalate announces the terminate-to-human transition (stderr)"
 assert_eq "" "$nudge" "escalate does NOT nudge from the lib (the verdict-glue check owns notify)"
+
+# The hard-failed iteration bypasses the verdict checker, so escalation itself
+# owns optional blocked notification. Delivery failures must not alter failure.
+for notify_fail in 0 1; do
+  AFX_META_LOG=""; AFX_UPDATE_LOG=""; AFX_NUDGE_LOG=""
+  AFX_NOTIFY="review-owner"; AFX_NUDGE_FAIL="$notify_fail"; afx_sandbox
+  afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_escalate "human decision required"'
+  assert_eq "0" "$AFX_RC" "blocked notification delivery is best effort ($notify_fail)"
+  assert_contains "$(cat "$AFX_NUDGE_LOG")" "blocked" "escalation notifies blocked without waiting for checker"
+  assert_not_contains "$(cat "$AFX_NUDGE_LOG")" "converged" "blocked notification never says converged"
+done
+AFX_NOTIFY=""; AFX_NUDGE_FAIL=0

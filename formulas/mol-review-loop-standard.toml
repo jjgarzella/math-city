@@ -59,14 +59,16 @@ Convergence and retry policy (formulas/lib/review-apply-fixes.sh):
   pass + test result pass -> done (the only clean convergence)
   pass_with_findings      -> iterate (actionable findings remain or were fixed)
   fail                    -> iterate (a blocker was fixed; re-review)
-  blocked            -> done + ESCALATE (terminate-to-human: synthesis could not
-                        run, or a blocker is genuinely unfixable; the loop stops
-                        instead of spinning to the cap, and gc.review.loop_outcome
-                        =blocked-needs-human is flagged on the root for the human gate)
+  blocked                 -> blocked + ESCALATE (terminal hard failure with the
+                        original reason; gc.review.loop_outcome=blocked-needs-human
+                        is flagged on the root for the human gate)
 
-Termination — NO abort_scope. Both terminals are clean (same as the base loop):
+Termination (requires controller support for hard failures in compiled loops):
   • converged: a done verdict makes the check exit 0; the ralph control bead closes
     gc.outcome=pass.
+  • blocked: apply-fixes closes gc.outcome=fail with gc.failure_class=hard and
+    gc.failure_reason. The controller ends the loop without another iteration or
+    running the verdict checker; this is a failed review, never convergence.
   • bounded: attempts 1–3 may apply fixes. If attempt 3 commits fixes, attempt 4 is
     the single final verification; it cannot apply or commit fixes, and any
     actionable finding or failed test gate escalates to a human. If attempt 3 has
@@ -77,14 +79,15 @@ The total cap is 4 (literal max_attempts — the compiler parses it as an int
 before variable substitution): three regular attempts plus at most one verification.
 
 Optional fire-and-forget notify: pass --var notify_target=<session id-or-alias> and
-the verdict check sends a best-effort `gc session nudge` on the terminal transition
-(converged, capped, or a blocked escalation). Empty (the default) = no notify.
+the verdict check sends a best-effort `gc session nudge` on convergence or cap.
+The escalation helper sends blocked notifications itself because hard failures
+bypass the checker. Empty (the default) = no notify.
 
 Sling (review the changes on the current branch, default target base_branch..HEAD):
-  gc sling gascity/gasvillage.polecat <bead> --on mol-review-loop-standard --nudge
+  gc sling gascity/gasvillage.polecat <bead> --on mol-review-loop-standard --var push_remote=<remote> --nudge
 Tune the reviewer (any fragment var flows through, e.g. a deeper synthesis tier):
   gc sling gascity/gasvillage.polecat <bead> --on mol-review-loop-standard \\
-    --var severity_threshold=major --var synthesis_model=opus --nudge
+    --var push_remote=<remote> --var severity_threshold=major --var synthesis_model=opus --nudge
 """
 formula = "mol-review-loop-standard"
 
@@ -122,6 +125,10 @@ default = ""
 [vars.branch]
 description = "Explicit feature branch under review. Takes precedence over root metadata."
 default = ""
+
+[vars.push_remote]
+description = "Git remote to receive review fix commits. The caller must choose the destination explicitly."
+required = true
 
 [vars.base_sha]
 description = "Immutable review base commit captured by the implementation trigger. When provided, target should be base_sha..HEAD."
@@ -190,8 +197,9 @@ default = "opus"
 description = """
 Optional fire-and-forget notify recipient — a running session id or alias. When
 non-empty it is recorded on the molecule root as gc.review_loop.notify; the
-verdict-glue check sends a best-effort `gc session nudge` on the terminal
-transition (converged or capped). Empty (the default) disables notify.
+verdict-glue check sends a best-effort `gc session nudge` for converged or capped
+transitions; the escalation helper sends blocked notifications because hard
+failures bypass the checker. Empty (the default) disables notify.
 """
 default = ""
 
@@ -529,7 +537,11 @@ GC_ALLOWED_PATHS_VALUE
 export TEST_COMMAND TEST_GATE TEST_FAILURE_PATTERN ALLOWED_PATHS
 review_apply_fixes_load apply-fixes || exit $?
 commit_error_file=$(mktemp) || exit 2
-review_apply_fixes_commit_and_push "fix: apply review findings on $REVIEW_ROOT" 2>"$commit_error_file"
+PUSH_REMOTE=$(cat <<'GC_PUSH_REMOTE_VALUE'
+{{push_remote}}
+GC_PUSH_REMOTE_VALUE
+)
+review_apply_fixes_commit_and_push "fix: apply review findings on $REVIEW_ROOT" "$PUSH_REMOTE" 2>"$commit_error_file"
 commit_status=$?
 if [ "$commit_status" -eq 10 ]; then
   cat "$commit_error_file" >&2
@@ -643,12 +655,13 @@ case "$ACTION" in
 esac
 ```
 
-Exit criteria: either review_apply_fixes_escalate ran (blocked / unfixable -> done
-+ gc.review.loop_outcome=blocked-needs-human on the root) or review.verdict
-(done|iterate) is set on this bead and it is closed pass. Only synthesis pass plus
+Exit criteria: either review_apply_fixes_escalate ran (blocked / unfixable ->
+review.verdict=blocked, gc.outcome=fail, gc.failure_class=hard, original reason
+preserved, and gc.review.loop_outcome=blocked-needs-human on the root) or
+review.verdict (done|iterate) is set on this bead and it is closed pass. Only synthesis pass plus
 test-gate pass converges; a third attempt without a fix commit or a failed final
-verification escalates. The controller then runs
-.gc-review-verdict.sh: review.verdict=done -> exit 0 (converged, stop);
+verification escalates. Hard failure stops the loop without running the checker.
+For a passed iteration the controller runs .gc-review-verdict.sh: review.verdict=done -> exit 0 (converged, stop);
 iterate -> exit 1 (next regular attempt or the one final verification).
 '''
 

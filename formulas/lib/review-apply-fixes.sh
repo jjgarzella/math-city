@@ -32,13 +32,13 @@
 #   . "$GC_CITY/formulas/lib/review-apply-fixes.sh"
 #   review_apply_fixes_load <phase-suffix>                # sets REVIEW_* + heartbeats
 #   review_apply_fixes_findings                          # TSV: id \t severity \t category \t title
-#   review_apply_fixes_map_verdict <synth_verdict> <applied yes|no>   # -> done|iterate
+#   review_apply_fixes_map_verdict <synth_verdict> <applied yes|no>   # -> done|iterate|blocked
 #   review_apply_fixes_iteration_action <synth> <test> <applied> <attempt> # -> done|iterate|escalate
 #   review_apply_fixes_set_verdict <done|iterate> "<note>"            # write review.verdict + close
 #   review_apply_fixes_escalate "<reason>"               # blocked / unfixable -> terminate-to-human
 #   review_apply_fixes_check_allowed_paths [newline-list]  # refuse out-of-scope edits
 #   review_apply_fixes_test_before_commit [command]        # configured test gate
-#   review_apply_fixes_commit_and_push "<message>"         # scope -> tests -> commit -> push
+#   review_apply_fixes_commit_and_push "<message>" "<remote>" # scope -> tests -> commit -> push
 #
 # THE INPUT CONTRACT (gcs-f4j.8.3 review-synthesis.sh — the same durable output
 # every bead-native reviewer produces, so apply-fixes stays reviewer-agnostic):
@@ -58,14 +58,13 @@
 #   synthesis threshold, so apply-fixes fixes the set it is handed.
 #
 # THE OUTPUT CONTRACT (consumed by review-verdict.sh, the loop's ralph check):
-#   review.verdict on THIS apply-fixes bead — done (converge, stop) | iterate
-#   (re-review the fixes). The mapping:
+#   review.verdict on THIS apply-fixes bead — done (converge, stop), iterate
+#   (re-review the fixes), or blocked (terminal hard failure). The mapping:
 #     synthesis pass + passing test gate -> done (the only clean convergence)
 #     synthesis pass_with_findings -> iterate (actionable work remains or changed)
 #     synthesis fail               -> iterate  (blocker fixed; re-review)
-#     synthesis blocked            -> done + escalate (terminate-to-human; the
-#                                     loop cannot make progress, so stop rather
-#                                     than spin to the cap, and flag a human)
+#     synthesis blocked            -> blocked + hard failure (terminate-to-human;
+#                                     preserve the reason and stop without retry)
 #
 # Env (provided by the runtime): GC_BEAD_ID (this apply-fixes bead), GC_CITY
 # (city root). The formula passes FIX_THRESHOLD, TEST_COMMAND, and ALLOWED_PATHS;
@@ -201,8 +200,8 @@ review_apply_fixes_findings() {
 # and may not escape the worktree. Newline-containing git paths cannot be
 # represented by the newline-delimited allowed_paths var, so fail closed.
 review_apply_fixes__valid_path() {
-  local path="$1"
-  case "$path" in
+  local file_path="$1"
+  case "$file_path" in
     ""|/*|.|..|../*|*/../*|*/..|*$'\n'*) return 1 ;;
     *) return 0 ;;
   esac
@@ -251,7 +250,7 @@ review_apply_fixes__changed_paths() {
 # review_apply_fixes__append_test_tree <suite-dir> <allow-file> — add the
 # existing tests plus a directory prefix so new related tests are also allowed.
 review_apply_fixes__append_test_tree() {
-  local suite="$1" allow_file="$2" files_file path
+  local suite="$1" allow_file="$2" files_file file_path
   [ -n "$suite" ] || return 0
   printf '%s/\n' "$suite" >> "$allow_file" || return 2
   files_file="$(mktemp)" || return 2
@@ -259,13 +258,13 @@ review_apply_fixes__append_test_tree() {
     rm -f "$files_file"
     return 2
   }
-  while IFS= read -r -d '' path; do
-    review_apply_fixes__valid_path "$path" || {
-      echo "ERROR: unsupported test path in allowlist: $path" >&2
+  while IFS= read -r -d '' file_path; do
+    review_apply_fixes__valid_path "$file_path" || {
+      echo "ERROR: unsupported test path in allowlist: $file_path" >&2
       rm -f "$files_file"
       return 2
     }
-    printf '%s\n' "$path" >> "$allow_file" || {
+    printf '%s\n' "$file_path" >> "$allow_file" || {
       rm -f "$files_file"
       return 2
     }
@@ -278,21 +277,21 @@ review_apply_fixes__append_test_tree() {
 # them. Also allow existing top-level test trees for source changes. Existing test
 # files are listed exactly; suite prefixes cover new tests.
 review_apply_fixes__append_related_tests() {
-  local path="$1" allow_file="$2" suite="" name hits_file test_path rest grep_status root_suite
-  case "$path" in
+  local file_path="$1" allow_file="$2" suite="" name hits_file test_path rest grep_status root_suite
+  case "$file_path" in
     formulas/*.toml)
-      name="${path##*/}"
+      name="${file_path##*/}"
       name="${name%.toml}"
       suite="formulas/test/$name"
       review_apply_fixes__append_test_tree "$suite" "$allow_file" || return $?
       ;;
     formulas/test/*)
-      rest="${path#formulas/test/}"
+      rest="${file_path#formulas/test/}"
       suite="formulas/test/${rest%%/*}"
       review_apply_fixes__append_test_tree "$suite" "$allow_file" || return $?
       ;;
     formulas/lib/*)
-      name="${path##*/}"
+      name="${file_path##*/}"
       hits_file="$(mktemp)" || return 2
       if git -C "$REVIEW_WORK_DIR" grep -l -z -F -e "$name" -- formulas/test > "$hits_file" 2>/dev/null; then
         while IFS= read -r -d '' test_path; do
@@ -306,7 +305,7 @@ review_apply_fixes__append_related_tests() {
       else
         grep_status=$?
         if [ "$grep_status" -gt 1 ]; then
-          echo "ERROR: cannot find tests referencing $path" >&2
+          echo "ERROR: cannot find tests referencing $file_path" >&2
           rm -f "$hits_file"
           return 2
         fi
@@ -329,7 +328,7 @@ review_apply_fixes__append_related_tests() {
 # An explicit list is exact apart from entries ending in /, which authorize that
 # directory subtree. The default is the reviewed diff plus related test suites.
 review_apply_fixes_allowed_paths() {
-  local explicit="${1:-${REVIEW_ALLOWED_PATHS:-}}" allow_file changed_file path line
+  local explicit="${1:-${REVIEW_ALLOWED_PATHS:-}}" allow_file changed_file file_path line
   if [ -n "$explicit" ]; then
     while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -348,17 +347,17 @@ review_apply_fixes_allowed_paths() {
     rm -f "$allow_file" "$changed_file"
     return 2
   fi
-  while IFS= read -r -d '' path; do
-    review_apply_fixes__valid_path "$path" || {
-      echo "ERROR: unsupported path in reviewed diff: $path" >&2
+  while IFS= read -r -d '' file_path; do
+    review_apply_fixes__valid_path "$file_path" || {
+      echo "ERROR: unsupported path in reviewed diff: $file_path" >&2
       rm -f "$allow_file" "$changed_file"
       return 2
     }
-    printf '%s\n' "$path" >> "$allow_file" || {
+    printf '%s\n' "$file_path" >> "$allow_file" || {
       rm -f "$allow_file" "$changed_file"
       return 2
     }
-    review_apply_fixes__append_related_tests "$path" "$allow_file" || {
+    review_apply_fixes__append_related_tests "$file_path" "$allow_file" || {
       rm -f "$allow_file" "$changed_file"
       return 2
     }
@@ -373,7 +372,7 @@ review_apply_fixes_allowed_paths() {
 # any tracked, staged, unstaged, or non-ignored untracked edit is outside scope.
 # Returns 3 for a scope violation, 2 for an inspection failure, 0 when clean.
 review_apply_fixes_check_allowed_paths() {
-  local explicit="${1:-${REVIEW_ALLOWED_PATHS:-}}" allow_file changed_file path line ok violation=0
+  local explicit="${1:-${REVIEW_ALLOWED_PATHS:-}}" allow_file changed_file file_path line ok violation=0
   allow_file="$(mktemp)" || return 2
   changed_file="$(mktemp)" || { rm -f "$allow_file"; return 2; }
   if ! review_apply_fixes_allowed_paths "$explicit" > "$allow_file"; then
@@ -384,9 +383,9 @@ review_apply_fixes_check_allowed_paths() {
     rm -f "$allow_file" "$changed_file"
     return 2
   fi
-  while IFS= read -r -d '' path; do
-    review_apply_fixes__valid_path "$path" || {
-      echo "ERROR: unsupported changed path: $path" >&2
+  while IFS= read -r -d '' file_path; do
+    review_apply_fixes__valid_path "$file_path" || {
+      echo "ERROR: unsupported changed path: $file_path" >&2
       violation=1
       continue
     }
@@ -394,12 +393,12 @@ review_apply_fixes_check_allowed_paths() {
     while IFS= read -r line; do
       [ -n "$line" ] || continue
       case "$line" in
-        */) case "$path" in "$line"*) ok=1 ;; esac ;;
-        *) [ "$path" = "$line" ] && ok=1 ;;
+        */) case "$file_path" in "$line"*) ok=1 ;; esac ;;
+        *) [ "$file_path" = "$line" ] && ok=1 ;;
       esac
     done < "$allow_file"
     if [ "$ok" -ne 1 ]; then
-      echo "ERROR: out-of-scope edit refused: $path" >&2
+      echo "ERROR: out-of-scope edit refused: $file_path" >&2
       violation=1
     fi
   done < "$changed_file"
@@ -409,19 +408,26 @@ review_apply_fixes_check_allowed_paths() {
 }
 
 # review_apply_fixes__failure_set <output-file> [pattern] — emit a sorted unique
-# set of failure identifiers. A configured pattern is a Bash ERE with exactly
+# set of failure identifiers. A configured pattern is a POSIX ERE with exactly
 # one capture group. Without one, keep normalized output lines that mention
 # FAIL/ERROR, replacing volatile timings and memory addresses first.
 review_apply_fixes__failure_set() {
-  local output_file="$1" pattern="${2:-}" raw_file normalized_file failure_lines_file line status id
+  local output_file="$1" pattern="${2:-}" raw_file normalized_file failure_lines_file line command_status id capture_count
   [ -f "$output_file" ] || { echo "ERROR: test output is missing" >&2; return 2; }
 
   if [ -n "$pattern" ]; then
+    # Keep capture arrays local and use each shell's POSIX-ERE result shape.
+    # Local options ensure caller Zsh regex settings do not change this contract.
+    if [ -n "${ZSH_VERSION:-}" ]; then
+      setopt localoptions nobashrematch norematchpcre
+      local MATCH
+      local -a match mbegin mend
+    fi
     if [[ "" =~ $pattern ]]; then
       :
     else
-      status=$?
-      if [ "$status" -eq 2 ]; then
+      command_status=$?
+      if [ "$command_status" -eq 2 ]; then
         echo "ERROR: invalid test_failure_pattern ERE" >&2
         return 2
       fi
@@ -429,12 +435,18 @@ review_apply_fixes__failure_set() {
     raw_file="$(mktemp)" || return 2
     while IFS= read -r line || [ -n "$line" ]; do
       if [[ "$line" =~ $pattern ]]; then
-        if [ "${#BASH_REMATCH[@]}" -ne 2 ]; then
+        if [ -n "${ZSH_VERSION:-}" ]; then
+          capture_count="${#match[@]}"
+          id="${match[1]:-}"
+        else
+          capture_count="$((${#BASH_REMATCH[@]} - 1))"
+          id="${BASH_REMATCH[1]:-}"
+        fi
+        if [ "$capture_count" -ne 1 ]; then
           rm -f "$raw_file"
           echo "ERROR: test_failure_pattern must contain exactly one capture group" >&2
           return 2
         fi
-        id="${BASH_REMATCH[1]}"
         id="$(printf '%s' "$id" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
         if [ -z "$id" ]; then
           rm -f "$raw_file"
@@ -443,8 +455,8 @@ review_apply_fixes__failure_set() {
         fi
         printf '%s\n' "$id" >> "$raw_file" || { rm -f "$raw_file"; return 2; }
       else
-        status=$?
-        if [ "$status" -eq 2 ]; then
+        command_status=$?
+        if [ "$command_status" -eq 2 ]; then
           rm -f "$raw_file"
           echo "ERROR: invalid test_failure_pattern ERE" >&2
           return 2
@@ -452,9 +464,9 @@ review_apply_fixes__failure_set() {
       fi
     done < "$output_file"
     LC_ALL=C sort -u "$raw_file"
-    status=$?
+    command_status=$?
     rm -f "$raw_file"
-    return "$status"
+    return "$command_status"
   fi
 
   normalized_file="$(mktemp)" || return 2
@@ -466,14 +478,14 @@ review_apply_fixes__failure_set() {
     -e 's/^[[:space:]]+//; s/[[:space:]]+$//' \
     "$output_file" > "$normalized_file" || { rm -f "$normalized_file" "$failure_lines_file"; return 2; }
   grep -iE 'FAIL|ERROR' "$normalized_file" > "$failure_lines_file"
-  status=$?
-  case "$status" in
-    0) LC_ALL=C sort -u "$failure_lines_file"; status=$? ;;
-    1) status=0 ;; # grep 1 means the output has no failure lines.
-    *) status=2 ;;
+  command_status=$?
+  case "$command_status" in
+    0) LC_ALL=C sort -u "$failure_lines_file"; command_status=$? ;;
+    1) command_status=0 ;; # grep 1 means the output has no failure lines.
+    *) command_status=2 ;;
   esac
   rm -f "$normalized_file" "$failure_lines_file"
-  return "$status"
+  return "$command_status"
 }
 
 review_apply_fixes__ids_json() {
@@ -535,14 +547,14 @@ review_apply_fixes__record_test_result() {
 # review_apply_fixes__record_test_failure <command> <status> <output> [details] —
 # create a durable major/testing finding under the review findings container.
 review_apply_fixes__record_test_failure() {
-  local command_text="$1" status="$2" output="$3" details="${4:-}" description finding_id
+  local command_text="$1" command_status="$2" output="$3" details="${4:-}" description finding_id
   description="$(printf 'Test command failed with exit status %s.\n\nCommand:\n%s\n\nOutput (last 100 lines):\n%s\n' \
-    "$status" "$command_text" "$output")"
+    "$command_status" "$command_text" "$output")"
   if [ -n "$details" ]; then
     description="$(printf '%s\n\nFailure-set comparison:\n%s\n' "$description" "$details")"
   fi
   finding_id="$(bd create --parent "$REVIEW_FINDINGS" \
-    --title "Apply-fixes test command failed (exit $status)" \
+    --title "Apply-fixes test command failed (exit $command_status)" \
     --description "$description" --type bug --priority 1 \
     --labels "severity:major,category:testing" --silent)" || {
       echo "ERROR: could not record failed test command as a finding" >&2
@@ -559,12 +571,12 @@ review_apply_fixes__record_test_failure() {
 # push. The standalone test step leaves verdict handling to apply-fixes; a test
 # failure on the third regular attempt escalates instead of using verification.
 review_apply_fixes__test_failure_iterate() {
-  local command_text="$1" status="$2" output_file="$3" details="$4" output finding_id
+  local command_text="$1" command_status="$2" output_file="$3" details="$4" output finding_id
   output="$(tail -n 100 "$output_file")"
-  finding_id="$(review_apply_fixes__record_test_failure "$command_text" "$status" "$output" "$details")" || return 2
+  finding_id="$(review_apply_fixes__record_test_failure "$command_text" "$command_status" "$output" "$details")" || return 2
   review_apply_fixes__record_test_result fail "$finding_id" || return 2
   if [ "${REVIEW_PHASE_SUFFIX:-}" = "test" ]; then
-    echo "ERROR: test_command failed (exit $status); finding=$finding_id; apply-fixes will handle this attempt" >&2
+    echo "ERROR: test_command failed (exit $command_status); finding=$finding_id; apply-fixes will handle this attempt" >&2
     return 10
   fi
   if [ "${REVIEW_PHASE_SUFFIX:-}" = "apply-fixes" ] && [ "${REVIEW_ATTEMPT:-0}" -ge 3 ] 2>/dev/null; then
@@ -574,8 +586,8 @@ review_apply_fixes__test_failure_iterate() {
     return 10
   fi
   review_apply_fixes_set_verdict iterate \
-    "test_command failed with exit $status; failure recorded as finding $finding_id; no commit made" || return 2
-  echo "ERROR: test_command failed (exit $status); finding=$finding_id; refusing to commit" >&2
+    "test_command failed with exit $command_status; failure recorded as finding $finding_id; no commit made" || return 2
+  echo "ERROR: test_command failed (exit $command_status); finding=$finding_id; refusing to commit" >&2
   return 10
 }
 
@@ -595,7 +607,7 @@ review_apply_fixes__comparison_failure_iterate() {
 # caller owns phase-specific iterate/escalate handling.
 review_apply_fixes_test_before_commit() {
   local command_text="${1:-${REVIEW_TEST_COMMAND:-}}" gate="${REVIEW_TEST_GATE:-no-new-failures}"
-  local pattern="${REVIEW_TEST_FAILURE_PATTERN:-}" output_file status head_status parse_status
+  local pattern="${REVIEW_TEST_FAILURE_PATTERN:-}" output_file command_status head_status parse_status
   local head_failures=""
   local base_ref base_error_file base_error temp_root base_worktree base_output setup_output
   local review_real temp_real
@@ -631,21 +643,21 @@ review_apply_fixes_test_before_commit() {
     echo "[review-apply-fixes] test_command passed"
     return 0
   fi
-  status="$head_status"
+  command_status="$head_status"
 
   if [ "$gate" = "strict" ]; then
     review_apply_fixes__record_test_gate_state "$gate" null "strict mode; baseline not compared" || { rm -f "$output_file"; return 2; }
     failure_details="strict mode: any non-zero test result blocks the commit; baseline comparison was not performed"
-    review_apply_fixes__test_failure_iterate "$command_text" "$status" "$output_file" "$failure_details"
-    status=$?
+    review_apply_fixes__test_failure_iterate "$command_text" "$command_status" "$output_file" "$failure_details"
+    command_status=$?
     rm -f "$output_file"
-    return "$status"
+    return "$command_status"
   fi
 
   base_error_file="$(mktemp)" || {
     base_error="cannot allocate a diagnostic file for resolving the immutable base"
     review_apply_fixes__comparison_failure_iterate "$command_text" "$head_status" "$output_file" "$base_error"
-    status=$?; rm -f "$output_file"; return "$status"
+    command_status=$?; rm -f "$output_file"; return "$command_status"
   }
   base_ref="$(review_apply_fixes__base_ref 2>"$base_error_file")"
   parse_status=$?
@@ -655,35 +667,35 @@ review_apply_fixes_test_before_commit() {
     review_apply_fixes__record_test_gate_state "$gate" null "$base_error" || { rm -f "$output_file"; return 2; }
     failure_details="$(printf '%s\nFix-head failure identifiers: %s' \
       "$base_error. Treating all fix-head failures as new; no commit was made." "${head_failures:-unparsed}")"
-    review_apply_fixes__test_failure_iterate "$command_text" "$status" "$output_file" "$failure_details"
-    status=$?
+    review_apply_fixes__test_failure_iterate "$command_text" "$command_status" "$output_file" "$failure_details"
+    command_status=$?
     rm -f "$output_file"
-    return "$status"
+    return "$command_status"
   fi
   rm -f "$base_error_file"
 
   temp_root="$(mktemp -d "${TMPDIR:-/tmp}/review-apply-fixes-base.XXXXXX")" || {
     base_error="cannot create a disposable directory for the immutable-base worktree"
     review_apply_fixes__comparison_failure_iterate "$command_text" "$head_status" "$output_file" "$base_error"
-    status=$?; rm -f "$output_file"; return "$status"
+    command_status=$?; rm -f "$output_file"; return "$command_status"
   }
   review_real="$(cd "$REVIEW_WORK_DIR" && pwd -P)" || {
     base_error="cannot resolve the review worktree path; baseline comparison failed closed"
     rm -rf "$temp_root"
     review_apply_fixes__comparison_failure_iterate "$command_text" "$head_status" "$output_file" "$base_error"
-    status=$?; rm -f "$output_file"; return "$status"
+    command_status=$?; rm -f "$output_file"; return "$command_status"
   }
   temp_real="$(cd "$temp_root" && pwd -P)" || {
     base_error="cannot resolve the disposable worktree path; baseline comparison failed closed"
     rm -rf "$temp_root"
     review_apply_fixes__comparison_failure_iterate "$command_text" "$head_status" "$output_file" "$base_error"
-    status=$?; rm -f "$output_file"; return "$status"
+    command_status=$?; rm -f "$output_file"; return "$command_status"
   }
   if [[ "$temp_real" == "$review_real" || "$temp_real" == "$review_real/"* ]]; then
     base_error="system temporary directory resolves inside the review worktree; refusing to create the baseline worktree there"
     rm -rf "$temp_root"
     review_apply_fixes__comparison_failure_iterate "$command_text" "$head_status" "$output_file" "$base_error"
-    status=$?; rm -f "$output_file"; return "$status"
+    command_status=$?; rm -f "$output_file"; return "$command_status"
   fi
   base_worktree="$temp_root/worktree"
   base_output="$temp_root/output"
@@ -695,10 +707,10 @@ review_apply_fixes_test_before_commit() {
     review_apply_fixes__record_test_gate_state "$gate" null "$base_error" || { rm -f "$output_file"; return 2; }
     failure_details="$(printf '%s\nFix-head failure identifiers: %s' \
       "$base_error. Treating all fix-head failures as new; no commit was made." "${head_failures:-unparsed}")"
-    review_apply_fixes__test_failure_iterate "$command_text" "$status" "$output_file" "$failure_details"
-    status=$?
+    review_apply_fixes__test_failure_iterate "$command_text" "$command_status" "$output_file" "$failure_details"
+    command_status=$?
     rm -f "$output_file"
-    return "$status"
+    return "$command_status"
   fi
 
   echo "[review-apply-fixes] comparing test failures against immutable base $base_ref"
@@ -717,10 +729,10 @@ review_apply_fixes_test_before_commit() {
     review_apply_fixes__record_test_gate_state "$gate" null "$base_error" || { rm -f "$output_file"; return 2; }
     failure_details="$(printf '%s\nFix-head failure identifiers: %s' \
       "$base_error. Treating all fix-head failures as new; no commit was made." "${head_failures:-unparsed}")"
-    review_apply_fixes__test_failure_iterate "$command_text" "$status" "$output_file" "$failure_details"
-    status=$?
+    review_apply_fixes__test_failure_iterate "$command_text" "$command_status" "$output_file" "$failure_details"
+    command_status=$?
     rm -f "$output_file"
-    return "$status"
+    return "$command_status"
   fi
 
   if [ "$base_status" -eq 126 ] || [ "$base_status" -eq 127 ] || [ "$base_status" -ge 128 ]; then
@@ -729,10 +741,10 @@ review_apply_fixes_test_before_commit() {
     review_apply_fixes__record_test_gate_state "$gate" null "$base_error" || { rm -f "$output_file"; return 2; }
     failure_details="$(printf '%s\nFix-head failure identifiers: %s' \
       "$base_error. Treating all fix-head failures as new; no commit was made." "${head_failures:-unparsed}")"
-    review_apply_fixes__test_failure_iterate "$command_text" "$status" "$output_file" "$failure_details"
-    status=$?
+    review_apply_fixes__test_failure_iterate "$command_text" "$command_status" "$output_file" "$failure_details"
+    command_status=$?
     rm -f "$output_file"
-    return "$status"
+    return "$command_status"
   fi
 
   if [ "$head_status" -eq 126 ] || [ "$head_status" -eq 127 ] || [ "$head_status" -ge 128 ]; then
@@ -741,9 +753,9 @@ review_apply_fixes_test_before_commit() {
     review_apply_fixes__record_test_gate_state "$gate" null "$base_error" || { rm -f "$output_file"; return 2; }
     failure_details="$base_error. The same command was attempted at the immutable base; no commit was made."
     review_apply_fixes__test_failure_iterate "$command_text" "$head_status" "$output_file" "$failure_details"
-    status=$?
+    command_status=$?
     rm -f "$output_file"
-    return "$status"
+    return "$command_status"
   fi
 
   head_failures="$(review_apply_fixes__failure_set "$output_file" "$pattern")"
@@ -758,9 +770,9 @@ review_apply_fixes_test_before_commit() {
     review_apply_fixes__record_test_gate_state "$gate" null "$base_error" || { rm -f "$output_file"; return 2; }
     failure_details="$base_error. The same command was run at the immutable base; no commit was made."
     review_apply_fixes__test_failure_iterate "$command_text" "$head_status" "$output_file" "$failure_details"
-    status=$?
+    command_status=$?
     rm -f "$output_file"
-    return "$status"
+    return "$command_status"
   fi
 
   base_failures=""
@@ -777,10 +789,10 @@ review_apply_fixes_test_before_commit() {
       review_apply_fixes__record_test_gate_state "$gate" null "$base_error" || { rm -f "$output_file"; return 2; }
       failure_details="$(printf '%s\nFix-head failure identifiers: %s' \
         "$base_error; comparison failed closed. Treating all fix-head failures as new; no commit was made." "$head_failures")"
-      review_apply_fixes__test_failure_iterate "$command_text" "$status" "$output_file" "$failure_details"
-      status=$?
+      review_apply_fixes__test_failure_iterate "$command_text" "$command_status" "$output_file" "$failure_details"
+      command_status=$?
       rm -f "$output_file"
-      return "$status"
+      return "$command_status"
     fi
   fi
   rm -rf "$temp_root"
@@ -788,19 +800,19 @@ review_apply_fixes_test_before_commit() {
   head_file="$(mktemp)" || {
     base_error="cannot allocate scratch storage for the failure-set comparison"
     review_apply_fixes__comparison_failure_iterate "$command_text" "$head_status" "$output_file" "$base_error"
-    status=$?; rm -f "$output_file"; return "$status"
+    command_status=$?; rm -f "$output_file"; return "$command_status"
   }
   base_file="$(mktemp)" || {
     base_error="cannot allocate scratch storage for the failure-set comparison"
     rm -f "$head_file"
     review_apply_fixes__comparison_failure_iterate "$command_text" "$head_status" "$output_file" "$base_error"
-    status=$?; rm -f "$output_file"; return "$status"
+    command_status=$?; rm -f "$output_file"; return "$command_status"
   }
   new_file="$(mktemp)" || {
     base_error="cannot allocate scratch storage for the failure-set comparison"
     rm -f "$head_file" "$base_file"
     review_apply_fixes__comparison_failure_iterate "$command_text" "$head_status" "$output_file" "$base_error"
-    status=$?; rm -f "$output_file"; return "$status"
+    command_status=$?; rm -f "$output_file"; return "$command_status"
   }
   if ! printf '%s\n' "$head_failures" | sed '/^$/d' > "$head_file" ||
      ! printf '%s\n' "$base_failures" | sed '/^$/d' > "$base_file" ||
@@ -808,20 +820,20 @@ review_apply_fixes_test_before_commit() {
     base_error="could not compare normalized fix-head and immutable-base failure sets"
     rm -f "$head_file" "$base_file" "$new_file"
     review_apply_fixes__comparison_failure_iterate "$command_text" "$head_status" "$output_file" "$base_error"
-    status=$?; rm -f "$output_file"; return "$status"
+    command_status=$?; rm -f "$output_file"; return "$command_status"
   fi
   new_failures="$(cat "$new_file")" || {
     base_error="could not read the normalized failure-set comparison result"
     rm -f "$head_file" "$base_file" "$new_file"
     review_apply_fixes__comparison_failure_iterate "$command_text" "$head_status" "$output_file" "$base_error"
-    status=$?; rm -f "$output_file"; return "$status"
+    command_status=$?; rm -f "$output_file"; return "$command_status"
   }
   rm -f "$head_file" "$base_file" "$new_file"
 
   base_json="$(review_apply_fixes__ids_json "$base_failures")" || {
     base_error="could not serialize immutable-base failure identifiers"
     review_apply_fixes__comparison_failure_iterate "$command_text" "$head_status" "$output_file" "$base_error"
-    status=$?; rm -f "$output_file"; return "$status"
+    command_status=$?; rm -f "$output_file"; return "$command_status"
   }
   review_apply_fixes__record_test_gate_state "$gate" "$base_json" "" || { rm -f "$output_file"; return 2; }
   if [ -z "$new_failures" ]; then
@@ -833,38 +845,40 @@ review_apply_fixes_test_before_commit() {
 
   failure_details="$(printf 'new failure identifiers: %s\nimmutable-base failure identifiers (recorded as pre-existing): %s\nfix-head failure identifiers: %s' \
     "$new_failures" "${base_failures:-none}" "$head_failures")"
-  review_apply_fixes__test_failure_iterate "$command_text" "$status" "$output_file" "$failure_details"
-  status=$?
+  review_apply_fixes__test_failure_iterate "$command_text" "$command_status" "$output_file" "$failure_details"
+  command_status=$?
   rm -f "$output_file"
-  return "$status"
+  return "$command_status"
 }
 
-# review_apply_fixes_push_branch — push the current review branch to origin and
+# review_apply_fixes_push_branch <remote> — push the current review branch and
 # report a clear error if no branch or a remote push failure prevents it.
 review_apply_fixes_push_branch() {
-  local branch
+  local push_remote="${1:-}" branch
+  [ -n "$push_remote" ] || { echo "ERROR: push remote is required" >&2; return 2; }
   : "${REVIEW_WORK_DIR:?call review_apply_fixes_load first}"
   branch="$(git -C "$REVIEW_WORK_DIR" symbolic-ref --quiet --short HEAD)" || {
     echo "ERROR: cannot push a detached review worktree" >&2
     return 2
   }
-  if ! git -C "$REVIEW_WORK_DIR" push origin "HEAD:refs/heads/$branch"; then
-    echo "ERROR: failed to push review branch $branch to origin" >&2
+  if ! git -C "$REVIEW_WORK_DIR" push -- "$push_remote" "HEAD:refs/heads/$branch"; then
+    echo "ERROR: failed to push review branch $branch to $push_remote" >&2
     return 1
   fi
-  echo "[review-apply-fixes] pushed $branch to origin"
+  echo "[review-apply-fixes] pushed $branch to $push_remote"
 }
 
-# review_apply_fixes_commit_and_push <message> — the only supported commit path:
+# review_apply_fixes_commit_and_push <message> <remote> — the supported commit path:
 # scope check, test gate, commit, then push. A test failure returns 10 after the
 # finding is written; no git add/commit/push has run.
 review_apply_fixes_commit_and_push() {
-  local message="${1:-}" status
+  local message="${1:-}" push_remote="${2:-}" command_status
   [ -n "$message" ] || { echo "ERROR: commit message is required" >&2; return 2; }
+  [ -n "$push_remote" ] || { echo "ERROR: push remote is required" >&2; return 2; }
   review_apply_fixes_check_allowed_paths || return $?
   review_apply_fixes_test_before_commit "${REVIEW_TEST_COMMAND:-}"
-  status=$?
-  [ "$status" -eq 0 ] || return "$status"
+  command_status=$?
+  [ "$command_status" -eq 0 ] || return "$command_status"
   # Tests can generate or mutate files; re-check after they pass so such
   # side-effects cannot enter the commit through git add -A.
   review_apply_fixes_check_allowed_paths || return $?
@@ -872,20 +886,20 @@ review_apply_fixes_commit_and_push() {
     cd "$REVIEW_WORK_DIR" || exit 2
     git add -A || exit $?
     git diff --cached --quiet
-    status=$?
-    if [ "$status" -eq 0 ]; then
+    command_status=$?
+    if [ "$command_status" -eq 0 ]; then
       echo "[review-apply-fixes] no new changes to commit; retrying branch push"
       exit 0
-    elif [ "$status" -ne 1 ]; then
-      exit "$status"
+    elif [ "$command_status" -ne 1 ]; then
+      exit "$command_status"
     fi
     git commit -m "$message"
   ) || {
-    status=$?
-    echo "ERROR: apply-fixes commit failed (status $status)" >&2
-    return "$status"
+    command_status=$?
+    echo "ERROR: apply-fixes commit failed (status $command_status)" >&2
+    return "$command_status"
   }
-  review_apply_fixes_push_branch || return $?
+  review_apply_fixes_push_branch "$push_remote" || return $?
 }
 
 # review_apply_fixes_map_verdict <synthesis_verdict> <applied yes|no> — map the
@@ -894,17 +908,17 @@ review_apply_fixes_commit_and_push() {
 #   pass               -> done    (nothing actionable)
 #   pass_with_findings -> iterate (actionable findings remain or were fixed)
 #   fail               -> iterate (a blocker was surfaced and fixed; re-review)
-#   blocked            -> done    (terminate; the caller must also escalate)
+#   blocked            -> blocked (terminal hard failure; caller must escalate)
 #   anything else      -> iterate (conservative: re-review rather than silently stop)
-# blocked maps to done so the loop STOPS instead of spinning an unfixable state to
-# the cap; review_apply_fixes_escalate is the partner that flags the human.
+# blocked remains distinct; review_apply_fixes_escalate stamps the hard failure
+# that terminates the loop and flags the human.
 review_apply_fixes_map_verdict() {
   local sv="$1" applied="${2:-no}"
   case "$sv" in
     pass)               echo done ;;
     pass_with_findings) echo iterate ;;
     fail)               echo iterate ;;
-    blocked)            echo done ;;
+    blocked)            echo blocked ;;
     *)                  echo iterate ;;
   esac
 }
@@ -996,23 +1010,27 @@ review_apply_fixes_set_verdict() {
   echo "[review-apply-fixes] review.verdict=$verdict"
 }
 
-# review_apply_fixes_escalate <reason> — terminate the loop to a human. Used when
-# synthesis is blocked (could not run) or a surviving blocker is genuinely
-# unfixable by the agent: record gc.review.loop_outcome=blocked-needs-human +
-# the reason on the molecule ROOT (so the overseer/human gate sees it), then set
-# review.verdict=done so the loop STOPS rather than spinning to its cap. The
-# verdict-glue check treats done as a converged terminal — if the loop was slung
-# with a notify target, that terminal transition fires the fire-and-forget nudge,
-# the human-notification path. The loop does not abort_scope; this is a clean stop
-# with a flag a human picks up.
+# review_apply_fixes_escalate <reason> — preserve a blocked review as a hard
+# failure. The controller stops the compiled loop without running its checker.
+# Therefore this path also owns the optional best-effort blocked notification.
 review_apply_fixes_escalate() {
-  local reason="${1:-synthesis blocked}"
+  local reason="${1:-synthesis blocked}" notify_target
   : "${REVIEW_PHASE_SUFFIX:?call review_apply_fixes_load first}"
   : "${REVIEW_ROOT:?call review_apply_fixes_load first}"
   . "${GC_CITY:?GC_CITY must be set by the runtime}/formulas/lib/resolve-phase-bead.sh" || return 2
   review_phase_resolve "$REVIEW_PHASE_SUFFIX" "$REVIEW_ROOT" "${REVIEW_PHASE_STEP_ID:-}" || return 2
-  bd update "$REVIEW_ROOT" --set-metadata gc.review.loop_outcome="blocked-needs-human" >/dev/null || return 2
-  bd update "$REVIEW_ROOT" --set-metadata gc.review.loop_blocked_reason="$reason"       >/dev/null || return 2
+  bd update "$REVIEW_ROOT" --set-metadata gc.review.loop_outcome="blocked-needs-human" \
+    --set-metadata gc.review.loop_blocked_reason="$reason" >/dev/null || return 2
+  bd update "$GC_BEAD_ID" --set-metadata review.verdict=blocked \
+    --set-metadata gc.outcome=fail --set-metadata gc.failure_class=hard \
+    --set-metadata gc.failure_reason="$reason" --status=closed \
+    --notes "apply-fixes: review.verdict=blocked. TERMINATE-TO-HUMAN: $reason" || return 2
   echo "[review-apply-fixes] TERMINATE-TO-HUMAN: $reason" >&2
-  review_apply_fixes_set_verdict done "TERMINATE-TO-HUMAN: $reason (gc.review.loop_outcome=blocked-needs-human on $REVIEW_ROOT)"
+  notify_target="$(review_apply_fixes__meta "$REVIEW_ROOT" 'gc.review_loop.notify')" || notify_target=""
+  if [ -n "$notify_target" ]; then
+    gc session nudge "$notify_target" \
+      "mol-review-loop blocked: root=$REVIEW_ROOT attempt=${REVIEW_ATTEMPT:-unknown} verdict=blocked reason=$reason" \
+      >/dev/null 2>&1 || true
+  fi
+  return 0
 }

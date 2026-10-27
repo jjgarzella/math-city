@@ -33,6 +33,7 @@ cleanly: the branch and worktree are recorded on the bead the moment they exist.
 | Variable | Source | Description |
 |----------|--------|-------------|
 | base_branch | caller | Base branch to branch from / measure against (default: main). |
+| push_remote | caller | Required Git remote for the feature branch and review fix commits. |
 | review_formula | caller | Review-loop formula the terminal triggers (default: mol-review-loop-standard). Swap for another reviewer-loop variant via --var; keeps review reviewer-agnostic. |
 | review_worker_target | caller / rig `formula_vars` | Pool target for the review loop workers. Defaults to city-scope claude; rigs override to gasvillage.polecat. |
 | target_repo | caller | Repo the change lands in (path or URL). Empty (default) = the rig repo. Set it to work a DIFFERENT repo — e.g. a standalone package nested in an umbrella rig, absent from the rig checkout. |
@@ -58,6 +59,10 @@ formula_compiler = ">=2.0.0"
 [vars.base_branch]
 description = "Base branch to branch from and measure the change against (default target {{base_branch}}..HEAD)."
 default = "main"
+
+[vars.push_remote]
+description = "Git remote to receive the feature branch and subsequent review fix commits. Required; the caller chooses the destination."
+required = true
 
 [vars.review_formula]
 description = """
@@ -493,6 +498,11 @@ cd "$WORK_DIR"
 BRANCH=$(meta branch)
 [ -z "$BRANCH" ] && BRANCH=$(git branch --show-current)
 [ -n "$BRANCH" ] || { echo "STOP: no feature branch recorded or checked out in $WORK_DIR" >&2; gc runtime drain-ack; exit 1; }
+PUSH_REMOTE=$(cat <<'GC_PUSH_REMOTE_VALUE'
+{{push_remote}}
+GC_PUSH_REMOTE_VALUE
+)
+[ -n "$PUSH_REMOTE" ] || { echo "STOP: push_remote is required" >&2; gc runtime drain-ack; exit 1; }
 
 # 1. Belt-and-suspenders: nothing uncommitted should remain.
 if [ -n "$(git status --porcelain)" ]; then
@@ -515,11 +525,8 @@ REVIEW_TARGET="$BASE_SHA..HEAD"
 
 # 3. Push only after the exact work_dir, branch, and immutable review base are
 # known. The review target is the captured SHA range, never a moving branch name.
-if git remote | grep -qx origin; then
-    git push -u origin "HEAD:$BRANCH"
-else
-    echo "note: no origin remote on this repo; leaving $BRANCH local (the review loop resumes work_dir directly)"
-fi
+git push -u -- "$PUSH_REMOTE" "HEAD:$BRANCH" \
+  || { echo "STOP: failed to push $BRANCH to $PUSH_REMOTE" >&2; gc runtime drain-ack; exit 1; }
 
 # 4. Trigger the review→fix loop with that exact context. Routed to the polecat
 #    pool; --nudge wakes it once this session drains the slot.
@@ -535,6 +542,7 @@ gc sling "$REVIEW_ROUTE" "$ROOT" \
   --on "{{review_formula}}" --var "base_branch={{base_branch}}" \
   --var "work_dir=$WORK_DIR" --var "branch=$BRANCH" \
   --var "base_sha=$BASE_SHA" --var "target=$REVIEW_TARGET" \
+  --var "push_remote=$PUSH_REMOTE" \
   --var "review_worker_target=$REVIEW_ROUTE" --nudge
 
 # 5. Close THIS step (the implement lifecycle is done; the work bead stays OPEN

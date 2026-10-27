@@ -15,7 +15,7 @@ AFX_META_LOG="$(mktemp)"; AFX_UPDATE_LOG="$(mktemp)"; AFX_NUDGE_LOG="$(mktemp)"
 printf 'fixed source\n' > "$AFX_WORKDIR/app.txt"
 before="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 afx_sandbox
-afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_commit_and_push "fix: guarded commit"'
+afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_commit_and_push "fix: guarded commit" "origin"'
 after="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 assert_eq "10" "$AFX_RC" "failed test gate returns its recorded-failure status"
 assert_eq "$before" "$after" "failed tests do not create a commit"
@@ -38,7 +38,7 @@ AFX_META_LOG="$(mktemp)"; AFX_UPDATE_LOG="$(mktemp)"; AFX_NUDGE_LOG="$(mktemp)"
 printf 'fixed source\n' > "$AFX_WORKDIR/app.txt"
 before="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 afx_sandbox
-afx_run 'push_calls=0; git() { if [ "${1:-}" = "-C" ] && [ "${3:-}" = "push" ]; then push_calls=$((push_calls + 1)); if [ "$push_calls" -eq 1 ]; then echo "simulated push failure" >&2; return 23; fi; echo "simulated push retry success"; return 0; fi; command git "$@"; }; review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_commit_and_push "fix: push failure fixture"; first=$?; review_apply_fixes_commit_and_push "fix: push failure fixture"; second=$?; printf "FIRST=%s SECOND=%s\n" "$first" "$second"'
+afx_run 'push_calls=0; git() { if [ "${1:-}" = "-C" ] && [ "${3:-}" = "push" ]; then push_calls=$((push_calls + 1)); if [ "$push_calls" -eq 1 ]; then echo "simulated push failure" >&2; return 23; fi; echo "simulated push retry success"; return 0; fi; command git "$@"; }; review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_commit_and_push "fix: push failure fixture" "origin"; first=$?; review_apply_fixes_commit_and_push "fix: push failure fixture" "origin"; second=$?; printf "FIRST=%s SECOND=%s\n" "$first" "$second"'
 after="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 assert_eq "0" "$AFX_RC" "push retry after a failure succeeds without a second commit"
 assert_contains "$AFX_OUT" "FIRST=1 SECOND=0" "failed push is reported and an idempotent retry succeeds"
@@ -55,7 +55,7 @@ AFX_CREATE_LOG="$(mktemp)"; AFX_META_LOG="$(mktemp)"; AFX_UPDATE_LOG="$(mktemp)"
 printf 'fixed source\n' > "$AFX_WORKDIR/app.txt"
 before="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 afx_sandbox
-afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_commit_and_push "fix: test scope fixture"'
+afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_commit_and_push "fix: test scope fixture" "origin"'
 after="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 assert_eq "3" "$AFX_RC" "test-generated out-of-scope edit is refused before commit"
 assert_eq "$before" "$after" "out-of-scope test artifact does not create a commit"
@@ -162,7 +162,7 @@ assert_contains "$AFX_ERR" "out-of-scope edit refused: other.py" "Python source 
 section "06 apply-fixes commit error escalation"
 COMMIT_BLOCK="$(formula_py block apply-fixes review_apply_fixes_commit_and_push)"
 COMMIT_BLOCK_FILE="$(mktemp)"
-printf '%s\n' "$COMMIT_BLOCK" | python3 -c 'import sys; sys.stdout.write(sys.stdin.read().replace("{{test_command}}", "").replace("{{allowed_paths}}", ""))' > "$COMMIT_BLOCK_FILE"
+printf '%s\n' "$COMMIT_BLOCK" | python3 -c 'import sys; sys.stdout.write(sys.stdin.read().replace("{{test_command}}", "").replace("{{allowed_paths}}", "").replace("{{push_remote}}", "origin"))' > "$COMMIT_BLOCK_FILE"
 AFX_CITY=""; AFX_ROOT="root-commit-error-seed"; AFX_VERDICT="pass_with_findings"
 AFX_WORKDIR=""; AFX_BASE_SHA=""; AFX_TEST_COMMAND=""; AFX_ALLOWED_PATHS=""; AFX_ROOT_TEST_COMMAND=""
 AFX_FINDINGS_JSON='[]'; AFX_FINDINGS_FILE=""; AFX_CREATE_LOG="$(mktemp)"
@@ -203,7 +203,7 @@ for commit_status in 2 3 10; do
     assert_contains "$meta" "$AFX_ROOT	gc.review.loop_outcome=blocked-needs-human" "status $commit_status records blocked-needs-human on the root"
     assert_contains "$meta" "gc.review.loop_blocked_reason=" "status $commit_status records a blocked reason"
     assert_contains "$meta" "$MOCK_COMMIT_DIAGNOSTIC" "status $commit_status preserves the scope or inspection diagnostic"
-    assert_contains "$meta" "apply-fixes-bead	review.verdict=done" "status $commit_status stops the review loop"
+    assert_contains "$meta" "apply-fixes-bead	review.verdict=blocked" "status $commit_status stops the review loop"
     assert_contains "$updates" "status=closed" "status $commit_status closes the apply-fixes bead"
     assert_contains "$commit_err" "TERMINATE-TO-HUMAN" "status $commit_status emits a human escalation"
   fi

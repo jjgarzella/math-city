@@ -62,6 +62,7 @@ case "$sub" in
           --arg test_gate "${BD_TEST_GATE:-}" \
           --arg test_pattern "${BD_TEST_FAILURE_PATTERN:-}" \
           --arg allowed "${BD_ALLOWED_PATHS:-}" \
+          --arg notify "${BD_NOTIFY:-}" \
           --argjson writes "$(logged_root_metadata "$target")" \
           --arg step "${BD_ROOT_STEP_ID:-test}" \
           '{id:$id, metadata: ({"gc.step_id":$step,"gc.var.base_branch":$branch} +
@@ -74,6 +75,7 @@ case "$sub" in
              + (if $test_gate != "" then {"gc.var.test_gate":$test_gate} else {} end)
              + (if $test_pattern != "" then {"gc.var.test_failure_pattern":$test_pattern} else {} end)
              + (if $allowed != "" then {"gc.var.allowed_paths":$allowed} else {} end)
+             + (if $notify != "" then {"gc.review_loop.notify":$notify} else {} end)
              + $writes)}
            | [.]'
       elif [ -n "${BD_FINDINGS:-}" ] && [ "$target" = "${BD_FINDINGS:-}" ] && [ -n "${BD_FINDINGS_FILE:-}" ] && [ -f "${BD_FINDINGS_FILE}" ]; then

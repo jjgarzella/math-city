@@ -20,11 +20,15 @@ This loop variant is the loop counterpart of the standalone host
 the reviewer's synthesis output onto the loop's `review.verdict`. It reuses the
 shared verdict-glue check (`review-verdict.sh`) unchanged.
 
+Review cooks require an explicit `push_remote` (for example,
+`--var push_remote=origin` or `--var push_remote=my-fork`). The commit helper
+requires it as the second argument: `review_apply_fixes_commit_and_push "message" "remote"`.
+
 ## What is covered
 
 - **test_01_integrity** — structure pinned straight from the TOML: the
   `workspace-setup -> review-loop` shape; the ralph `[steps.check]` cap
-  (`max_attempts = 3`), exec mode, `.gc-review-verdict.sh` path/timeout (the
+  (`max_attempts = 4`: three regular attempts and one final verification), exec mode, `.gc-review-verdict.sh` path/timeout (the
   SHARED check, reused); the `[review-pipeline -> apply-fixes]` body, both pooled
   to `gasvillage.polecat`; the `[[compose.expand]]` of the canonical fragment
   into `review-pipeline` with a NO-DRIFT cross-check (every fragment var
@@ -35,14 +39,15 @@ shared verdict-glue check (`review-verdict.sh`) unchanged.
   and the absence of any `on_complete`/`on_fail`/abort_scope directive.
 - **test_02_apply_fixes_lib** — the verdict→severity→fix machinery, run against
   canned bead JSON (`bin/bd`, `bin/gc` stubs — never a real Dolt store): the
-  synthesis-verdict → `review.verdict` map (pass→done; pass_with_findings→iterate
-  iff fixes applied else done; fail→iterate; blocked→done; unknown→iterate); the
+  synthesis-verdict → `review.verdict` map (pass→done; pass_with_findings→iterate;
+  fail→iterate; blocked→blocked; unknown→iterate); the
   severity→rank map; `load` resolving the run (verdict + counts + work_dir +
   threshold); `findings` enumerating durable severity-tagged findings ranked
   must-fix-first (closed / label-less excluded); `set_verdict` writing
   `review.verdict` and closing (invalid verdict rejected); and `escalate` —
   blocked → terminate-to-human (`gc.review.loop_outcome=blocked-needs-human` on
-  the root, `review.verdict=done`, no nudge from the lib).
+  the root, `review.verdict=blocked`, `gc.outcome=fail`, `gc.failure_class=hard`,
+  preserved reason, and an optional best-effort blocked notification from the lib).
 - **test_03_compile** — `gc formula show mol-review-loop-standard` compiles and
   EXPANDS: the eight reviewer passes (analyze → six lenses → synthesis)
   materialize inside the ralph iteration body ahead of `apply-fixes`, the DAG
@@ -62,6 +67,10 @@ shared verdict-glue check (`review-verdict.sh`) unchanged.
   metadata plus the apply-fixes note; new failures create a testing finding and
   iterate; unavailable baseline runs fail closed; strict mode keeps the original
   any-nonzero-fails behavior.
+- **test_06_push_remote** — requires an explicit remote before staging or tests,
+  and proves commits reach the selected remote without changing another remote.
+- **test_07_shell_portability** — repeats scope, test, commit, push, and blocked
+  behavior with Zsh callers using the shared command implementation.
 
 ## What is NOT covered here
 

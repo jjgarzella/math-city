@@ -43,7 +43,7 @@ assert_contains "$PIPE_DESC" "synthesis"      "review-pipeline notes the expande
 
 # --- vars: fragment contract (target<-review_target rename) + loop knobs ------
 host_vars="$(formula_py defined-vars | tr '\n' ' ')"
-expected_host="$( { fragment_vars | sed 's/^review_target$/target/'; echo notify_target; echo work_dir; echo branch; echo base_sha; echo test_command; echo test_gate; echo test_failure_pattern; echo allowed_paths; } | sort | tr '\n' ' ')"
+expected_host="$( { fragment_vars | sed 's/^review_target$/target/'; echo notify_target; echo work_dir; echo branch; echo push_remote; echo base_sha; echo test_command; echo test_gate; echo test_failure_pattern; echo allowed_paths; } | sort | tr '\n' ' ')"
 assert_eq "$expected_host" "$host_vars" \
   "loop declares the fragment contract plus explicit work_dir/branch/base_sha context and notify_target"
 

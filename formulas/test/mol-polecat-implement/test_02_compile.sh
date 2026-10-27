@@ -10,7 +10,7 @@ if ! command -v gc >/dev/null 2>&1; then
   return 0 2>/dev/null || true
 fi
 
-SHOW="$(gc formula show mol-polecat-implement 2>&1)"; rc=$?
+SHOW="$(gc formula show mol-polecat-implement --var push_remote=origin 2>&1)"; rc=$?
 assert_eq "0" "$rc" "gc formula show mol-polecat-implement exits 0 (compiles)"
 
 # Every lifecycle step compiles to a prefixed step bead, in order, with the

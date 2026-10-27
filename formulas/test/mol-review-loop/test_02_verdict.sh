@@ -83,3 +83,11 @@ assert_eq "" "$V_NUDGE" "no notify target -> no nudge (notify disabled by defaul
 # fire-and-forget: a failing nudge must NOT change the converged exit code.
 verdict_case 1 "done,$TS1" "mayor/sess" "3" 1
 assert_eq "0" "$V_RC" "a FAILING notify is swallowed — converged still exits 0 (fire-and-forget)"
+
+# A blocked verdict must never become a converged pass. Normally the controller
+# short-circuits this check on hard failure; direct invocation fails closed.
+verdict_case 1 "blocked,$TS1" "review-owner" "3" 0
+assert_eq "2" "$V_RC" "blocked verdict fails closed when checker is invoked directly"
+assert_contains "$V_ERR" "blocked" "checker identifies blocked rather than requesting iteration"
+assert_not_contains "$V_OUT" "converged" "blocked checker never reports convergence"
+assert_eq "" "$V_NUDGE" "blocked notice belongs to escalation, avoiding checker duplicates"

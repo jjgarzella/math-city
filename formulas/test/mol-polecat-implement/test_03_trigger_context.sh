@@ -62,8 +62,9 @@ TRIGGER_BLOCK="$(printf '%s' "$TRIGGER_BLOCK" | \
   TRIGGER_FORMULA_VALUE=mol-review-loop-standard \
   TRIGGER_WORKER_VALUE=gasvillage.polecat \
   TRIGGER_BASE_BRANCH_VALUE=review-loop-repair \
+  TRIGGER_PUSH_REMOTE_VALUE=review-fork \
   python3 -c 'import os,sys; s=sys.stdin.read();
-for key, env in (("review_formula","TRIGGER_FORMULA_VALUE"),("review_worker_target","TRIGGER_WORKER_VALUE"),("base_branch","TRIGGER_BASE_BRANCH_VALUE")):
+for key, env in (("review_formula","TRIGGER_FORMULA_VALUE"),("review_worker_target","TRIGGER_WORKER_VALUE"),("base_branch","TRIGGER_BASE_BRANCH_VALUE"),("push_remote","TRIGGER_PUSH_REMOTE_VALUE")):
     s=s.replace("{{"+key+"}}", os.environ[env])
 sys.stdout.write(s)')"
 TRIGGER_OUT="$TRIGGER_TEST_ROOT/output"
@@ -92,6 +93,8 @@ MERGE_BASE_CALLS="$(grep -c '^merge-base ' "$TRIGGER_TEST_ROOT/logs/git.log" || 
 assert_eq "1" "$MERGE_BASE_CALLS" "trigger resolves the merge base exactly once"
 assert_contains "$TRIGGER_GC_LOG" "sling math-experiments/gasvillage.polecat trigger-root --on mol-review-loop-standard" "trigger selects the standard reviewer by default"
 assert_contains "$TRIGGER_GC_LOG" "--var work_dir=$TRIGGER_WORK_DIR" "trigger passes work_dir to the review loop"
+assert_contains "$TRIGGER_GIT_LOG" "push -u -- review-fork HEAD:$TRIGGER_BRANCH" "trigger pushes to the selected remote"
+assert_contains "$TRIGGER_GC_LOG" "--var push_remote=review-fork" "trigger passes the selected remote to review"
 assert_contains "$TRIGGER_GC_LOG" "--var branch=$TRIGGER_BRANCH" "trigger passes branch to the review loop"
 assert_contains "$TRIGGER_GC_LOG" "--var base_sha=$TRIGGER_BASE_SHA" "trigger passes the immutable base SHA to the review loop"
 assert_contains "$TRIGGER_GC_LOG" "--var target=$TRIGGER_BASE_SHA..HEAD" "trigger passes the exact immutable range target"

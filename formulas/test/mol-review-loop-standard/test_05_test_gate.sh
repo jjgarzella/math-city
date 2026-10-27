@@ -58,7 +58,7 @@ AFX_TEST_COMMAND="$runner"
 printf 'head\n' > "$AFX_WORKDIR/app.txt"
 before="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 afx_sandbox
-afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; git() { if [ "${1:-}" = "-C" ] && [ "${3:-}" = "push" ]; then return 0; fi; command git "$@"; }; review_apply_fixes_commit_and_push "fix: allow existing test failures" || exit $?; review_apply_fixes_set_verdict iterate "existing-only test failure fixture"'
+afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; git() { if [ "${1:-}" = "-C" ] && [ "${3:-}" = "push" ]; then return 0; fi; command git "$@"; }; review_apply_fixes_commit_and_push "fix: allow existing test failures" "origin" || exit $?; review_apply_fixes_set_verdict iterate "existing-only test failure fixture"'
 after="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 assert_eq "0" "$AFX_RC" "pre-existing-only failures allow the guarded commit"
 assert_not_contains "$before" "$after" "allowed pre-existing failures still create the reviewed commit"
@@ -85,7 +85,7 @@ run_log="$(mktemp)"; runner="$(make_runner existing-plus-new "$run_log")"; AFX_T
 printf 'head\n' > "$AFX_WORKDIR/app.txt"
 before="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 afx_sandbox
-afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_commit_and_push "fix: reject new test failure"'
+afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_commit_and_push "fix: reject new test failure" "origin"'
 after="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 assert_eq "10" "$AFX_RC" "new failure returns the recorded-failure status"
 assert_eq "$before" "$after" "new failure refuses to create a commit"
@@ -127,7 +127,7 @@ run_log="$(mktemp)"; runner="$(make_runner strict "$run_log")"; AFX_TEST_COMMAND
 printf 'head\n' > "$AFX_WORKDIR/app.txt"
 before="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 afx_sandbox
-afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_commit_and_push "fix: strict test gate"'
+afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_commit_and_push "fix: strict test gate" "origin"'
 after="$(git -C "$AFX_WORKDIR" rev-parse HEAD)"
 assert_eq "10" "$AFX_RC" "strict mode preserves the existing failing-test status"
 assert_eq "$before" "$after" "strict mode refuses to commit any failing test run"
@@ -177,7 +177,7 @@ afx_sandbox
 afx_run 'review_apply_fixes_load apply-fixes >/dev/null || exit $?; review_apply_fixes_test_before_commit "$REVIEW_TEST_COMMAND"'
 assert_eq "10" "$AFX_RC" "third-attempt test failure returns its recorded-failure signal"
 assert_contains "$(cat "$AFX_META_LOG")" "$AFX_ROOT	gc.review.loop_outcome=blocked-needs-human" "third-attempt test failure escalates"
-assert_contains "$(cat "$AFX_META_LOG")" "$AFX_BEAD_ID	review.verdict=done" "third-attempt test failure stops the loop"
+assert_contains "$(cat "$AFX_META_LOG")" "$AFX_BEAD_ID	review.verdict=blocked" "third-attempt test failure stops the loop"
 assert_contains "$(cat "$AFX_UPDATE_LOG")" "id=$AFX_BEAD_ID	status=closed" "escalation closes the apply-fixes bead"
 
 # The fallback parser canonicalizes volatile addresses/timings before comparing

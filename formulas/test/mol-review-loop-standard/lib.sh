@@ -76,8 +76,8 @@ fragment_vars() { fragment_var_defaults | sed 's/=.*//'; }
 # --- gc compile/expand helpers -----------------------------------------------
 HAVE_GC=0
 command -v gc >/dev/null 2>&1 && HAVE_GC=1
-gc_show() { gc formula show "$(formula_py formula-name)" "$@" 2>/dev/null; }
-gc_show_json() { gc formula show "$(formula_py formula-name)" "$@" --json 2>/dev/null; }
+gc_show() { gc formula show "$(formula_py formula-name)" --var push_remote=origin "$@" 2>/dev/null; }
+gc_show_json() { gc formula show "$(formula_py formula-name)" --var push_remote=origin "$@" --json 2>/dev/null; }
 
 # --- apply-fixes lib runner (the new verdict->severity->fix machinery) --------
 # afx_sandbox — create (once per scenario) a sandbox GC_CITY carrying the real
@@ -128,6 +128,8 @@ afx_env() {
   BD_TEST_GATE="${AFX_ROOT_TEST_GATE:-}" \
   BD_TEST_FAILURE_PATTERN="${AFX_ROOT_TEST_FAILURE_PATTERN:-}" \
   BD_ALLOWED_PATHS="${AFX_ROOT_ALLOWED_PATHS:-}" \
+  BD_NOTIFY="${AFX_NOTIFY:-}" \
+  GC_NUDGE_FAIL="${AFX_NUDGE_FAIL:-0}" \
   BD_FINDINGS="$AFX_FINDINGS" \
   BD_FINDINGS_FILE="$AFX_FINDINGS_FILE" \
   BD_META_LOG="$AFX_META_LOG" \
@@ -167,7 +169,7 @@ AFX_ERR=""
 afx_run() {
   local snippet="$1" out err
   out="$(mktemp)"; err="$(mktemp)"
-  afx_env bash -c '
+  afx_env "${AFX_SHELL:-bash}" -c '
     set -uo pipefail
     . "$GC_CITY/formulas/lib/review-apply-fixes.sh"
     '"$snippet"'

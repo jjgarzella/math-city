@@ -11,13 +11,16 @@
 #
 #   exit 0 = converged   (verdict done/approved/pass)            -> stop, clean pass
 #   exit 1 = iterate      (verdict iterate/fail/retry, or unknown) -> next attempt
-#   exit 2 = undetermined (no verdict visible within the budget) -> fail-closed
+#   exit 2 = undetermined or blocked                         -> fail-closed
 #
 # The ralph runtime treats exit 0 as GatePass (stop) and EVERY non-zero exit as
 # GateFail (iterate, bounded by max_attempts) — so exit 1 and exit 2 differ only
 # for diagnosis (the code is persisted to gc.exit_code), never in control flow.
-# There is no abort_scope: a non-converging loop simply iterates to its cap and
-# the ralph control bead closes gc.outcome=fail, a clean terminal.
+# A blocked review closes apply-fixes with gc.outcome=fail, failure_class=hard,
+# and the original reason. The controller stops that iteration BEFORE this
+# checker; review_apply_fixes_escalate owns its blocked notification. If invoked
+# directly on a blocked verdict, this checker returns 2 without claiming success.
+# The terminal hard-failure metadata, rather than a special exit code, stops retry.
 #
 # Robustness: this reuses the two-read sampling of the gastown adopt-pr review
 # check (assets/scripts/checks/adopt-pr-review-approved.sh) — it keeps reading
@@ -138,6 +141,10 @@ case "$current" in
     echo "review.verdict=$current (attempt $ATTEMPT) -> converged, stop"
     notify_terminal "converged" "$current"
     exit 0
+    ;;
+  blocked)
+    echo "review.verdict=blocked (attempt $ATTEMPT): expected a terminal hard failure; checker cannot authorize retry" >&2
+    exit 2
     ;;
   iterate|fail|retry)
     echo "review.verdict=$current (attempt $ATTEMPT) -> iterate"

@@ -1,0 +1,6 @@
+[order]
+description = "Temporary native hq backup pruning; remove after upstream Beads/Gas City pruning ships"
+trigger = "cooldown"
+interval = "24h"
+timeout = "1500s"
+exec = "python3 /Users/Shared/Developer/ai/city/math-city/commands/temporary-dolt-backup-prune.py"

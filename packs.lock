@@ -1,11 +1,11 @@
 schema = 1
 
 [packs."https://github.com/gastownhall/gascity.git//examples/bd"]
-version = "sha:f895c0ff47d6ee9334ed282a416387eb5b084d24"
-commit = "f895c0ff47d6ee9334ed282a416387eb5b084d24"
-fetched = "2026-07-18T15:35:42Z"
+version = "sha:2e643dc2eb5ff84d9853ecaa6961a87a8e4043ae"
+commit = "2e643dc2eb5ff84d9853ecaa6961a87a8e4043ae"
+fetched = "2026-10-29T21:32:15Z"
 
 [packs."https://github.com/gastownhall/gascity.git//internal/bootstrap/packs/core"]
-version = "sha:f895c0ff47d6ee9334ed282a416387eb5b084d24"
-commit = "f895c0ff47d6ee9334ed282a416387eb5b084d24"
-fetched = "2026-07-18T15:35:42Z"
+version = "sha:2e643dc2eb5ff84d9853ecaa6961a87a8e4043ae"
+commit = "2e643dc2eb5ff84d9853ecaa6961a87a8e4043ae"
+fetched = "2026-10-29T21:32:15Z"

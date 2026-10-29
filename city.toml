@@ -307,3 +307,8 @@ default_branch = "main"
 [rigs.imports]
 [rigs.imports.gasvillage]
 source = "./packs/gasvillage"
+
+# Native backup sync exceeds the default two-minute managed listener limit.
+[dolt]
+read_timeout_millis = 900000
+write_timeout_millis = 2100000

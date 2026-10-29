@@ -52,8 +52,7 @@ def main():
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", version)
     if not match or tuple(map(int, match.groups())) < (2, 3, 0):
         raise RuntimeError("native backup pruning requires Dolt >= 2.3.0")
-    query = ("SET SESSION net_read_timeout=1500; SET SESSION net_write_timeout=1500; "
-             f"CALL DOLT_BACKUP('sync', '--prune-with-grace-period={args.grace}', 'default')")
+    query = f"CALL DOLT_BACKUP('sync', '--prune-with-grace-period={args.grace}', 'default')"
     # bd sql uses a ten-second read timeout, which can cancel a large prune.
     # Dolt's native client discovers the existing managed server from its lock.
     source = CITY / ".beads/dolt/hq"

@@ -280,18 +280,48 @@ owned script path and `--profile /absolute/candidate/profile.json`. Profile
 publication alone preserves `.gc/kaimon-sysimages/current`; never activate a
 candidate as a shortcut for a canary.
 
-The 2026-10-30 refresh preflight is **blocked before image construction**:
-fresh upstream DeRham `a2eee27` declares CUDA `5.7.3`, and CudaNTTs `c8b1fe1`
-declares CUDA `5`. Native Julia 1.13.2 `Pkg.Versions` reports an empty
-intersection with CUDA `6` for each. GFM v0.3.1 is exactly
-`7192d479d2c41d31021a4938beec8223d16d6654`, whose Project has no CUDA compat
-bound. No dependency constraint was widened, no CUDA patch was made, and no
-new artifact/profile was built or selected. Coordinator disposition is needed
-before a CUDA 6 union can satisfy the declared constraints.
+The first 2026-10-30 refresh preflight found incompatible CUDA bounds in
+DeRham `a2eee27` (`5.7.3`) and CudaNTTs `c8b1fe1` (`5`). JJ's subsequent
+disposition excludes CudaNTTs, GPUPolynomials and MMPSingularities and uses
+DeRham's reviewed CUDA-6-compatible branch `polecat/dr-cy9lo`, exact commit
+`19f092d08ed7795ee92c156bd564bcfab749b627`. The refreshed union contains
+DeRham, GPUFiniteFieldMatrices, NewtonExperiments and EdgeIdeals, together with
+the installed KaimonGate bootstrap pins. Its GFM workload is the clean exact
+v0.3.1 commit `7192d479d2c41d31021a4938beec8223d16d6654` declared by DeRham;
+its tree is `b00a51768d1b5d9f2c07f6e09832fbafaf0ad4cc`.
+
+The coordinator additionally authorized the dependency constraints from GFM
+main `8f1426cac61a5e3d348b4a5bde25fb51a721c933` (v0.3.2), so ordinary GFM
+polecats based on main can use the image. The union helper's optional
+`city_supplemental_projects` input contributes only dependency/compat bounds;
+it cannot replace the pinned workload or introduce source overrides. Its
+constraint matrix records the supplemental Project hash and origin separately.
+This adds DispatchDoctor (`0.4.28` compat, resolved 0.4.29), IterTools `1`
+and CUDA `5, 6` bounds while retaining DeRham's exact GFM v0.3.1 source.
+
+Native Julia 1.13.2 resolution selected registered CUDA 6.5.0 (tree
+`5ed16a3db0795a0180ac7160e08ab46173827902`), CUDACore 6.5.0 and
+GPUCompiler 2.19.0, with Oscar 1.8.2 and Nemo 0.56.2. The CUDA 5.11.3 fork
+is absent. A native `Pkg.GitTools.tree_hash` audit verified every installed
+copy visible in the build/runtime depot stack for CUDA, CUDACore, GPUCompiler,
+DispatchDoctor and GFM against the exact locked trees; no package source patch
+was applied. The 270-entry union lock, constraint matrix and exact clean workload
+Git provenance are retained in `mc-occii.1/union-cuda6-main/` below the city image
+directory. Candidate construction and real polecat validation are in progress;
+the published current image below remains the rollback and default.
+
+The earlier four-repository build completed dependency precompilation but was
+stopped before image construction finished when the supplemental constraint
+decision arrived. Its incomplete staging directory and logs remain as evidence;
+they were never published as an artifact or profile. Both clean workload roots
+have no preference files; GFM main's test recipe writes preferences for the
+unbaked GFM UUID, rather than the baked DispatchDoctor UUID. The resolver's
+effective DispatchDoctor preferences were empty. Construction and selection
+still enforce the complete baked-package preference audit without an exception.
 
 | Required candidate evidence | DeRham | GPUFiniteFieldMatrices |
 | --- | --- | --- |
-| Real polecat workspace-setup | Not run: no compatible candidate | Not run: no candidate |
+| Real polecat workspace-setup | Pending candidate construction | Pending candidate construction |
 | Native image id / path / project / package source | Not run | Not run |
 | Package load timings, image and off | Not measured | Not measured |
 | Prepared-lock package tests | Not run | Not run |
@@ -305,6 +335,11 @@ v0.3.1 linked worktree twice, with clean Git status after both runs. An owned
 DeRham worktree rejected that profile's GFM path substitution and returned
 success to setup with its original Project and clean Git status restored.
 These local checks did not dispatch polecats or load a candidate image.
+The supplemental-constraint resolver passed the native Julia 1.13.2 positive
+union audit and five rejection checks (unknown workload, UUID mismatch, source
+override, incompatible bounds and duplicate supplement). Every rejected case
+left its original Project and Manifest unchanged; receipts are retained in
+`mc-occii.1/union-validation/negative-tests.toml`.
 
 ### Current published image
 

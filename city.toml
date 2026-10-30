@@ -204,6 +204,7 @@ prefix = "gfm"
 default_branch = "main"
 [rigs.formula_vars]
 review_worker_target = "gasvillage.polecat"
+setup_command = "/Users/Shared/Developer/ai/city/math-city/commands/kaimon-polecat-setup"
 typecheck_command = "/Users/jj-agents/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); using GPUFiniteFieldMatrices'"
 test_command = "/Users/jj-agents/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); Pkg.test()'"
 lint_command = "PATH=/Users/jj-agents/.juliaup/bin:$PATH /Users/Shared/Developer/ai/city/math-city/packs/julia-tools/lib/no-code-comments.sh"
@@ -219,6 +220,7 @@ prefix = "dr"
 default_branch = "main"
 [rigs.formula_vars]
 review_worker_target = "gasvillage.polecat"
+setup_command = "/Users/Shared/Developer/ai/city/math-city/commands/kaimon-polecat-setup"
 typecheck_command = "/Users/jj-agents/.juliaup/bin/julia --project=. -e 'using Pkg; Pkg.instantiate(); using DeRham'"
 # Reviews run only the short (presubmit) E2E tier; the coordinator runs the
 # medium (ci) tier at the end of an epic or phase (overseer decision 2026-10-27).

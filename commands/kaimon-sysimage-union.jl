@@ -25,6 +25,27 @@ gate_path = pkgdir(KaimonGate)
 projects["KaimonGate"] = (path=gate_path, project=TOML.parsefile(joinpath(gate_path, "Project.toml")),
                         sha256=bytes2hex(sha256(read(joinpath(gate_path, "Project.toml")))))
 
+# A repository's declared URL/revision is authoritative even for another city
+# package. Validate the clean workload checkout against it, then keep that Git
+# source in the lock: Pkg rejects URL declarations paired with path entries.
+pinned_sources = Dict{String,Any}()
+pinned_trees = Dict{String,String}()
+for entry in values(projects), (name, source) in get(entry.project, "sources", Dict())
+    haskey(projects, name) && haskey(source, "url") && haskey(source, "rev") || continue
+    haskey(pinned_sources, name) && pinned_sources[name] != source &&
+        error("Conflicting pinned city sources: " * name)
+    path = projects[name].path
+    git(args...) = strip(read(`git -C $path $args`, String))
+    normalize(url) = replace(rstrip(url, '/'), r"\.git$" => "")
+    normalize(git("remote", "get-url", "origin")) == normalize(source["url"]) ||
+        error("Workload checkout URL differs from declared source: " * name)
+    git("rev-parse", "HEAD") == git("rev-parse", source["rev"] * "^{commit}") ||
+        error("Workload checkout revision differs from declared source: " * name)
+    isempty(git("status", "--porcelain")) || error("Pinned workload checkout is dirty: " * name)
+    pinned_sources[name] = source
+    pinned_trees[name] = git("rev-parse", "HEAD^{tree}")
+end
+
 deps = Dict{String,String}()
 sources = Dict{String,Any}()
 compat = Dict{String,Pkg.Versions.VersionSpec}()
@@ -39,7 +60,7 @@ for (name, entry) in sort(collect(projects); by=first)
         compat[name] = Pkg.Versions.semver_spec("=" * project["version"])
         exact_pins[name] = project["version"]
     else
-        sources[name] = Dict("path"=>entry.path)
+        sources[name] = get(pinned_sources, name, Dict("path"=>entry.path))
     end
     for (dependency, id) in get(project, "deps", Dict())
         haskey(deps, dependency) && deps[dependency] != id && error("UUID collision: " * dependency)
@@ -101,6 +122,13 @@ open(joinpath(union_root, "resolve.log"), "w") do io
     try
         Pkg.resolve(; io)
         resolved = TOML.parsefile(joinpath(union_root, "Manifest.toml"))["deps"]
+        for (name, source) in pinned_sources
+            actual = only(resolved[name])
+            get(actual, "repo-url", nothing) == source["url"] &&
+                get(actual, "repo-rev", nothing) == source["rev"] &&
+                get(actual, "git-tree-sha1", nothing) == pinned_trees[name] ||
+                error("Resolved source differs from audited workload checkout: " * name)
+        end
         for name in gate_seen
             expected = only(gate_manifest[name])
             haskey(expected, "git-tree-sha1") || continue

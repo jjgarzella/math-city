@@ -258,6 +258,64 @@ class Prepare(unittest.TestCase):
                          "user-specified [sources] path rewritten")
         self.assertEqual((self.target / self.output()["CityDep"]["path"]).resolve(), local.resolve())
 
+    def test_equivalent_explicit_path_preserves_relative_declaration(self):
+        with (self.target / "Project.toml").open("a") as stream:
+            stream.write('\n[sources]\nCityDep = {path = "../CityDep"}\n')
+        before = (self.target / "Project.toml").read_bytes()
+        result = self.prepare(self.path_map({"CityDep": self.owned_dep}), extra=("--preserve-project",))
+        self.assertEqual(result.returncode, 0, result.log)
+        self.assertEqual((self.target / "Project.toml").read_bytes(), before)
+
+    def pinned_source(self):
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(self.owned_dep), *args], text=True).strip()
+        git("init", "-q")
+        git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.org", "add", ".")
+        git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.org", "commit", "-qm", "fixture")
+        git("tag", "v0.1.0")
+        url = self.owned_dep.as_uri()
+        git("remote", "add", "origin", url)
+        with (self.target / "Project.toml").open("a") as stream:
+            stream.write(f'\n[sources]\nCityDep = {{url = "{url}", rev = "v0.1.0"}}\n')
+        lock = image.entries(image.read_toml(self.lock))
+        lock["CityDep"].pop("path")
+        lock["CityDep"].update({"repo-url": url, "repo-rev": "v0.1.0",
+                               "git-tree-sha1": git("rev-parse", "HEAD^{tree}")})
+        write_manifest(self.lock, self.julia_version, lock)
+
+    def test_exact_pinned_checkout_preserves_source_and_resumes(self):
+        self.pinned_source()
+        before = (self.target / "Project.toml").read_bytes()
+        for _ in range(2):
+            result = self.prepare(extra=("--preserve-project",))
+            self.assertEqual(result.returncode, 0, result.log)
+            self.assertEqual((self.target / "Project.toml").read_bytes(), before)
+            self.assertNotIn("path", self.output()["CityDep"])
+            self.assertEqual(self.output()["CityDep"]["repo-rev"], "v0.1.0")
+
+    def test_path_override_of_pinned_source_is_refused_without_writes(self):
+        self.pinned_source()
+        before = self.snapshot()
+        mapping = self.path_map({"CityDep": self.owned_dep})
+        self.assert_refused_unchanged(self.prepare(mapping), before)
+
+    def test_preserve_project_rolls_back_source_rewrite(self):
+        before = self.snapshot()
+        result = self.prepare(self.path_map({"CityDep": self.owned_dep}), extra=("--preserve-project",))
+        self.assert_refused_unchanged(result, before)
+
+    def test_city_root_stays_editable_when_union_pins_its_git_source(self):
+        self.pinned_source()
+        project = self.target / "Project.toml"
+        project.write_text(project.read_text().replace('name = "Target"', 'name = "GPUFiniteFieldMatrices"'))
+        lock = image.entries(image.read_toml(self.lock))
+        lock["GPUFiniteFieldMatrices"] = {"uuid": TARGET_UUID, "version": "0.1.0",
+                                          "git-tree-sha1": "f" * 40, "deps": ["CityDep", "Primes"]}
+        write_manifest(self.lock, self.julia_version, lock)
+        result = self.prepare(extra=("--preserve-project",))
+        self.assertEqual(result.returncode, 0, result.log)
+        self.assertNotIn("GPUFiniteFieldMatrices", self.output())
+
     def test_compat_violation_refused_without_changes(self):
         project = self.target / "Project.toml"
         project.write_text(project.read_text().replace('Primes = "0.5"', 'Primes = "0.4"'))

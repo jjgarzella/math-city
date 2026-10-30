@@ -813,8 +813,12 @@ def prepare(args):
         setup_env["JULIA_LOAD_PATH"] = "@stdlib"
         subprocess.run([args.julia, "--startup-file=no",
                         str(HERE / "kaimon-sysimage-prepare.jl"), str(project), str(manifest),
-                        str(Path(args.path_map).resolve()) if args.path_map else "", str(owner)],
+                        str(Path(args.path_map).resolve()) if args.path_map else "", str(owner),
+                        "preserve-project" if getattr(args, "preserve_project", False) else "align-project",
+                        "editable-root" if read_toml(files[0]).get("name") in EDITABLE else "frozen-root"],
                        check=True, env=setup_env)
+        if getattr(args, "preserve_project", False) and files[0].read_bytes() != before[files[0]]:
+            raise Rejected("preparation would change Project.toml; preserving declared sources")
         check_project_compat(args.julia, project, info)
         if args.artifact:
             validate_artifact(args.artifact, info, project)
@@ -996,6 +1000,8 @@ def main():
     alignment.add_argument("--artifact", help="require the prepared target to pass this artifact's compatibility checks")
     alignment.add_argument("--profile", help="published profile override, including deliberate rollback")
     alignment.add_argument("--owned-root", required=True)
+    alignment.add_argument("--preserve-project", action="store_true",
+                           help="reject and roll back any Project.toml source rewrite")
     alignment.add_argument("--path-map", help="TOML mapping of editable dependency names to owned paths")
     alignment.add_argument("--replace-existing", action="store_true",
                            help="explicitly back up and replace a versioned Manifest without a matching tool receipt")

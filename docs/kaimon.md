@@ -245,6 +245,69 @@ logs or reports. Record old-token rejection after rotation.
 
 ## Shared dependency images on the current Mac
 
+### Polecat setup and candidate refresh (mc-occii.1)
+
+The refresh branch adds `commands/kaimon-polecat-setup` as the one-line
+`formula_vars.setup_command` for DeRham and GPUFiniteFieldMatrices. The normal
+`mol-polecat-implement.workspace-setup` step invokes it in the newly created
+linked worktree. This branch is pending review; these changes have not been
+installed into the running city configuration.
+
+The script runs `commands/kaimon-sysimage.py` directly through its Python 3.14
+shebang, with `prepare --preserve-project`. Preparation rolls back if it would
+rewrite Project.toml. Equivalent declared relative paths remain byte-for-byte
+unchanged. Union construction preserves declared city-package URL/revision
+sources, validating the workload checkout's clean status, origin and exact
+commit first. For example, DeRham's GFM `url@v0.3.1` stays a Git source in both
+Project and lock, rather than becoming a reference-worktree path. Julia Pkg
+requires this source-kind agreement; an equivalent checkout path is insufficient.
+The profile source map must list only intended editable path dependencies,
+omitting GFM when the union pins its URL/revision.
+
+Repository-local `info/exclude` entries for `/Manifest-v*.toml` and
+`/kaimon.toml` keep the generated lock and host wrapper recipe out of ordinary
+`git add`. Git shares that exclusion file across linked worktrees; it changes
+no tracked file or running process. Setup refuses tracked/symlinked output
+files and primary checkouts, preserves caller launch flags and the original
+Julia binary, and respects an explicit image opt-out. It reruns prepare using
+the tool's existing receipt on resume. Incompatible targets log the reason and
+return success to workspace-setup. If an earlier setup installed the wrapper,
+a rejected resume sets its image mode to `off`; remove that opt-out explicitly
+before retrying image preparation. Other launch settings remain intact.
+
+For a scoped canary, override only that workflow's setup command with the
+owned script path and `--profile /absolute/candidate/profile.json`. Profile
+publication alone preserves `.gc/kaimon-sysimages/current`; never activate a
+candidate as a shortcut for a canary.
+
+The 2026-10-30 refresh preflight is **blocked before image construction**:
+fresh upstream DeRham `a2eee27` declares CUDA `5.7.3`, and CudaNTTs `c8b1fe1`
+declares CUDA `5`. Native Julia 1.13.2 `Pkg.Versions` reports an empty
+intersection with CUDA `6` for each. GFM v0.3.1 is exactly
+`7192d479d2c41d31021a4938beec8223d16d6654`, whose Project has no CUDA compat
+bound. No dependency constraint was widened, no CUDA patch was made, and no
+new artifact/profile was built or selected. Coordinator disposition is needed
+before a CUDA 6 union can satisfy the declared constraints.
+
+| Required candidate evidence | DeRham | GPUFiniteFieldMatrices |
+| --- | --- | --- |
+| Real polecat workspace-setup | Not run: no compatible candidate | Not run: no candidate |
+| Native image id / path / project / package source | Not run | Not run |
+| Package load timings, image and off | Not measured | Not measured |
+| Prepared-lock package tests | Not run | Not run |
+| Clean canary worktree | Not run | Not run |
+
+Owned inputs, dependency-conflict evidence and local regression logs are retained
+under `.gc/kaimon-sysimages/mc-occii.1/`. The old artifact and current profile
+remain available unchanged. This preflight supplies no image or GPU acceptance.
+As a separate local smoke check, the retained profile prepared an owned GFM
+v0.3.1 linked worktree twice, with clean Git status after both runs. An owned
+DeRham worktree rejected that profile's GFM path substitution and returned
+success to setup with its original Project and clean Git status restored.
+These local checks did not dispatch polecats or load a candidate image.
+
+### Current published image
+
 The city image targets Julia **1.13.2 on macOS aarch64**. It resolves the
 declared dependency union of DeRham, GPUFiniteFieldMatrices, MMPSingularities,
 alexp616/GPUPolynomials, CudaNTTs, EdgeIdeals, NewtonExperiments and modern

@@ -1,6 +1,10 @@
 # Explicit, task-owned Project/source/lockfile alignment. No canonical writes.
 using Pkg, TOML, SHA
-project, union_manifest, path_map, owned_root = ARGS
+project, union_manifest, path_map, owned_root = ARGS[1:4]
+preserve_project = length(ARGS) > 4 && ARGS[5] == "preserve-project"
+editable_root = length(ARGS) > 5 && ARGS[6] == "editable-root"
+# The CLI's EDITABLE set is excluded by the builder, even when another city
+# project pins that package's Git source. Artifact validation still checks UUIDs.
 project = realpath(project)
 owned_root = realpath(owned_root)
 @assert project == owned_root || startswith(project,owned_root * "/") "Target is outside owned root"
@@ -13,9 +17,13 @@ original_project = deepcopy(p)
 m = TOML.parsefile(union_manifest)
 frozen = m["deps"]
 explicit_paths = isempty(path_map) ? Dict{String,String}() : TOML.parsefile(path_map)
+
+declared_source_matches(source, path, declaring_file) =
+    source !== nothing && haskey(source, "path") &&
+    realpath(joinpath(dirname(declaring_file), source["path"])) == path
 root_name = get(p,"name","")
 root_uuid = get(p,"uuid","")
-if haskey(frozen,root_name) && haskey(only(frozen[root_name]),"git-tree-sha1")
+if !editable_root && haskey(frozen,root_name) && haskey(only(frozen[root_name]),"git-tree-sha1")
     error("The root package is an immutable image dependency; use normal Julia for its development")
 end
 
@@ -69,7 +77,7 @@ while !isempty(pending)
         selected_paths[name] = path
         if haskey(get(p,"deps",Dict()),name) && haskey(explicit_paths,name)
             replacement = Dict("path"=>path)
-            if root_source != replacement
+            if !declared_source_matches(root_source, path, pfile)
                 println("Source alignment ",name,": ",repr(root_source)," -> ",repr(replacement))
                 get!(p,"sources",Dict())[name] = replacement
             end
@@ -115,6 +123,7 @@ for name in ("project_hash","city_path_project_hashes","city_workspace_project_h
     delete!(m,name)
 end
 if p != original_project
+  preserve_project && error("preparation would change Project.toml; preserving declared sources")
   let
     # Preserve unrelated text, comments and table order. Only replace source
     # tables; unusual TOML syntax falls back to serialization with an exact diff.

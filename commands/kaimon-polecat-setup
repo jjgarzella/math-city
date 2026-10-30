@@ -1,0 +1,135 @@
+#!/Users/jj-agents/.homebrew/opt/python@3.14/bin/python3.14
+"""Prepare an isolated polecat for a city image; incompatibility is nonfatal."""
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tomllib
+
+HERE = Path(__file__).resolve().parent
+spec = importlib.util.spec_from_file_location("city_image", HERE / "kaimon-sysimage.py")
+image = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(image)
+
+
+def recipe_text(original, updates):
+    """Preserve comments and unrelated launch settings; reject ambiguous syntax."""
+    expected = tomllib.loads(original)
+    text = original + ("\n" if original and not original.endswith("\n") else "")
+    for table, fields in updates.items():
+        expected.setdefault(table, {}).update(fields)
+        lines = text.splitlines(keepends=True)
+        header = re.compile(r"^\s*\[" + re.escape(table) + r"\]\s*(?:#.*)?$")
+        start = next((i for i, line in enumerate(lines) if header.match(line.rstrip())), None)
+        if start is None:
+            text += ("\n" if text.endswith("\n") else "\n\n") + f"[{table}]\n"
+            text += "".join(f"{key} = {json.dumps(value)}\n" for key, value in fields.items())
+            continue
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+        body = lines[start + 1:end]
+        for key, value in fields.items():
+            assignment = re.compile(r"^\s*" + re.escape(key) + r"\s*=")
+            replacement = f"{key} = {json.dumps(value)}\n"
+            index = next((i for i, line in enumerate(body) if assignment.match(line)), None)
+            if index is None:
+                body.append(replacement)
+            else:
+                body[index] = replacement
+        text = "".join(lines[:start + 1] + body + lines[end:])
+    if tomllib.loads(text) != expected:
+        raise image.Rejected("recipe syntax cannot be updated without changing unrelated settings")
+    return text
+
+
+def git(project, *args):
+    return subprocess.check_output(["git", "-C", str(project), *args], text=True).strip()
+
+
+def setup(project, profile_file=None):
+    if os.environ.get("KAIMON_SYSIMAGE_MODE") == "off":
+        raise image.Rejected("caller disabled city images in the environment")
+    project = project.resolve()
+    if Path(git(project, "rev-parse", "--show-toplevel")).resolve() != project:
+        raise image.Rejected("run setup at the polecat worktree root")
+    gitdir = Path(git(project, "rev-parse", "--absolute-git-dir")).resolve()
+    common = Path(git(project, "rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+    if gitdir == common or not any(part in (".gc", "worktrees") for part in project.parts):
+        raise image.Rejected("setup requires an isolated linked polecat worktree")
+    profile = image.load_profile(profile_file)
+    if profile is None:
+        raise image.Rejected("no published city profile")
+    recipe = project / "kaimon.toml"
+    manifest = project / "Manifest-v1.13.toml"
+    for path in (recipe, manifest):
+        if path.is_symlink() or git(project, "ls-files", "--", path.name):
+            raise image.Rejected(f"refusing tracked or symlinked generated file: {path.name}")
+    original = recipe.read_text() if recipe.exists() else ""
+    document = tomllib.loads(original)
+    launch = document.get("launch", {})
+    city = document.get("city_sysimage", {})
+    if city.get("mode") == "off":
+        raise image.Rejected("caller disabled city images in kaimon.toml")
+    if city.get("artifact") or city.get("artifact_root"):
+        raise image.Rejected("caller configured an explicit image artifact/cache")
+    requested = launch.get("julia_version", profile["julia_version"])
+    if not profile["julia_version"].startswith(str(requested).rstrip(".") + ".") and str(requested) != profile["julia_version"]:
+        raise image.Rejected(f"caller Julia {requested} differs from profile {profile['julia_version']}")
+    wrapper = str(HERE / "kaimon-sysimage-julia")
+    binary = launch.get("julia_bin", profile["julia_bin"])
+    if Path(binary).name == "kaimon-sysimage-julia":
+        binary = city.get("julia_bin", "")
+    if not binary:
+        raise image.Rejected("original Julia binary is missing")
+    if binary != profile["julia_bin"]:
+        image.require_runtime(image.runtime(binary, project), profile["julia_version"])
+    updates = {"launch": {"julia_bin": wrapper},
+               "city_sysimage": {"julia_bin": binary, "mode": city.get("mode", "auto"), "profile": profile["_file"]}}
+    if "julia_version" not in launch:
+        updates["launch"]["julia_version"] = profile["julia_version"]
+    proposed = recipe_text(original, updates)
+    # Git's repository-local exclude also applies to linked worktrees. Exact root
+    # patterns keep host recipes and generated locks out of ordinary git add.
+    exclude = common / "info/exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude.read_text() if exclude.exists() else ""
+    patterns = [pattern for pattern in ("/Manifest-v*.toml", "/kaimon.toml") if pattern not in existing.splitlines()]
+    if patterns:
+        with exclude.open("a") as stream:
+            stream.write("\n" + "\n".join(patterns) + "\n")
+    result = subprocess.run([str(HERE / "kaimon-sysimage.py"), "prepare",
+                             "--project", str(project), "--owned-root", str(project),
+                             "--profile", profile["_file"], "--path-map",
+                             str(Path(profile["_directory"]) / "source-paths.toml"),
+                             "--preserve-project"], capture_output=True, text=True)
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    if result.returncode:
+        # A previous successful setup may have installed our wrapper. Explicitly
+        # disable it on a rejected resume, preserving all caller launch settings.
+        if recipe.exists() and Path(launch.get("julia_bin", "")).name == "kaimon-sysimage-julia":
+            recipe.write_text(recipe_text(original, {"city_sysimage": {"mode": "off"}}))
+        raise image.Rejected(f"prepare rejected target (exit {result.returncode}); continuing with normal Julia")
+    recipe.write_text(proposed)
+    print(f"[city-sysimage-setup] prepared {project}; profile={profile['profile_id']}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--project", type=Path, default=Path.cwd())
+    parser.add_argument("--profile", help="candidate profile for an explicitly scoped canary")
+    args = parser.parse_args()
+    try:
+        setup(args.project, args.profile)
+    except (image.Rejected, OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
+        print(f"[city-sysimage-setup] {error}; image setup skipped", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

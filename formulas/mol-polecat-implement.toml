@@ -470,6 +470,8 @@ the human is the gate. You push the feature branch, hand off to the
 reviewer-agnostic review→fix loop against that branch, then drain. Fire-and-forget:
 draining releases the pool slot so a fresh polecat runs the queued review loop
 (the gascity polecat pool is max=1; holding the slot would deadlock the loop).
+If review dispatch fails, preserve its output, drain, and exit non-zero without
+marking this step successful or claiming the review was launched.
 
 **Config: review_formula = {{review_formula}}**
 **Config: review_worker_target = {{review_worker_target}}**
@@ -547,13 +549,21 @@ case "$REVIEW_WORKER_TARGET" in
 esac
 bd update "$ROOT" --set-metadata work_dir="$WORK_DIR" \
   --set-metadata branch="$BRANCH" --set-metadata base_sha="$BASE_SHA"
-gc sling "$REVIEW_ROUTE" "$ROOT" \
+if DISPATCH_OUTPUT=$(gc sling "$REVIEW_ROUTE" "$ROOT" \
   --on "{{review_formula}}" --var "base_branch={{base_branch}}" \
   --var "work_dir=$WORK_DIR" --var "branch=$BRANCH" \
   --var "base_sha=$BASE_SHA" --var "target=$REVIEW_TARGET" \
   --var "push_remote=$PUSH_REMOTE" \
   --var "test_command=$TEST_COMMAND" \
-  --var "review_worker_target=$REVIEW_ROUTE" --nudge
+  --var "review_worker_target=$REVIEW_ROUTE" --nudge 2>&1); then
+  [ -z "$DISPATCH_OUTPUT" ] || printf '%s\n' "$DISPATCH_OUTPUT"
+else
+  DISPATCH_RC=$?
+  printf 'STOP: gc sling failed (exit %s); review was not dispatched:\n%s\n' \
+    "$DISPATCH_RC" "$DISPATCH_OUTPUT" >&2
+  gc runtime drain-ack
+  exit "$DISPATCH_RC"
+fi
 
 # 5. Close THIS step (the implement lifecycle is done; the work bead stays OPEN
 #    for review + the human gate — do NOT close ROOT).

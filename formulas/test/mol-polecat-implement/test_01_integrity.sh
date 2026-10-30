@@ -14,8 +14,8 @@ assert_eq "graph.v2"              "$(formula_py contract)"     "graph.v2 contrac
 
 # --- vars: the tunables, all referenced --------------------------------------
 defined="$(formula_py defined-vars | tr '\n' ' ')"
-assert_eq "base_branch build_command lint_command push_remote review_formula review_worker_target setup_command target_repo test_command typecheck_command " \
-  "$defined" "defines caller variables and the five optional rig formula_var commands"
+assert_eq "base_branch build_command lint_command review_formula setup_command test_command typecheck_command " \
+  "$defined" "defines base_branch, review_formula, and the five rig formula_var commands"
 
 undefined=""
 while IFS= read -r ref; do
@@ -45,10 +45,9 @@ done
 # --- workspace-setup: idempotent resume + records the seam on the work bead --
 WS="$(formula_py desc workspace-setup)"
 assert_contains "$WS" 'BRANCH=$(meta branch)'  "workspace-setup resumes an existing recorded branch (idempotent)"
-assert_contains "$WS" 'git -C "$SRC_REPO" worktree add' \
-  "workspace-setup creates an isolated worktree when none is recorded"
-assert_contains "$WS" 'git checkout -B "$BRANCH" "$BASE_REF"' \
-  "workspace-setup creates a fresh branch from the resolved base ref"
+assert_contains "$WS" 'git worktree add'        "workspace-setup creates an isolated worktree when none is recorded"
+assert_contains "$WS" 'checkout -B "$BRANCH" "origin/{{base_branch}}"' \
+  "workspace-setup creates a fresh branch from the freshly-fetched origin tip"
 assert_contains "$WS" 'bd update "$ROOT" --set-metadata work_dir=' \
   "workspace-setup records work_dir on the work bead (the seam mol-review-loop resumes)"
 assert_contains "$WS" 'bd update "$ROOT" --set-metadata branch=' \
@@ -81,10 +80,7 @@ assert_contains "$TR" '--var "work_dir=$WORK_DIR"' "trigger-review passes work_d
 assert_contains "$TR" '--var "branch=$BRANCH"' "trigger-review passes branch explicitly"
 assert_contains "$TR" '--var "base_sha=$BASE_SHA"' "trigger-review passes immutable base_sha explicitly"
 assert_contains "$TR" '--var "target=$REVIEW_TARGET"' "trigger-review passes the fixed base_sha..HEAD target"
-assert_contains "$TR" 'REVIEW_ROUTE="${GC_RIG:+$GC_RIG/}$REVIEW_WORKER_TARGET"' \
-  "trigger-review qualifies the configured worker target with the rig"
-assert_contains "$TR" '--var "review_worker_target=$REVIEW_ROUTE"' \
-  "trigger-review forwards the resolved route to the review loop"
+assert_contains "$TR" 'gasvillage.polecat'             "trigger-review routes the review loop to the polecat pool"
 assert_contains "$TR" 'gc runtime drain-ack'           "trigger-review drains (fire-and-forget; releases the max=1 slot)"
 assert_contains "$TR" 'do NOT close ROOT'              "trigger-review documents leaving the work bead open for the human gate"
 

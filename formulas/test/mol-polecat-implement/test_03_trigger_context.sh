@@ -45,6 +45,10 @@ import json, sys
 with open(sys.argv[1], "a") as out:
     out.write(json.dumps(sys.argv[2:]) + "\n")
 PY
+if [ "${1:-}" = "sling" ]; then
+  [ -z "${GC_SLING_OUTPUT:-}" ] || printf '%s\n' "$GC_SLING_OUTPUT"
+  exit "${GC_SLING_EXIT_CODE:-0}"
+fi
 GC
 cat > "$TRIGGER_TEST_ROOT/bin/git" <<'GIT'
 #!/usr/bin/env bash
@@ -89,7 +93,9 @@ if (
     GC_LOG="$TRIGGER_TEST_ROOT/logs/gc.log" \
     GC_ARGV_LOG="$TRIGGER_TEST_ROOT/logs/gc-argv.jsonl" \
     GIT_LOG="$TRIGGER_TEST_ROOT/logs/git.log" \
-    TRIGGER_BASE_SHA="$TRIGGER_BASE_SHA" bash -c "$TRIGGER_BLOCK"
+    TRIGGER_BASE_SHA="$TRIGGER_BASE_SHA" \
+    GC_SLING_EXIT_CODE="${GC_SLING_EXIT_CODE:-0}" \
+    GC_SLING_OUTPUT="${GC_SLING_OUTPUT:-}" bash -c "$TRIGGER_BLOCK"
 ) > "$TRIGGER_OUT" 2>&1; then
   TRIGGER_RC=0
 else
@@ -102,6 +108,7 @@ TRIGGER_GIT_LOG="$(cat "$TRIGGER_TEST_ROOT/logs/git.log")"
 TRIGGER_BD_LOG="$(cat "$TRIGGER_TEST_ROOT/logs/bd.log")"
 
 assert_eq "0" "$TRIGGER_RC" "trigger-review completes with a valid worktree context"
+assert_contains "$TRIGGER_GC_LOG" "runtime drain-ack" "successful trigger-review drains after dispatch"
 assert_contains "$TRIGGER_GIT_LOG" "merge-base origin/review-loop-repair HEAD" "trigger resolves its base from the recorded base ref"
 MERGE_BASE_CALLS="$(grep -c '^merge-base ' "$TRIGGER_TEST_ROOT/logs/git.log" || true)"
 assert_eq "1" "$MERGE_BASE_CALLS" "trigger resolves the merge base exactly once"
@@ -156,5 +163,22 @@ TRIGGER_TEST_COMMAND=""
 run_trigger_block
 assert_eq "0" "$TRIGGER_RC" "trigger accepts an explicitly empty test command"
 check_test_command_argv "empty test command is forwarded explicitly"
+
+GC_SLING_EXIT_CODE=1
+GC_SLING_OUTPUT='formulas v2 target dr-4qzeq is closed'
+: > "$TRIGGER_TEST_ROOT/logs/bd.log"
+: > "$TRIGGER_TEST_ROOT/logs/gc.log"
+: > "$TRIGGER_TEST_ROOT/logs/git.log"
+: > "$TRIGGER_TEST_ROOT/logs/gc-argv.jsonl"
+run_trigger_block
+TRIGGER_GC_LOG="$(cat "$TRIGGER_TEST_ROOT/logs/gc.log")"
+TRIGGER_BD_LOG="$(cat "$TRIGGER_TEST_ROOT/logs/bd.log")"
+assert_eq "1" "$TRIGGER_RC" "trigger-review fails when the review target is closed"
+assert_contains "$TRIGGER_GC_LOG" "runtime drain-ack" "failed trigger-review drains after dispatch"
+assert_contains "$(cat "$TRIGGER_OUT")" "gc sling failed (exit 1)" "trigger reports the failed review dispatch"
+assert_contains "$(cat "$TRIGGER_OUT")" "$GC_SLING_OUTPUT" "trigger preserves the closed-target diagnostic"
+assert_not_contains "$TRIGGER_BD_LOG" "gc.outcome=pass" "failed dispatch does not mark trigger-review passed"
+assert_not_contains "$TRIGGER_BD_LOG" "--status=closed" "failed dispatch does not close trigger-review"
+assert_not_contains "$TRIGGER_BD_LOG" "slung" "failed dispatch does not record a false slung success note"
 
 rm -rf "$TRIGGER_TEST_ROOT"

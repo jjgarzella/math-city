@@ -46,6 +46,22 @@ for entry in values(projects), (name, source) in get(entry.project, "sources", D
     pinned_trees[name] = git("rev-parse", "HEAD^{tree}")
 end
 
+# A current development root can have additional requirements while another
+# workload still pins an older Git release of that same package. Supplement
+# dependency/compat constraints without substituting the pinned package source.
+requirements = copy(projects)
+for path in (@isdefined(city_supplemental_projects) ? city_supplemental_projects : String[])
+    file = joinpath(path, "Project.toml")
+    project = TOML.parsefile(file)
+    name = project["name"]
+    haskey(projects, name) || error("Supplement must describe an existing workload: " * name)
+    project["uuid"] == projects[name].project["uuid"] || error("Supplement UUID mismatch: " * name)
+    isempty(get(project, "sources", Dict())) || error("Supplement cannot change dependency sources: " * name)
+    label = name * " (supplemental constraints)"
+    haskey(requirements, label) && error("Duplicate supplemental workload: " * name)
+    requirements[label] = (path=path, project=project, sha256=bytes2hex(sha256(read(file))))
+end
+
 deps = Dict{String,String}()
 sources = Dict{String,Any}()
 compat = Dict{String,Pkg.Versions.VersionSpec}()
@@ -62,10 +78,6 @@ for (name, entry) in sort(collect(projects); by=first)
     else
         sources[name] = get(pinned_sources, name, Dict("path"=>entry.path))
     end
-    for (dependency, id) in get(project, "deps", Dict())
-        haskey(deps, dependency) && deps[dependency] != id && error("UUID collision: " * dependency)
-        deps[dependency] = id
-    end
     for (dependency, source) in get(project, "sources", Dict())
         # City packages use the exact discovered local source, remaining editable.
         haskey(projects, dependency) && continue
@@ -73,6 +85,13 @@ for (name, entry) in sort(collect(projects); by=first)
             error("Conflicting sources for " * dependency)
         end
         sources[dependency] = source
+    end
+end
+for (name, entry) in sort(collect(requirements); by=first)
+    project = entry.project
+    for (dependency, id) in get(project, "deps", Dict())
+        haskey(deps, dependency) && deps[dependency] != id && error("UUID collision: " * dependency)
+        deps[dependency] = id
     end
     parsed = Pkg.Types.read_project(joinpath(entry.path, "Project.toml"))
     for (dependency, bound) in parsed.compat
@@ -116,7 +135,7 @@ open(joinpath(union_root, "Project.toml"), "w") do io
 end
 open(joinpath(union_root, "constraint-matrix.toml"), "w") do io
     TOML.print(io, Dict("julia"=>string(VERSION), "constraints"=>matrix,
-        "projects"=>Dict(n=>Dict("path"=>e.path, "sha256"=>e.sha256) for (n,e) in projects)); sorted=true)
+        "projects"=>Dict(n=>Dict("path"=>e.path, "sha256"=>e.sha256) for (n,e) in requirements)); sorted=true)
 end
 open(joinpath(union_root, "resolve.log"), "w") do io
     try

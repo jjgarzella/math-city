@@ -121,6 +121,16 @@ assert_contains "$TRIGGER_GC_LOG" "--var base_sha=$TRIGGER_BASE_SHA" "trigger pa
 assert_contains "$TRIGGER_GC_LOG" "--var target=$TRIGGER_BASE_SHA..HEAD" "trigger passes the exact immutable range target"
 assert_contains "$TRIGGER_BD_LOG" "set-metadata base_sha=$TRIGGER_BASE_SHA" "trigger records the immutable SHA on the work bead"
 
+GC_SLING_OUTPUT='review loop accepted trigger-root'
+: > "$TRIGGER_TEST_ROOT/logs/bd.log"
+: > "$TRIGGER_TEST_ROOT/logs/gc.log"
+: > "$TRIGGER_TEST_ROOT/logs/git.log"
+: > "$TRIGGER_TEST_ROOT/logs/gc-argv.jsonl"
+run_trigger_block
+assert_eq "0" "$TRIGGER_RC" "successful trigger-review accepts a non-empty sling result"
+assert_contains "$(cat "$TRIGGER_OUT")" "$GC_SLING_OUTPUT" \
+  "successful trigger-review preserves captured sling output"
+
 # Verify actual argv boundaries and bytes, rather than the ambiguous $* log.
 # Commands are data during handoff: neither substitution nor execution is safe.
 check_test_command_argv() {

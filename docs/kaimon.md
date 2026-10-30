@@ -307,8 +307,51 @@ copy visible in the build/runtime depot stack for CUDA, CUDACore, GPUCompiler,
 DispatchDoctor and GFM against the exact locked trees; no package source patch
 was applied. The 270-entry union lock, constraint matrix and exact clean workload
 Git provenance are retained in `mc-occii.1/union-cuda6-main/` below the city image
-directory. Candidate construction and real polecat validation are in progress;
-the published current image below remains the rollback and default.
+directory. That registered CUDA 6.5.0 attempt failed at the final arm64 link
+after about 4,632 seconds: KernelAbstractions 0.10.4's PoCL device helpers
+referenced unresolved `julia.gpu.state_getter`, `julia.opencl.random_keys` and
+`julia.opencl.random_counters` host symbols. Its all-method sorting pass and
+LLVM native-output optimization completed; this is a device-code link failure,
+not a timeout or a resource-policy stop. Inputs, logs and the failure receipt
+remain in `mc-occii.1/candidate-artifacts/.building-x7le6nr0/` and
+`mc-occii.1/cuda65-build-failure.json`. No complete artifact or profile was
+published and no real canary was launched from it.
+
+Coordinator disposition authorizes a sysimage-lock exception for registered
+CUDA/CUDACore **6.4.2**, with everything else latest-compatible and DeRham's
+exact GFM source unchanged. CUDA 6.5 requires the KA 0.10 line; CUDACore 6.4.2
+permits KA 0.9. The separate feasibility lock resolves KA 0.9.45,
+GPUArrays 11.5.16, GPUCompiler 2.19.0 and DispatchDoctor 0.4.29 without a fork.
+A CUDA-only AOT/link diagnostic must succeed before a new full build starts.
+No package patches, CPU/symbol stubs, undefined-symbol linker bypasses or other
+new version pins are authorized. Follow-up `mc-hinra` tracks lifting the pin.
+The published current image below remains the rollback and default.
+
+The CUDA-only diagnostic **passed AOT linking and the builder's image-load
+probe**: artifact `7c6fe0c04a9c6431b758886883201bfbd0cfb634b166dc09508ed88ae1ec0178`,
+533,044,856 bytes, 407.356 seconds. It lives only under
+`mc-occii.1/cuda64-diagnostic-artifacts/`; no profile was published for it.
+The approved full 23-root build uses the separate 263-entry
+`mc-occii.1/union-cuda64/` lock and is still in progress. The exact pin and
+reason are recorded in `sysimage-lock-exceptions.json` and comments in that
+source Project.toml, so future profile publication freezes the reason in the
+hash-covered Project snapshot as well as freezing the selected versions.
+
+The feasibility-only native gate `01f2146a` stalled before its first evaluation;
+the caller timed out after ten seconds with no eval ID, no running job and no
+Project/receipt writes. The native shutdown removed its registry entry but left
+its exact owned PID alive. After verifying the project/command, only that PID
+was terminated (SIGTERM was ineffective, then SIGKILL completed cleanup).
+The unchanged daemon and all four unrelated gates remained available. A cold
+direct Julia 1.13.2 fallback resolved the proposed 6.4.2 lock; this is recorded
+as cold feasibility, not warm execution or candidate acceptance, in
+`mc-occii.1/union-cuda6-64-option/`.
+A later fresh native gate `8af2dfb5` worked normally and verified every installed
+copy of eight relevant packages against the 6.4.2 lock, including CUDA,
+CUDACore, KernelAbstractions, GPUArrays, GPUCompiler, GPUToolbox, DispatchDoctor
+and GFM. DispatchDoctor preferences were empty in that audit environment.
+Its receipt is `union-cuda64/native-source-tree-audit.toml`; the owned gate was
+shut down. These source checks do not replace the real candidate polecat gates.
 
 The earlier four-repository build completed dependency precompilation but was
 stopped before image construction finished when the supplemental constraint

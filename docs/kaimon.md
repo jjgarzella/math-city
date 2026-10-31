@@ -373,11 +373,58 @@ still enforce the complete baked-package preference audit without an exception.
 
 | Required candidate evidence | DeRham | GPUFiniteFieldMatrices |
 | --- | --- | --- |
-| Real polecat workspace-setup | Pass: dr-ha8kf; clean and idempotent | Queued: gfm-buz3g on main |
-| Native image id / path / project / package source | Not run | Not run |
-| Package load timings, image and off | Not measured | Not measured |
-| Prepared-lock package tests | Not run | Not run |
-| Clean canary worktree | Pass after setup and resume | Pending |
+| Real polecat workspace-setup | Pass: dr-ha8kf at 19f092d | Pass: gfm-buz3g at main 8f1426c |
+| Clean, idempotent setup; tracked Project unchanged | Pass | Pass |
+| Native image id / path / project / package source | Pass: 2efd0978 | Pass: bea4f6ce |
+| Package `using` seconds, image / off | 28.617525042 / 38.170871875 | 0.138320916 / 4.498853458 |
+| Separate Oscar `using` seconds, image / off | 0.018594875 / 27.434261167 | Not applicable |
+| Native persistent state 41 → 42; empty DispatchDoctor preferences | Pass | Pass |
+| Prepared-lock package tests | **Pass:** exact native presubmit; test env re-resolved | **Failed before tests: JET/Julia compatibility** |
+| Workflow retired, recipe restored, final Git clean | Pass: canceled, five open members closed | Pass: canceled, six open members closed |
+
+These are fresh-process measurements with existing caches, not OS-cold loads.
+Oscar is baked in the image; its image-side `using` measures availability of
+preloaded code rather than independently loading Oscar from disk. The clean
+separate Oscar image measurement used native gate `5a2feeac`; earlier diagnostic
+timings remain in the evidence directory. GFM startup wall time was 44.372 seconds
+with the candidate and 16.143 seconds off; its import timing alone does not
+establish an end-to-end startup speedup. Both native canaries reported
+`CUDA.functional() == false`; no GPU execution is claimed.
+
+GFM's exact required native `Pkg.test()` failed on unchanged main before running
+tests: `test/Project.toml` requires JET `0.10.6`, permitting 0.10.6–0.10.15,
+while the registry's Julia 1.13.2 compatibility permits JET 0.12.0–0.13.1.
+Pkg attempted test-environment re-resolution and found no intersection. No test
+environment or test CUDA version was selected. This prerequisite is tracked in
+`gfm-l4dbr`; JET is not baked in the candidate image. No tests, compat bounds or
+dependencies were changed to bypass it. The refresh remains **incomplete** until
+the full GFM test gate passes after coordinator disposition. The configured
+comment lint also failed on unchanged GFM main, tracked separately in `gfm-jkejm`.
+The complete GFM receipt is `canaries/GFM/receipt.txt`; its owned native sessions
+were shut down and the original setup recipe was restored. The disposable source
+canary `gfm-4ovud` was closed as diagnostic execution with failed acceptance;
+the real workflow `gfm-buz3g` was canceled through the supported endpoint.
+
+DeRham's exact native `Pkg.test(test_args=["--workflow=presubmit"])` passed
+in off-mode session `1a901e52`, eval `a76920cf`, after 8 minutes 39 seconds.
+The full log is `canaries/DeRham/pkg-test.log`; final summaries include E2E
+186/186, public API/Oscar exports 21/21 and quality gates 18/18. The prescribed
+workflow skipped two GPU-only E2E cases on this Mac. Pkg re-resolved its temporary
+test environment to CUDA/CUDACore/CUDATools 6.4.1, GPUCompiler 2.10.0 and JET
+0.13.1; this test result does not establish frozen 6.4.2 test pins. The canary's
+original prepared Project/Manifest hashes remained unchanged. Its native
+candidate/off import proofs separately used CUDA 6.4.2. The exact QQ polynomial
+round-trip, coefficient vector `[6,5,4,3,2,1]`, evaluation 114 and persistent
+state 42 all passed. The complete receipt is `canaries/DeRham/receipt.txt`.
+
+The off-mode Oscar gate became stalled after its timing result; restart delivery
+failed and no test had started there. Only that owned gate/process was retired.
+A fresh native gate recovered and ran the full test; the discussed cold
+direct-Julia fallback was **not used** for these acceptance tests. All owned
+canary gates were shut down. Both workflows were canceled without entering the
+generic push/review tail; their worktrees and receipts remain retained. No rig
+source changes, rig pushes, service restart or default-profile activation were
+performed. Coordinator review and resolution of `gfm-l4dbr` remain required.
 
 DeRham's first native start failed after the managed hook prepended a rejected
 selection status and the wrapper declined the resulting unknown script.

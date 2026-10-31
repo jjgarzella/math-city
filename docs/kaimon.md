@@ -331,10 +331,19 @@ The CUDA-only diagnostic **passed AOT linking and the builder's image-load
 probe**: artifact `7c6fe0c04a9c6431b758886883201bfbd0cfb634b166dc09508ed88ae1ec0178`,
 533,044,856 bytes, 407.356 seconds. It lives only under
 `mc-occii.1/cuda64-diagnostic-artifacts/`; no profile was published for it.
-The approved full 23-root build uses the separate 263-entry
-`mc-occii.1/union-cuda64/` lock and is still in progress. The exact pin and
+The approved full 23-root build passed using the separate 263-entry
+`mc-occii.1/union-cuda64/` lock. Artifact
+`ea35535980e5695422947b043145f482bd13e69cc9ffc080c29acdf66a8080b9`
+is retained under `mc-occii.1/candidate-artifacts/`: 1,878,552,520 bytes,
+3,062.840454 seconds, SHA-256
+`0471a82632cd22429c92a4b25056d891e75905c8b8d69165bd60f2dda3efcc69`.
+Candidate-only profile
+`79e5c5cf864d30595c01315dd81e4bec8a59c47f6e4e3e571bb939b9a059e950`
+is published under `.gc/kaimon-sysimages/profiles/<id>/profile.json`.
+It has not been activated; the current link and profile bytes match the retained
+`current-before.json` snapshot. The exact pin and
 reason are recorded in `sysimage-lock-exceptions.json` and comments in that
-source Project.toml, so future profile publication freezes the reason in the
+source Project.toml, so candidate profile publication freezes the reason in the
 hash-covered Project snapshot as well as freezing the selected versions.
 
 The feasibility-only native gate `01f2146a` stalled before its first evaluation;
@@ -364,11 +373,23 @@ still enforce the complete baked-package preference audit without an exception.
 
 | Required candidate evidence | DeRham | GPUFiniteFieldMatrices |
 | --- | --- | --- |
-| Real polecat workspace-setup | Pending candidate construction | Pending candidate construction |
+| Real polecat workspace-setup | Pass: dr-ha8kf; clean and idempotent | Queued: gfm-buz3g on main |
 | Native image id / path / project / package source | Not run | Not run |
 | Package load timings, image and off | Not measured | Not measured |
 | Prepared-lock package tests | Not run | Not run |
-| Clean canary worktree | Not run | Not run |
+| Clean canary worktree | Pass after setup and resume | Pending |
+
+DeRham's first native start failed after the managed hook prepended a rejected
+selection status and the wrapper declined the resulting unknown script.
+The scoped wrapper repair accepts only one literal status assignment followed
+by the exact known bootstrap. Thirty-four launcher checks and seven actual
+ordinary-Julia guard controls passed. Fresh owned diagnostic gate `6a33abbc`
+then started in 55.013 seconds through the unchanged service, reporting Julia
+1.13.2, the new artifact id, actual candidate image and exact diagnostic project;
+separate native calls returned persistent state 41 then 42. The gate was shut
+down. Receipts are in `launch-debug/native-hook-preamble-pass.json` and
+`launch-debug/neutral-guards-ehiwuack/results.json`. This diagnostic copy is
+separate from the real polecat acceptance gates, which remain pending.
 
 Owned inputs, dependency-conflict evidence and local regression logs are retained
 under `.gc/kaimon-sysimages/mc-occii.1/`. The old artifact and current profile
@@ -411,14 +432,17 @@ warmup/build-input hashes, artifact checksum, size and build time are recorded
 in each artifact's `metadata.json`. Artifacts and pinned build environments
 live under ignored `.gc/kaimon-sysimages/`; binaries are never committed.
 
-**The current route is the supported per-worktree `julia_bin` wrapper recipe
-below. The live daemon has not loaded the managed selection hook. A compatible
-Manifest alone does not select the image.** Use the wrapper in an owned project,
+**Use the supported per-worktree `julia_bin` wrapper recipe below and verify
+the actual child image.** The October 30 `mc-occii.1` canary observed the managed
+hook in daemon PID 75308 (started October 29), superseding the earlier statement
+that the live hook was absent. Its selector returned `pipe_open: file already
+exists (EEXIST)` before the wrapper ran. A compatible Manifest alone therefore
+does not prove selection. Use the wrapper in an owned project,
 preserve its original exact binary and flags, and verify the actual child image.
 Profile publication or activation does not install the hook in a live daemon.
 
 `commands/kaimon-managed-sysimages.jl` provides automatic selection for **new
-interactive sessions** only after a separately authorized future service rollout.
+interactive sessions** when loaded by the service.
 It retains caller project/version/binary/flags and explicit images. No service
 restart, live patch or observer integration is part of this wrapper rollout.
 `run_tests` keeps its original image resolver and isolated environment behavior.
@@ -497,8 +521,13 @@ It enforces requested Julia versions, publishes `KAIMON_CITY_SYSIMAGE`, and
 forwards all caller flags/project unchanged apart from the validated image.
 Kaimon's test runner is forwarded to the original Julia without injecting an
 image because its script activates its test environment after startup. Default
-hook activation later makes this per-worktree wrapper unnecessary; remove only
-the added wrapper field and preserve the original recipe when retiring it.
+The wrapper recognizes one literal managed-hook status assignment only when
+the remaining startup script matches the known bootstrap exactly. It repeats
+all selection and neutral-instantiation guards and replaces that earlier status
+with its own result. Interpolation, added code and unknown bootstraps retain
+ordinary startup. Off mode and explicit caller images preserve the full script.
+Retire the added wrapper field only after the automatic route passes native
+acceptance, preserving the original recipe.
 
 City packages and KaimonGate stay outside the image. Registered Nemo is baked
 as Oscar's dependency; the selector rejects a Nemo development project or a

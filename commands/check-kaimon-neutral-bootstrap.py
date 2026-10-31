@@ -104,5 +104,18 @@ run_case("post preference veto", 'write(' + quote(prefs) + ', "[Oscar]\\ncity_gu
 run_case("preference file drift despite empty values", 'write(' + quote(prefs) + ', "# changed\\n")',
          before_prefs="# original\n", expected="preference inputs changed")
 assert all(path.read_bytes() == content for path, content in baseline.items())
-print("ALL 6 ACTUAL COLD GUARD CONTROLS PASS; no image or native session launched", flush=True)
+script = ('ENV["KAIMON_CITY_SYSIMAGE"] = "rejected: IOError: pipe_open: file already exists (EEXIST)"\n'
+          f'cd({quote(TARGET)})\nimport Pkg\ntry; using Revise; catch; end\n'
+          'using KaimonGate\nPkg.instantiate(; io=devnull)\n'
+          '@async KaimonGate.serve(force=true, allow_mirror=true, allow_restart=true, spawned_by="agent")\n')
+started = time.monotonic()
+rewritten = guard.neutral_managed_bootstrap(JULIA, TARGET, script, INFO, META, ARTIFACT,
+                                           [Path(p).resolve() for p in args.bootstrap_project])
+assert rewritten.startswith(f'cd({quote(TARGET)})\n')
+assert '# Pkg.instantiate completed in neutral prelaunch Julia.' in rewritten
+assert all(path.read_bytes() == content for path, content in baseline.items())
+results.append({"case": "managed hook literal status with real neutral guards", "result": "PASS",
+                "seconds": time.monotonic() - started})
+(OUT / "results.json").write_text(json.dumps(results, indent=2) + "\n")
+print("ALL 7 ACTUAL COLD GUARD CONTROLS PASS; no image or native session launched", flush=True)
 print("Receipts: " + str(OUT / "results.json"), flush=True)

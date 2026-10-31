@@ -526,6 +526,12 @@ def neutral_managed_bootstrap(binary, project, script, info, metadata, artifact,
     if "KaimonGate.serve(" not in script:
         check_project_compat(binary, project, info, metadata, bootstrap)
         return script
+    # The optional managed hook adds its earlier selection result. Only discard
+    # one literal assignment, and only after the remaining bootstrap is matched
+    # exactly below. The wrapper performs a fresh selection and owns its status.
+    status = re.match(r'ENV\["KAIMON_CITY_SYSIMAGE"\] = "(?:[^"\\$\r\n]|\\["\\nrt])*"\n', script)
+    if status:
+        script = script[status.end():]
     quote = json.dumps(str(Path(project).resolve()), ensure_ascii=False).replace("$", "\\$")
     prefix = (f"cd({quote})\nimport Pkg\ntry; using Revise; catch; end\n"
               "using KaimonGate\nPkg.instantiate(; io=devnull)\n")

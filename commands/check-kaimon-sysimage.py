@@ -257,6 +257,31 @@ class Images(unittest.TestCase):
             self.assertEqual(calls[0][1], ["/original/julia", *argv])
             self.assertIn("unrecognized managed bootstrap", self.launch_status)
 
+    def test_managed_hook_status_replaced_only_after_full_validation(self):
+        preamble = 'ENV["KAIMON_CITY_SYSIMAGE"] = "rejected: IOError: pipe_open: file already exists (EEXIST)"\n'
+        script = self.managed_script()
+        with patch.object(image, "run_julia", return_value=self.empty_audits()) as neutral:
+            code, calls, _ = self.run_launch(script=preamble + script, real_compat=True)
+        self.assertEqual(code, 0)
+        neutral.assert_called_once()
+        self.assertEqual(self.launch_status, self.meta["id"])
+        self.assertNotIn(preamble, calls[0][1][-1])
+        self.assertIn("# Pkg.instantiate completed in neutral prelaunch Julia.", calls[0][1][-1])
+        for unsafe in (preamble + "side_effect()\n" + script,
+                       preamble + preamble + script,
+                       'ENV["KAIMON_CITY_SYSIMAGE"] = "$(side_effect())"\n' + script,
+                       preamble + script.replace("io=devnull", "verbose=true")):
+            with patch.object(image, "run_julia") as neutral:
+                _, calls, argv = self.run_launch(script=unsafe)
+            neutral.assert_not_called()
+            self.assertEqual(calls[0][1], ["/original/julia", *argv])
+            self.assertIn("unrecognized managed bootstrap", self.launch_status)
+        for mode, extra in (("off", ()), ("auto", ("--sysimage=/caller/image",))):
+            with patch.object(image, "run_julia") as neutral:
+                _, calls, argv = self.run_launch(mode=mode, extra=extra, script=preamble + script)
+            neutral.assert_not_called()
+            self.assertEqual(calls[0][1], ["/original/julia", *argv])
+
     def test_managed_instantiate_failure_does_not_load_image(self):
         for mode in ("auto", "required"):
             failure = image.subprocess.CalledProcessError(1, ["julia"], stderr="missing artifact")
